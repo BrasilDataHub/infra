@@ -1,0 +1,37 @@
+# Perfil ATUAL — referência de implantação para a instância de hoje (CCX13
+# compartilhado, volume Docker existente com os 116 GB). No Dokploy a
+# implantação é pelo campo "Docker Image" do serviço (ver README.md); este
+# compose serve de fonte de verdade dos parâmetros e para uso fora do Dokploy.
+
+services:
+  postgres:
+    image: ghcr.io/OWNER/baseempresarial-postgres:17-atual
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: dados_cnpj
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
+      DADOS_READ_PASSWORD: ${DADOS_READ_PASSWORD:-}
+    volumes:
+      # Volume EXISTENTE do Dokploy — é onde vivem os 116 GB. Nunca recriar.
+      - baseempresarial-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "15432:5432"
+    shm_size: 1gb
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dados_cnpj"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  baseempresarial-postgres-data:
+    external: true
+    name: baseempresarial-postgres-ujnn8y-data

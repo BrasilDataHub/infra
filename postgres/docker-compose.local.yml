@@ -1,0 +1,32 @@
+# Validação LOCAL dos perfis (volume descartável). Os perfis dedicados usam
+# shared_buffers de 16/32 GB — inviáveis numa máquina de desenvolvimento —,
+# então a memória é sobrescrita por linha de comando (-c), o que valida o
+# restante do arquivo de configuração (parse + aplicação em pg_settings).
+#
+#   PROFILE=atual docker compose -f docker-compose.local.yml up --build
+#   PROFILE=dedicada-64 LOW_MEM_OVERRIDE="-c shared_buffers=512MB -c effective_cache_size=1GB" \
+#       docker compose -f docker-compose.local.yml up --build
+#
+# Verificação:
+#   docker compose -f docker-compose.local.yml exec postgres \
+#       psql -U postgres -d dados_cnpj -c "SHOW shared_preload_libraries; SHOW random_page_cost;"
+
+services:
+  postgres:
+    build:
+      context: .
+      args:
+        PROFILE: ${PROFILE:-atual}
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf ${LOW_MEM_OVERRIDE:-}
+    environment:
+      POSTGRES_DB: dados_cnpj
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: local-test
+      DADOS_READ_PASSWORD: local-test
+    ports:
+      - "55433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dados_cnpj"]
+      interval: 5s
+      timeout: 5s
+      retries: 10

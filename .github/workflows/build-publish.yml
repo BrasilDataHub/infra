@@ -1,0 +1,62 @@
+name: Build e publica imagens
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "postgres/**"
+      - "redis/**"
+      - ".github/workflows/build-publish.yml"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        profile: [atual, dedicada-64, dedicada-128]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: postgres
+          push: true
+          build-args: |
+            PROFILE=${{ matrix.profile }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/baseempresarial-postgres:17-${{ matrix.profile }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/baseempresarial-postgres:17.10-${{ matrix.profile }}
+
+  redis:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: redis
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/baseempresarial-redis:7
