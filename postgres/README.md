@@ -15,7 +15,7 @@ extensões (`pg_trgm`, `unaccent`, `pg_stat_statements`, `btree_gin`) + role
 de leitura `dados_read` (timeouts de servidor 15 s/60 s, senha via env
 `DADOS_READ_PASSWORD`). O initdb roda **apenas** na primeira inicialização
 (volume vazio); para bancos existentes, use o script de higiene do projeto
-(ex.: `rfb-cnpj-etl/sql/prod_hygiene.sql`).
+(ex.: `cnpj-pipeline/sql/prod_hygiene.sql`).
 
 ## Variáveis de tuning
 
@@ -45,45 +45,29 @@ de leitura `dados_read` (timeouts de servidor 15 s/60 s, senha via env
 
 ## Cenários por máquina-alvo
 
+Cada cenário é um **artefato versionado**: um arquivo de env (`env.<cenário>`,
+fonte de verdade dos parâmetros `PG_*`) e um compose de referência
+(`docker-compose.<cenário>.yml`, com volume, limites de recurso e rede do
+cenário). No Dokploy, cole o conteúdo do arquivo de env no painel de
+Environment; fora do Dokploy, use o compose diretamente.
+
 ### 1. Compartilhada 8 GB (caso atual do baseempresarial — CCX13, volume de rede)
 
+Arquivos: [`env.compartilhada-8gb`](env.compartilhada-8gb) +
+[`docker-compose.compartilhada-8gb.yml`](docker-compose.compartilhada-8gb.yml).
+
 Host dividido com app/Redis/Meilisearch; ~4 GB para o Postgres.
-**Os defaults da imagem já são este cenário** — basta não definir nada.
-Explicitamente:
-
-```env
-PG_SHARED_BUFFERS=2GB
-PG_EFFECTIVE_CACHE_SIZE=4GB
-PG_WORK_MEM=32MB
-PG_MAINTENANCE_WORK_MEM=512MB
-PG_RANDOM_PAGE_COST=1.5
-PG_EFFECTIVE_IO_CONCURRENCY=100
-PG_JIT=off
-PG_MAX_WAL_SIZE=4GB
-```
-
-Recursos do container: **limite de memória 4 GB / reserva 2 GB**, `shm_size` 1 GB.
+**Os defaults da imagem já são este cenário** — basta não definir nada;
+o arquivo de env existe como registro explícito.
+Recursos do container: **limite de memória 4 GB / reserva 2 GB**, `shm_size`
+1 GB; o compose preserva o volume Dokploy existente
+(`baseempresarial-postgres-ujnn8y-data` — é onde vivem os 116 GB, nunca
+recriar).
 
 ### 2. Dedicada 64 GB (ex.: CCX43 — 16 vCPU, NVMe local)
 
-```env
-PG_MAX_CONNECTIONS=200
-PG_SHARED_BUFFERS=16GB
-PG_EFFECTIVE_CACHE_SIZE=48GB
-PG_WORK_MEM=64MB
-PG_MAINTENANCE_WORK_MEM=2GB
-PG_RANDOM_PAGE_COST=1.1
-PG_EFFECTIVE_IO_CONCURRENCY=200
-PG_DEFAULT_STATISTICS_TARGET=200
-PG_MAX_WORKER_PROCESSES=16
-PG_MAX_PARALLEL_WORKERS=12
-PG_MAX_PARALLEL_WORKERS_PER_GATHER=4
-PG_MAX_PARALLEL_MAINTENANCE_WORKERS=4
-PG_MAX_WAL_SIZE=16GB
-PG_MIN_WAL_SIZE=2GB
-PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.05
-PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.02
-```
+Arquivos: [`env.dedicada-64`](env.dedicada-64) +
+[`docker-compose.dedicada-64.yml`](docker-compose.dedicada-64.yml).
 
 Recursos do container: limite de memória **56 GB**, `shm_size` 4 GB,
 PGDATA em **bind no NVMe local** (`/data/pgdata`) — nunca volume de rede;
@@ -91,14 +75,11 @@ porta 5432 exposta **somente** à rede privada (vSwitch/firewall).
 
 ### 3. Dedicada 128 GB (ex.: AX102 — Ryzen 7950X3D, NVMe local)
 
-Igual ao cenário 2, trocando:
+Arquivos: [`env.dedicada-128`](env.dedicada-128) +
+[`docker-compose.dedicada-128.yml`](docker-compose.dedicada-128.yml).
 
-```env
-PG_SHARED_BUFFERS=32GB
-PG_EFFECTIVE_CACHE_SIZE=96GB
-```
-
-Recursos do container: limite de memória **112 GB**, resto como no cenário 2.
+Igual ao cenário 2, trocando `PG_SHARED_BUFFERS=32GB` e
+`PG_EFFECTIVE_CACHE_SIZE=96GB`; limite de memória **112 GB**.
 
 ## Implantação no Dokploy
 

@@ -11,7 +11,7 @@
 #
 # Os scripts de initdb/ só executam na PRIMEIRA inicialização (volume vazio).
 # Para bancos de produção existentes, extensões e role vêm de script de
-# higiene do projeto (ex.: rfb-cnpj-etl/sql/prod_hygiene.sql — tarefa F6).
+# higiene do projeto (ex.: cnpj-pipeline/sql/prod_hygiene.sql — tarefa F6).
 
 ARG PG_VERSION=17.10
 FROM postgres:${PG_VERSION}

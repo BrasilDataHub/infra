@@ -1,0 +1,30 @@
+# Cenário 3 — dedicada 128 GB (ex.: AX102, Ryzen 7950X3D, NVMe local).
+# Igual ao cenário 2, com envs e limite de memória do cenário 3.
+
+services:
+  postgres:
+    image: ghcr.io/brasildatahub/postgres:17
+    restart: unless-stopped
+    env_file:
+      - env.dedicada-128
+    environment:
+      POSTGRES_DB: dados_cnpj
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
+      DADOS_READ_PASSWORD: ${DADOS_READ_PASSWORD:-}
+    volumes:
+      - /data/pgdata:/var/lib/postgresql/data
+    ports:
+      # Exclusivamente o IP privado da vSwitch — nunca 0.0.0.0.
+      - "${PRIVATE_IP:?defina PRIVATE_IP}:5432:5432"
+    shm_size: 4gb
+    deploy:
+      resources:
+        limits:
+          memory: 112G
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dados_cnpj"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
