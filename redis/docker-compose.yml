@@ -2,7 +2,7 @@
 
 services:
   redis:
-    image: ghcr.io/OWNER/baseempresarial-redis:7
+    image: ghcr.io/brasildatahub/redis:7
     restart: unless-stopped
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?defina REDIS_PASSWORD}

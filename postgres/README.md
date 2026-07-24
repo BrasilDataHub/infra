@@ -1,14 +1,19 @@
-# infra/postgres — imagem customizada do PostgreSQL
+# postgres — imagem PostgreSQL da organização
 
-Hoje a produção roda `postgres:17` cru no Dokploy: sem arquivo de
-configuração (`shared_buffers` de 128 MB para 116 GB de dados), sem limites
-de recursos e com initdb padrão. Esta pasta versiona **toda a configuração
-de instância** em imagens Docker por perfil — a única tarefa manual que
-resta é trocar a imagem no Dokploy.
+Imagem `ghcr.io/brasildatahub/postgres` — o PostgreSQL padrão dos projetos
+BrasilDataHub (baseempresarial, baseescolar, basehospitalar, ...): conf
+versionada por perfil de máquina, extensões e role de leitura no initdb.
+Nada aqui é atrelado a um projeto específico; o que é particular de cada
+projeto (nome do banco, volume, envs) entra na implantação.
 
-**Fronteira:** schema/DDL/índices/views pertencem ao `rfb-cnpj-etl`.
-Aqui vive só a instância: imagem, `postgresql.conf`, extensões disponíveis,
-recursos, backup físico.
+Motivação original (baseempresarial): a produção rodava `postgres:17` cru no
+Dokploy — sem arquivo de configuração (`shared_buffers` de 128 MB para
+116 GB de dados), sem limites de recursos. Com a imagem por perfil, a única
+tarefa manual que resta é trocar a imagem no Dokploy.
+
+**Fronteira:** schema/DDL/índices/views pertencem ao repositório de ETL de
+cada projeto (ex.: `rfb-cnpj-etl`). Aqui vive só a instância: imagem,
+`postgresql.conf`, extensões disponíveis, recursos, backup físico.
 
 ## Perfis
 
@@ -30,19 +35,19 @@ Publicadas pela CI (`.github/workflows/build-publish.yml`) no GHCR a cada
 push na `main` que toque `postgres/`:
 
 ```
-ghcr.io/<owner>/baseempresarial-postgres:17-atual
-ghcr.io/<owner>/baseempresarial-postgres:17-dedicada-64
-ghcr.io/<owner>/baseempresarial-postgres:17-dedicada-128
+ghcr.io/brasildatahub/postgres:17-atual
+ghcr.io/brasildatahub/postgres:17-dedicada-64
+ghcr.io/brasildatahub/postgres:17-dedicada-128
 ```
 
-> Substitua `OWNER` nos composes pelo owner real do GitHub após o primeiro
-> push. Se o package ficar privado, o Dokploy precisa de um registry
-> credential (Settings → Registry) para puxar do GHCR.
+> Se o package ficar privado no GHCR, o Dokploy precisa de um registry
+> credential (Settings → Registry) para puxar as imagens; alternativamente,
+> torne os packages públicos na organização BrasilDataHub.
 
 Build local de um perfil:
 
 ```bash
-docker build --build-arg PROFILE=atual -t baseempresarial-postgres:17-atual postgres/
+docker build --build-arg PROFILE=atual -t brasildatahub/postgres:17-atual postgres/
 ```
 
 ## initdb (somente volume novo)
@@ -61,7 +66,7 @@ executa** — lá vale o script de higiene `rfb-cnpj-etl/sql/prod_hygiene.sql`
 1. **Pré-condição:** backup da F1 existente e testado.
 2. Dokploy → projeto `baseempresarial` → ambiente `production` → serviço
    `postgres` → aba **Advanced**: trocar o campo **Docker Image** de
-   `postgres:17` para `ghcr.io/<owner>/baseempresarial-postgres:17-atual`.
+   `postgres:17` para `ghcr.io/brasildatahub/postgres:17-atual`.
 3. **Conferir o volume:** `baseempresarial-postgres-ujnn8y-data` deve
    permanecer montado em `/var/lib/postgresql/data` — é onde vivem os
    116 GB. Não recriar, não renomear.

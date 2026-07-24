@@ -1,7 +1,9 @@
-# infra/redis — cache + fila (Horizon)
+# redis — imagem Redis da organização
 
-Imagem `redis:7.4-alpine` com `redis.conf` versionado embutido. Papel:
-cache da aplicação Laravel e fila do Horizon — 512 MB bastam.
+Imagem `ghcr.io/brasildatahub/redis` (base `redis:7.4-alpine`) com
+`redis.conf` versionado embutido — o Redis padrão dos projetos
+BrasilDataHub. Papel: cache de aplicação Laravel e fila do Horizon —
+512 MB bastam.
 
 ## Decisões de configuração
 
@@ -20,7 +22,7 @@ cache da aplicação Laravel e fila do Horizon — 512 MB bastam.
 ## Implantação no Dokploy (tarefa F4)
 
 1. No serviço `redis` do projeto `baseempresarial`, trocar a imagem para
-   `ghcr.io/<owner>/baseempresarial-redis:7`.
+   `ghcr.io/brasildatahub/redis:7`.
 2. Definir env `REDIS_PASSWORD` (a mesma que o website/Horizon usam).
 3. Conferir volume de dados montado em `/data`.
 4. Limite de memória do serviço: **512 MB**.

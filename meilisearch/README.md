@@ -1,8 +1,9 @@
-# infra/meilisearch — busca (autocomplete/facetas)
+# meilisearch — imagem Meilisearch da organização
 
-Imagem oficial **pinada** `getmeili/meilisearch:v1.34` (mesma minor da
-produção) com env versionada em dois perfis. Não há imagem custom: toda a
-configuração do Meilisearch é por variável de ambiente.
+Imagem `ghcr.io/brasildatahub/meilisearch` — wrapper **pinado** de
+`getmeili/meilisearch:v1.34` (mesma minor da produção) para manter todos os
+serviços de infra sob o namespace da org. Toda a configuração do Meilisearch
+é por variável de ambiente, versionada aqui em perfis (`env.*`).
 
 ## Perfis
 
@@ -49,6 +50,9 @@ dependem de onde o Meili ficará (decisão F5) — ajustar antes da F10.
 ## Validação local
 
 ```bash
+# antes da primeira publicação na CI, builde o wrapper localmente:
+docker build -t ghcr.io/brasildatahub/meilisearch:1.34 .
+
 MEILI_MASTER_KEY=local-test PROFILE=atual docker compose up -d
 curl -s http://localhost:7700/health
 ```

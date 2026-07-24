@@ -1,4 +1,5 @@
-# Redis do BaseEmpresarial: cache da aplicação + fila do Horizon.
+# Redis da organização BrasilDataHub (ghcr.io/brasildatahub/redis):
+# cache de aplicação + fila (Horizon) dos projetos da org.
 # Conf versionada embutida na imagem; senha via env no start
 # (redis.conf não lê variáveis de ambiente).
 

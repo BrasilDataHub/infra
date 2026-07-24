@@ -4,7 +4,7 @@
 
 services:
   postgres:
-    image: ghcr.io/OWNER/baseempresarial-postgres:17-dedicada-64
+    image: ghcr.io/brasildatahub/postgres:17-dedicada-64
     restart: unless-stopped
     environment:
       POSTGRES_DB: dados_cnpj
