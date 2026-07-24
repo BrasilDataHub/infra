@@ -1,0 +1,28 @@
+# Referência de implantação. Perfil selecionado pelo env_file:
+#   PROFILE=atual        → env.atual        (limite de container 1 GB)
+#   PROFILE=pos-migracao → env.pos-migracao (limite dimensionado ao host, F5)
+
+services:
+  meilisearch:
+    image: getmeili/meilisearch:v1.34
+    restart: unless-stopped
+    env_file:
+      - env.${PROFILE:-atual}
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?defina MEILI_MASTER_KEY}
+    volumes:
+      - meili-data:/meili_data
+    deploy:
+      resources:
+        limits:
+          memory: ${MEILI_MEMORY_LIMIT:-1G}
+    healthcheck:
+      # 127.0.0.1 (não "localhost"): o wget do busybox resolve localhost
+      # para ::1 e o Meili escuta só em 0.0.0.0.
+      test: ["CMD-SHELL", "wget --no-verbose --spider http://127.0.0.1:7700/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  meili-data:
