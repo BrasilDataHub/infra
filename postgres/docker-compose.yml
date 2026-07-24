@@ -1,0 +1,35 @@
+# Exemplo de implantação — imagem única, tuning por envs PG_*.
+# Os blocos de env por máquina-alvo (compartilhada 8 GB, dedicada 64/128 GB)
+# estão no README; copie o bloco do cenário para o painel de Environment do
+# Dokploy (ou para um .env deste compose).
+
+services:
+  postgres:
+    image: ghcr.io/brasildatahub/postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?defina POSTGRES_DB}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
+      DADOS_READ_PASSWORD: ${DADOS_READ_PASSWORD:-}
+      # Tuning (defaults = host compartilhado pequeno; ver README):
+      PG_SHARED_BUFFERS: ${PG_SHARED_BUFFERS:-2GB}
+      PG_EFFECTIVE_CACHE_SIZE: ${PG_EFFECTIVE_CACHE_SIZE:-4GB}
+      PG_WORK_MEM: ${PG_WORK_MEM:-32MB}
+      PG_RANDOM_PAGE_COST: ${PG_RANDOM_PAGE_COST:-1.5}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    shm_size: ${PG_SHM_SIZE:-1gb}
+    deploy:
+      resources:
+        limits:
+          memory: ${PG_MEMORY_LIMIT:-4G}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  pgdata:

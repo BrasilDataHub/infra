@@ -1,39 +1,31 @@
 # infra — infraestrutura de serviços da BrasilDataHub
 
-Fonte de verdade **versionada** da configuração dos serviços de dados da
-organização [BrasilDataHub](https://github.com/BrasilDataHub). As imagens
-são **genéricas por desenho**: nada é atrelado a um projeto específico —
-baseempresarial, baseescolar, basehospitalar e futuros projetos consomem as
-mesmas imagens, cada um com seu deploy (envs, volumes, limites) no Dokploy.
-
-## Imagens publicadas (GHCR)
-
-| Imagem | Conteúdo |
-|---|---|
-| `ghcr.io/brasildatahub/postgres:17-{atual,dedicada-64,dedicada-128}` | PostgreSQL 17.10 com `postgresql.conf` por perfil de máquina, initdb com extensões e role de leitura |
-| `ghcr.io/brasildatahub/redis:7` | Redis 7.4 com conf embutida (512 MB, volatile-lru, AOF) |
-| `ghcr.io/brasildatahub/meilisearch:1.34` | wrapper pinado do Meilisearch v1.34 |
-
-Publicação automática pela CI (`.github/workflows/build-publish.yml`) a cada
-push na `main`. O Dokploy consome a imagem pronta pelo campo **Docker Image**
-de cada serviço.
-
-## Fronteiras
-
-| Repositório | Dono de |
-|---|---|
-| **`infra` (este)** | imagens, `postgresql.conf`/`redis.conf`/envs, extensões disponíveis, limites de recursos, backup físico |
-| ETL de cada projeto (ex.: `rfb-cnpj-etl`) | schema, DDL, índices, views materializadas |
-| aplicação de cada projeto (ex.: `website`) | código; acesso somente leitura ao banco |
+Configuração **versionada** dos serviços de dados da organização
+[BrasilDataHub](https://github.com/BrasilDataHub). As imagens são genéricas
+por desenho: qualquer projeto da org (baseempresarial, baseescolar,
+basehospitalar, ...) consome as mesmas imagens; o que é específico de cada
+projeto (envs, volumes, limites) vive no deploy.
 
 ## Serviços
 
-- [`postgres/`](postgres/README.md) — perfis de tuning (`atual` para host
-  compartilhado de 8 GB; `dedicada-64`/`dedicada-128` para instâncias
-  dedicadas em NVMe), initdb, estratégia de backup PITR (pgBackRest).
-- [`redis/`](redis/README.md) — cache/fila (Horizon), 512 MB, AOF.
-- [`meilisearch/`](meilisearch/README.md) — busca; perfis de env `atual`
-  (1 GiB) e `pos-migracao` (indexação de grandes volumes).
+| Serviço | Imagem | Documentação |
+|---|---|---|
+| PostgreSQL | `ghcr.io/brasildatahub/postgres:17` — imagem única, tuning por envs `PG_*` | [`postgres/`](postgres/) |
+| Redis | `ghcr.io/brasildatahub/redis:7` — 512 MB, volatile-lru, AOF | [`redis/`](redis/) |
+| Meilisearch | `ghcr.io/brasildatahub/meilisearch:1.34` — wrapper pinado, perfis de env | [`meilisearch/`](meilisearch/) |
 
-A implantação é sempre tarefa humana — para o baseempresarial, ver
-`TAREFAS-FABIO.md` (F4/F7/F10).
+Cada pasta tem seu README com as variáveis de configuração, os cenários por
+máquina e o passo a passo de implantação no Dokploy.
+
+## Publicação
+
+As imagens são **públicas** no GHCR (pull sem autenticação); este
+repositório permanece privado. A CI
+(`.github/workflows/build-publish.yml`) builda e publica a cada push na
+`main` que toque a pasta do serviço.
+
+```bash
+docker pull ghcr.io/brasildatahub/postgres:17
+docker pull ghcr.io/brasildatahub/redis:7
+docker pull ghcr.io/brasildatahub/meilisearch:1.34
+```

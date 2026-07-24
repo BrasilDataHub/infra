@@ -1,7 +1,7 @@
 # Backup da instância dedicada — pgBackRest + PITR
 
-> **Escopo.** Esta estratégia vale para a instância **dedicada** (perfis
-> `dedicada-64`/`dedicada-128`), depois da migração (F7–F9). A instância
+> **Escopo.** Esta estratégia vale para a instância **dedicada** (cenários
+> 2 e 3 do README do postgres), depois da migração (F7–F9). A instância
 > atual usa o paliativo da F1: snapshot Hetzner + `pg_dump` diário agendado
 > pelo Dokploy para Object Storage.
 >
@@ -43,14 +43,15 @@ pg1-port=5432
 pg1-socket-path=/var/run/postgresql
 ```
 
-No `postgresql.conf` do perfil dedicado, descomentar:
+No deploy da instância dedicada, definir as envs de archiving da imagem:
 
-```
-archive_mode = on
-archive_command = 'pgbackrest --stanza=dados-cnpj archive-push %p'
+```env
+PG_ARCHIVE_MODE=on
+PG_ARCHIVE_COMMAND=pgbackrest --stanza=dados-cnpj archive-push %p
 ```
 
-(exige restart do Postgres; fazer junto com a primeira implantação — F7).
+(mudar `archive_mode` exige restart do Postgres; fazer junto com a primeira
+implantação — F7).
 
 ## Rotina
 

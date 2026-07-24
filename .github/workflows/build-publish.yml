@@ -2,7 +2,7 @@ name: Build e publica imagens
 
 # Publica as imagens de infraestrutura da organização no GHCR, sob o
 # namespace da org (minúsculo, exigência de nome de imagem Docker):
-#   ghcr.io/brasildatahub/postgres:17-<perfil>
+#   ghcr.io/brasildatahub/postgres:17     (imagem única; tuning via envs PG_*)
 #   ghcr.io/brasildatahub/redis:7
 #   ghcr.io/brasildatahub/meilisearch:1.34
 # Imagens genéricas — consumidas por qualquer projeto da org (baseempresarial,
@@ -28,9 +28,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    strategy:
-      matrix:
-        profile: [atual, dedicada-64, dedicada-128]
     steps:
       - uses: actions/checkout@v4
 
@@ -44,11 +41,9 @@ jobs:
         with:
           context: postgres
           push: true
-          build-args: |
-            PROFILE=${{ matrix.profile }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/postgres:17-${{ matrix.profile }}
-            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/postgres:17.10-${{ matrix.profile }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/postgres:17
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/postgres:17.10
 
   redis:
     runs-on: ubuntu-latest
