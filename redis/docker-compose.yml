@@ -1,9 +1,14 @@
-# Referência de implantação (Dokploy usa a imagem publicada + estes limites).
+# Referência de implantação. Perfil selecionado pelo env_file:
+#   PROFILE=cache-256mb | cache-512mb (default) | cache-1gb | cache-2gb
+# REDIS_MEMORY_LIMIT deve acompanhar o perfil (headroom p/ AOF rewrite):
+#   256mb→512M, 512mb→1G, 1gb→2G, 2gb→3G — ver README.
 
 services:
   redis:
     image: ghcr.io/brasildatahub/redis:7
     restart: unless-stopped
+    env_file:
+      - env.${PROFILE:-cache-512mb}
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?defina REDIS_PASSWORD}
     volumes:
@@ -11,7 +16,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: ${REDIS_MEMORY_LIMIT:-1G}
     healthcheck:
       test: ["CMD-SHELL", "redis-cli ${REDIS_PASSWORD:+-a \"$REDIS_PASSWORD\"} ping | grep PONG"]
       interval: 10s
