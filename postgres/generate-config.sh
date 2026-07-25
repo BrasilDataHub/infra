@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Gera /etc/postgresql/postgresql.conf a partir de variáveis de ambiente
 # PG_* com defaults seguros para um host compartilhado pequeno (~4 GB para
-# o Postgres). Cenários por máquina documentados no README.
+# o Postgres). Perfis por máquina em env.<perfil> e docs/perfis.md.
 set -euo pipefail
 
 CONF=/etc/postgresql/postgresql.conf
@@ -52,6 +52,9 @@ idle_in_transaction_session_timeout = ${PG_IDLE_IN_TRANSACTION_SESSION_TIMEOUT:-
 
 # --- Diagnóstico ------------------------------------------------------------
 shared_preload_libraries = '${PG_SHARED_PRELOAD_LIBRARIES:-pg_stat_statements}'
+# on: sem isso, pg_stat_statements não separa tempo de IO de tempo de CPU;
+# custo desprezível em clock sources modernos (verificável com pg_test_timing)
+track_io_timing = ${PG_TRACK_IO_TIMING:-on}
 log_min_duration_statement = ${PG_LOG_MIN_DURATION_STATEMENT:-2000}
 log_line_prefix = '%m [%p] %q%u@%d '
 log_timezone = 'UTC'

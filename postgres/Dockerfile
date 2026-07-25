@@ -2,9 +2,9 @@
 # consumida pelos projetos da org (baseempresarial, baseescolar, ...).
 #
 # Imagem ÚNICA: o tuning é feito por variáveis de ambiente (PG_*), com
-# defaults seguros para um host compartilhado pequeno. Os cenários por
-# máquina (compartilhada 8 GB, dedicada 64 GB, dedicada 128 GB) estão
-# documentados no README — nenhum rebuild é necessário para retunar.
+# defaults seguros para um host compartilhado pequeno. Os perfis por máquina
+# (compartilhada-8gb e dedicada-8gb/16gb/32gb/64gb/128gb) vivem em
+# env.<perfil> + docs/perfis.md — nenhum rebuild é necessário para retunar.
 #
 # A configuração da instância vive AQUI (repositório infra) — schema, DDL e
 # índices continuam no repositório de ETL de cada projeto.

@@ -1,8 +1,9 @@
-# Cenário 1 — compartilhada 8 GB: referência de implantação para a instância
-# atual do baseempresarial (CCX13, volume Docker existente com os 116 GB).
-# No Dokploy a implantação é pelo campo "Docker Image" do serviço (ver
-# README.md); este compose é a fonte de verdade dos parâmetros e serve para
-# uso fora do Dokploy.
+# Perfil COMPARTILHADA-8GB — referência de implantação para a instância
+# atual do baseempresarial (host de 8 GB dividido com app/Redis/Meili;
+# volume Docker existente com os 116 GB). No Dokploy a implantação é pelo
+# campo "Docker Image" do serviço (ver README.md); este compose é a fonte
+# de verdade dos parâmetros e serve para uso fora do Dokploy.
+# Parâmetros do perfil: env.compartilhada-8gb | Guia completo: docs/perfis.md
 
 services:
   postgres:

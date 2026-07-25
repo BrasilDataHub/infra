@@ -10,7 +10,7 @@ projeto (envs, volumes, limites) vive no deploy.
 
 | Serviço | Imagem | Documentação |
 |---|---|---|
-| PostgreSQL | `ghcr.io/brasildatahub/postgres:17` — imagem única, tuning por envs `PG_*` | [`postgres/`](postgres/) |
+| PostgreSQL | `ghcr.io/brasildatahub/postgres:17` — imagem única, tuning por envs `PG_*`, perfis de 8 a 128 GB ([guia](postgres/docs/perfis.md)) | [`postgres/`](postgres/) |
 | Redis | `ghcr.io/brasildatahub/redis:7` — 512 MB, volatile-lru, AOF | [`redis/`](redis/) |
 | Meilisearch | `ghcr.io/brasildatahub/meilisearch:1.34` — wrapper pinado, perfis de env | [`meilisearch/`](meilisearch/) |
 
