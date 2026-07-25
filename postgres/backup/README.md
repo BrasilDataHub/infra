@@ -1,20 +1,19 @@
 # Backup da instância dedicada — pgBackRest + PITR
 
-> **Escopo.** Esta estratégia vale para a instância **dedicada** (cenários
-> 2 e 3 do README do postgres), depois da migração (F7–F9). A instância
-> atual usa o paliativo da F1: snapshot Hetzner + `pg_dump` diário agendado
-> pelo Dokploy para Object Storage.
+> **Escopo.** Vale para qualquer instância do catálogo de
+> [perfis](../docs/perfis.md) — todas assumem máquina dedicada com NVMe local
+> para o PGDATA e o repositório de backup em object storage.
 >
-> **Pré-condição:** tabelas LOGGED (AG8/F6). Backup físico não protege
-> tabelas UNLOGGED — elas são truncadas no restore de qualquer forma.
+> **Pré-condição:** tabelas LOGGED. Backup físico não protege tabelas
+> UNLOGGED — elas são truncadas no restore de qualquer forma.
 
 ## Arquitetura
 
 - **Ferramenta:** [pgBackRest](https://pgbackrest.org/) — backup físico
   incremental + WAL archiving → **PITR** (restauração a qualquer ponto no
   tempo, não só ao momento do último dump).
-- **Destino:** Hetzner Object Storage (S3-compatível), bucket dedicado
-  `baseempresarial-pgbackrest` (~€5/mês).
+- **Destino:** object storage S3-compatível, um bucket por projeto
+  (ex.: `baseempresarial-pgbackrest` na Hetzner, ~€5/mês).
 - **Execução:** container sidecar no mesmo host do Postgres, compartilhando
   o PGDATA (`/data/pgdata`) e o socket.
 
@@ -51,7 +50,14 @@ PG_ARCHIVE_COMMAND=pgbackrest --stanza=dados-cnpj archive-push %p
 ```
 
 (mudar `archive_mode` exige restart do Postgres; fazer junto com a primeira
-implantação — F7).
+implantação).
+
+**Convivência com o resto do host.** `process-max` e a compressão `zst` do
+pgBackRest disputam CPU com o Postgres e, se houver, com Redis e Meilisearch no
+mesmo host (ver
+[coexistência](../docs/perfis.md#coexistência-com-outros-serviços-no-mesmo-host)).
+O NVMe também é único: agende o full semanal fora da janela de reindexação e da
+carga mensal.
 
 ## Rotina
 

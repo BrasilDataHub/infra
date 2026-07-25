@@ -4,124 +4,195 @@
 BrasilDataHub (baseempresarial, baseescolar, basehospitalar, ...).
 
 É uma **imagem única**: o `postgresql.conf` é gerado no start do container a
-partir de variáveis de ambiente `PG_*` (com defaults seguros para um host
-compartilhado pequeno). Retunar para outra máquina é só trocar envs no
-deploy — nenhum rebuild, nenhuma variação de imagem.
+partir de variáveis de ambiente `PG_*`, cujos defaults equivalem ao perfil
+`dedicada-8gb` — subir sem env nenhuma produz exatamente esse perfil. Retunar
+para outra máquina é só trocar envs no deploy — nenhum rebuild, nenhuma
+variação de imagem.
 
 Base fixa da imagem (igual em qualquer perfil):
 `shared_preload_libraries=pg_stat_statements`, `track_io_timing=on`,
-`wal_compression=zstd`, `checkpoint_completion_target=0.9`, log de queries
-lentas e initdb com extensões (`pg_trgm`, `unaccent`, `pg_stat_statements`,
-`btree_gin`) + role de leitura `dados_read` (timeouts de servidor 15 s/60 s,
-senha via env `DADOS_READ_PASSWORD`). O initdb roda **apenas** na primeira
-inicialização (volume vazio); para bancos existentes, use o script de
-higiene do projeto (ex.: `cnpj-pipeline/sql/prod_hygiene.sql`).
+`random_page_cost=1.1` (NVMe local), `io_combine_limit=256kB`, `jit=off`,
+`wal_compression=zstd`, `checkpoint_timeout=15min`,
+`checkpoint_completion_target=0.9`, logs de queries lentas, de arquivos
+temporários, de locks e de autovacuum, e initdb com extensões (`pg_trgm`,
+`unaccent`, `pg_stat_statements`, `btree_gin`) + role de leitura `dados_read`
+(timeouts de servidor 15 s/60 s, senha via env `DADOS_READ_PASSWORD`). O initdb
+roda **apenas** na primeira inicialização (volume vazio); para bancos
+existentes, use o script de higiene do repositório de ETL do projeto.
 
 ## Perfis de dimensionamento
 
-Os perfis são definidos por **características da máquina** (RAM, vCPUs,
-tipo de disco), independentes de fornecedor, e servem a todos os projetos
-da org. Cada perfil é um **bloco de envs documentado no guia**, pronto para
-copiar e colar no deploy (Dokploy Environment ou compose) — sem arquivos
-extras neste repositório.
+Os perfis são definidos por **características da máquina** (RAM, vCPUs),
+independentes de fornecedor, e servem a todos os projetos da org. Cada perfil é
+um **bloco de envs documentado no guia**, pronto para copiar e colar no deploy
+(Dokploy Environment ou compose) — sem arquivos extras neste repositório.
 
-| Perfil | Máquina-alvo | Uso típico |
-|---|---|---|
-| `compartilhada-8gb` | host de 8 GB **dividido** com app/cache (defaults da imagem) | início de projeto num host único |
-| `dedicada-8gb` | 8 GB / 2–4 vCPU / SSD, só Postgres | produção pequena (ex.: Base Escolar), staging |
-| `dedicada-16gb` | 16 GB / 4 vCPU / SSD | bases de dezenas de GB |
-| `dedicada-32gb` | 32 GB / 8 vCPU / SSD | centenas de GB; consolidação multi-projeto |
-| `dedicada-64gb` | 64 GB / 16 vCPU / NVMe local | base grande com busca textual (Base Empresarial) |
-| `dedicada-128gb` | 128 GB / 16–24 vCPU / NVMe local | working set inteiro em RAM |
+| Perfil | Orçamento de RAM do Postgres | vCPU | Uso típico |
+|---|---|---|---|
+| `dedicada-8gb` | 8 GB | 2–4 | produção pequena (ex.: Base Escolar), staging |
+| `dedicada-16gb` | 16 GB | 8 | bases de dezenas de GB |
+| `dedicada-32gb` | 32 GB | 8–16 | centenas de GB; consolidação multi-projeto |
+| `dedicada-64gb` | 64 GB | 16 | base grande com busca textual (Base Empresarial) |
+| `dedicada-128gb` | 128 GB | 24 | working set inteiro em RAM |
 
-**Guia completo — blocos de env de cada perfil (copy-paste), objetivo,
-cenários, justificativa de cada parâmetro, limitações, quando migrar,
-templates de compose e máquinas equivalentes por provedor (Hetzner, Netcup,
-DigitalOcean, Linode etc.): [docs/perfis.md](docs/perfis.md).**
+Todos os perfis assumem **NVMe local** e a máquina dedicada ao Postgres. O
+número no nome é o **orçamento de RAM do Postgres**, não a RAM do host: se o
+host também rodar Redis ou Meilisearch, some os limites de container deles
+([fórmula](docs/perfis.md#fórmula-de-reserva)).
+
+**Guia completo — blocos de env de cada perfil (copy-paste), carga-alvo,
+justificativa de cada parâmetro, coexistência com outros serviços, limitações,
+quando migrar, compose de referência e máquinas equivalentes por provedor:
+[docs/perfis.md](docs/perfis.md).** Preparação do host (disco, kernel, huge
+pages, filesystem): [docs/host.md](docs/host.md).
 
 ## Variáveis de tuning
+
+Os valores por perfil estão em [docs/perfis.md](docs/perfis.md); o default de
+cada env abaixo é o valor do perfil `dedicada-8gb`.
+
+> **Mudança de defaults.** Os defaults deixaram de representar um host
+> compartilhado e passaram a ser o menor perfil dedicado em NVMe:
+> `PG_EFFECTIVE_CACHE_SIZE` 4GB→6GB, `PG_WORK_MEM` 32MB→16MB,
+> `PG_RANDOM_PAGE_COST` 1.5→1.1, `PG_EFFECTIVE_IO_CONCURRENCY` 100→200,
+> `PG_MAX_WORKER_PROCESSES`/`PG_MAX_PARALLEL_WORKERS` 8→4, `PG_MAX_WAL_SIZE`
+> 4GB→8GB, `PG_MIN_WAL_SIZE` 512MB→2GB, autovacuum 0.2/0.1→0.1/0.05.
+> Deploys que dependiam dos defaults antigos precisam pinar os valores no
+> Environment antes do próximo redeploy, ou fixar a tag `:17.10`.
+
+### Conexões
 
 | Env | Default | O que controla |
 |---|---|---|
 | `PG_MAX_CONNECTIONS` | `100` | conexões simultâneas |
-| `PG_SHARED_BUFFERS` | `2GB` | cache de páginas do Postgres (~25% da RAM da instância) |
-| `PG_EFFECTIVE_CACHE_SIZE` | `4GB` | estimativa de cache total (RAM disponível p/ o banco) |
-| `PG_WORK_MEM` | `32MB` | memória por operação de sort/hash |
+
+### Memória
+
+| Env | Default | O que controla |
+|---|---|---|
+| `PG_SHARED_BUFFERS` | `2GB` | cache de páginas do Postgres |
+| `PG_EFFECTIVE_CACHE_SIZE` | `6GB` | estimativa de cache total (informa o planner) |
+| `PG_WORK_MEM` | `16MB` | memória por operação de sort/hash |
+| `PG_HASH_MEM_MULTIPLIER` | `2.0` | multiplicador de `work_mem` só para nós de hash |
 | `PG_MAINTENANCE_WORK_MEM` | `512MB` | memória p/ VACUUM/CREATE INDEX |
-| `PG_RANDOM_PAGE_COST` | `1.5` | custo de leitura aleatória (`1.1` em SSD/NVMe local) |
-| `PG_EFFECTIVE_IO_CONCURRENCY` | `100` | IO paralelo (`200` em SSD/NVMe local) |
+| `PG_AUTOVACUUM_WORK_MEM` | `-1` | teto por worker de autovacuum (`-1` herda o acima) |
+| `PG_HUGE_PAGES` | `try` | huge pages (só rende se o host reservar) |
+| `PG_MAX_LOCKS_PER_TRANSACTION` | `64` | subir só com esquema particionado |
+
+### Planner e IO
+
+| Env | Default | O que controla |
+|---|---|---|
+| `PG_RANDOM_PAGE_COST` | `1.1` | custo de leitura aleatória (NVMe local) |
+| `PG_EFFECTIVE_IO_CONCURRENCY` | `200` | prefetch de bitmap heap scan |
+| `PG_MAINTENANCE_IO_CONCURRENCY` | `200` | prefetch de VACUUM/ANALYZE |
+| `PG_IO_COMBINE_LIMIT` | `256kB` | tamanho máximo de IO combinado (teto do PG17) |
 | `PG_DEFAULT_STATISTICS_TARGET` | `100` | granularidade das estatísticas do planner |
 | `PG_JIT` | `off` | JIT (`on` só para sessões analíticas) |
-| `PG_MAX_WORKER_PROCESSES` | `8` | teto global de workers |
-| `PG_MAX_PARALLEL_WORKERS` | `8` | workers paralelos de query |
+
+### Paralelismo
+
+| Env | Default | O que controla |
+|---|---|---|
+| `PG_MAX_WORKER_PROCESSES` | `4` | teto global de workers |
+| `PG_MAX_PARALLEL_WORKERS` | `4` | workers paralelos de query |
 | `PG_MAX_PARALLEL_WORKERS_PER_GATHER` | `2` | paralelismo por query |
 | `PG_MAX_PARALLEL_MAINTENANCE_WORKERS` | `2` | paralelismo de manutenção |
-| `PG_MAX_WAL_SIZE` / `PG_MIN_WAL_SIZE` | `4GB` / `512MB` | espaçamento de checkpoints |
+| `PG_PARALLEL_SETUP_COST` | `1000` | custo estimado de iniciar workers |
+| `PG_PARALLEL_TUPLE_COST` | `0.1` | custo estimado por tupla transferida |
+
+### WAL e checkpoints
+
+| Env | Default | O que controla |
+|---|---|---|
+| `PG_MAX_WAL_SIZE` / `PG_MIN_WAL_SIZE` | `8GB` / `2GB` | espaçamento de checkpoints |
+| `PG_WAL_BUFFERS` | `32MB` | buffer de WAL |
 | `PG_WAL_COMPRESSION` | `zstd` | compressão de WAL |
-| `PG_AUTOVACUUM_VACUUM_SCALE_FACTOR` | `0.2` | agressividade do autovacuum |
-| `PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR` | `0.1` | agressividade do auto-analyze |
+| `PG_CHECKPOINT_TIMEOUT` | `15min` | intervalo entre checkpoints |
+| `PG_CHECKPOINT_COMPLETION_TARGET` | `0.9` | espalhamento da escrita do checkpoint |
+| `PG_SYNCHRONOUS_COMMIT` | `on` | `off` só durante o ETL, conscientemente |
+
+### Autovacuum
+
+| Env | Default | O que controla |
+|---|---|---|
+| `PG_AUTOVACUUM_VACUUM_COST_LIMIT` | `1000` | orçamento de IO do autovacuum (default do PG é 200) |
+| `PG_AUTOVACUUM_VACUUM_COST_DELAY` | `2ms` | pausa entre lotes |
+| `PG_AUTOVACUUM_MAX_WORKERS` | `3` | workers simultâneos |
+| `PG_AUTOVACUUM_NAPTIME` | `30s` | intervalo entre rodadas do launcher |
+| `PG_AUTOVACUUM_VACUUM_SCALE_FACTOR` | `0.1` | agressividade do autovacuum |
+| `PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR` | `0.05` | agressividade do auto-analyze |
+| `PG_AUTOVACUUM_VACUUM_INSERT_SCALE_FACTOR` | `0.1` | vacuum de tabelas append-only |
+
+### Busca textual, timeouts e diagnóstico
+
+| Env | Default | O que controla |
+|---|---|---|
+| `PG_GIN_PENDING_LIST_LIMIT` | `4MB` | pending list dos índices GIN com `fastupdate` |
+| `PG_STATEMENT_TIMEOUT` | `0` | teto de duração de query (desligado) |
 | `PG_IDLE_IN_TRANSACTION_SESSION_TIMEOUT` | `60s` | mata transação ociosa |
+| `PG_SHARED_PRELOAD_LIBRARIES` | `pg_stat_statements` | bibliotecas pré-carregadas |
+| `PG_STAT_STATEMENTS_MAX` | `5000` | queries distintas rastreadas |
 | `PG_TRACK_IO_TIMING` | `on` | tempos de IO em pg_stat_statements/EXPLAIN |
 | `PG_LOG_MIN_DURATION_STATEMENT` | `2000` | loga queries acima de N ms |
-| `PG_SHARED_PRELOAD_LIBRARIES` | `pg_stat_statements` | bibliotecas pré-carregadas |
+| `PG_LOG_TEMP_FILES` | `10MB` | loga derramamento de `work_mem` |
+| `PG_LOG_LOCK_WAITS` | `on` | loga esperas por lock |
+| `PG_LOG_AUTOVACUUM_MIN_DURATION` | `10s` | loga autovacuums demorados |
+
+### Backup físico
+
+| Env | Default | O que controla |
+|---|---|---|
 | `PG_ARCHIVE_MODE` / `PG_ARCHIVE_COMMAND` | `off` / `/bin/true` | WAL archiving (pgBackRest — ver `backup/`) |
 
-## Implantação no Dokploy
+## Implantação
 
-### Instância atual do baseempresarial (tarefa F4 — perfil `compartilhada-8gb`)
+Todos os perfis são de máquina dedicada com NVMe local.
 
-1. **Pré-condição:** backup da F1 existente e testado.
-2. Dokploy → projeto `baseempresarial` → ambiente `production` → serviço
-   `postgres` → aba **Advanced**: trocar o campo **Docker Image** de
-   `postgres:17` para `ghcr.io/brasildatahub/postgres:17`.
-3. Environment: nenhum `PG_*` é obrigatório (defaults = perfil
-   compartilhado); definir `DADOS_READ_PASSWORD` se quiser o role de leitura
-   em instâncias novas (na atual o role vem da F6).
-4. **Conferir o volume:** `baseempresarial-postgres-ujnn8y-data` deve
-   permanecer montado em `/var/lib/postgresql/data` — é onde vivem os
-   116 GB. Não recriar, não renomear.
-5. Limites de recursos do serviço: **Memory Limit 4 GB / Reservation 2 GB**.
-6. **Redeploy** (~30 s de indisponibilidade do banco).
-7. Validar:
-
-   ```sql
-   SHOW shared_buffers;              -- 2GB
-   SHOW shared_preload_libraries;    -- pg_stat_statements
-   SHOW random_page_cost;            -- 1.5
-   SELECT count(*) FROM estabelecimento;  -- contagem de amostra intacta
-   ```
-
-Rollback: voltar o campo Docker Image para `postgres:17` e Redeploy.
-
-### Instância dedicada (qualquer projeto/perfil)
-
-1. Provisionar a máquina (RAM/vCPU/disco do perfil escolhido — ver
-   [docs/perfis.md](docs/perfis.md)) com rede privada e firewall expondo o
-   5432 **apenas** à rede privada; `mkdir -p /data/pgdata` no disco local.
-2. Criar o serviço com `ghcr.io/brasildatahub/postgres:17`, montar
+1. Escolher o perfil pelo working set
+   ([como escolher](docs/perfis.md#como-escolher)). Se o host for compartilhar
+   com Redis/Meilisearch, dimensionar a máquina pela
+   [fórmula de reserva](docs/perfis.md#fórmula-de-reserva).
+2. Provisionar a máquina e **preparar o host antes de instalar**
+   ([docs/host.md](docs/host.md)): validar o disco com `fio`/`pg_test_fsync`,
+   aplicar os sysctl, desligar THP, criar `/data/pgdata` no NVMe local, e expor
+   o 5432 **apenas** à rede privada.
+3. Criar o serviço com `ghcr.io/brasildatahub/postgres:17`, montar
    `/data/pgdata` em `/var/lib/postgresql/data` e colar o bloco de envs do
    perfil ([docs/perfis.md](docs/perfis.md)) +
-   `POSTGRES_DB`/`POSTGRES_PASSWORD`/`DADOS_READ_PASSWORD`.
-3. Primeira subida em volume vazio executa o initdb (extensões + role).
-4. Validar `pg_settings` (query pronta em
+   `POSTGRES_DB`/`POSTGRES_PASSWORD`/`DADOS_READ_PASSWORD`. Ajustar o limite de
+   memória e o `shm_size` do serviço pela
+   [tabela de recursos](docs/perfis.md#recursos-do-container).
+4. Primeira subida em volume vazio executa o initdb (extensões + role).
+5. Validar `pg_file_settings` e `pg_settings` (queries prontas em
    [docs/perfis.md](docs/perfis.md#validação-de-um-perfil-implantado)).
-5. Ativar backups: snapshot do provedor + pgBackRest com
-   `PG_ARCHIVE_MODE=on` e `PG_ARCHIVE_COMMAND` (ver `backup/`).
+6. Ativar backups: snapshot do provedor + pgBackRest com `PG_ARCHIVE_MODE=on` e
+   `PG_ARCHIVE_COMMAND` (ver `backup/`).
 
 ## Validação local
 
 ```bash
-# Defaults (perfil compartilhado):
+# Defaults (= perfil dedicada-8gb):
 docker compose -f docker-compose.local.yml up --build -d
 
-# Um perfil dedicado "em miniatura" (memória reduzida, resto igual):
-PG_SHARED_BUFFERS=512MB PG_RANDOM_PAGE_COST=1.1 PG_MAX_PARALLEL_WORKERS=12 \
+# Um perfil maior "em miniatura" (memória reduzida, resto igual):
+PG_SHARED_BUFFERS=512MB PG_EFFECTIVE_CACHE_SIZE=1GB PG_MAX_WAL_SIZE=2GB \
+PG_MAX_PARALLEL_WORKERS=16 PG_AUTOVACUUM_VACUUM_COST_LIMIT=6000 \
     docker compose -f docker-compose.local.yml up --build -d
 
+# Nenhuma entrada inválida ou ignorada na conf gerada:
+docker compose -f docker-compose.local.yml exec postgres \
+    psql -U postgres -d dados_cnpj -c \
+    "SELECT sourceline, name, setting, applied, error FROM pg_file_settings
+      WHERE NOT applied OR error IS NOT NULL;"
+
+# Valores efetivos:
 docker compose -f docker-compose.local.yml exec postgres \
     psql -U postgres -d dados_cnpj \
     -c "SELECT name, setting FROM pg_settings WHERE name IN
-        ('shared_buffers','random_page_cost','shared_preload_libraries','jit','max_parallel_workers','track_io_timing');"
+        ('shared_buffers','effective_cache_size','random_page_cost',
+         'io_combine_limit','max_parallel_workers','autovacuum_vacuum_cost_limit',
+         'shared_preload_libraries','jit','track_io_timing');"
 ```
 
 > As imagens do GHCR são públicas (pull sem autenticação); o repositório

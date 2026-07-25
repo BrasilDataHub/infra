@@ -44,6 +44,10 @@ REDIS_MAXMEMORY=2gb
 Em todos os perfis, `REDIS_MAXMEMORY_POLICY` fica no default `volatile-lru`
 (ver decisões abaixo); use o bloco de apenas UM perfil por deploy.
 
+Se o Redis dividir o host com o Postgres, é o **limite de container** da tabela
+acima (não o `maxmemory`) que entra na
+[fórmula de coexistência](../postgres/docs/perfis.md#fórmula-de-reserva).
+
 **Por que o limite de container é ~2× o maxmemory:** com AOF ligado, o
 rewrite periódico faz `fork()` e as páginas copy-on-write podem
 temporariamente dobrar a memória do processo. Limite de container igual ao
