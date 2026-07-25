@@ -1,16 +1,15 @@
-# Referência de implantação. Perfil selecionado pelo env_file:
-#   PROFILE=cache-256mb | cache-512mb (default) | cache-1gb | cache-2gb
-# REDIS_MEMORY_LIMIT deve acompanhar o perfil (headroom p/ AOF rewrite):
-#   256mb→512M, 512mb→1G, 1gb→2G, 2gb→3G — ver README.
+# Referência de implantação. O perfil é definido pelas envs REDIS_MAXMEMORY
+# e REDIS_MEMORY_LIMIT — blocos por perfil (cache-256mb/512mb/1gb/2gb) e a
+# regra do headroom de memória estão documentados no README.
 
 services:
   redis:
     image: ghcr.io/brasildatahub/redis:7
     restart: unless-stopped
-    env_file:
-      - env.${PROFILE:-cache-512mb}
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?defina REDIS_PASSWORD}
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-512mb}
+      REDIS_MAXMEMORY_POLICY: ${REDIS_MAXMEMORY_POLICY:-volatile-lru}
     volumes:
       - redis-data:/data
     deploy:

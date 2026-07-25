@@ -12,13 +12,11 @@ por um fornecedor específico.
 - A imagem é **única**: o `postgresql.conf` é gerado no start do container a
   partir de envs `PG_*` (ver `generate-config.sh`). Trocar de perfil é trocar
   envs no deploy — nenhum rebuild.
-- Cada perfil é um par de artefatos versionados neste diretório:
-  - **`env.<perfil>`** — fonte de verdade dos parâmetros `PG_*`;
-  - **`docker-compose.<perfil>.yml`** — referência de deploy (volume, limite
-    de memória do container, `shm_size`, rede).
-- Em painéis como o Dokploy, cole o conteúdo do `env.<perfil>` no Environment
-  do serviço; fora deles, use o compose diretamente.
-- Tudo que não está no `env.<perfil>` usa os defaults da imagem, que são o
+- Cada perfil é um **bloco de envs documentado neste guia**, pronto para
+  copiar e colar: em painéis como o Dokploy, cole no Environment do serviço;
+  fora deles, cole no `environment:`/`.env` do seu compose (template de
+  referência em [Compose de referência](#compose-de-referência)).
+- Tudo que não está no bloco do perfil usa os defaults da imagem, que são o
   cenário compartilhado (o mais conservador).
 
 ## Tabela-resumo
@@ -79,6 +77,22 @@ sistema, sobrando um orçamento de ~4 GB para o banco. É o perfil dos
 | `jit` | off | com 2 vCPU disputados, o custo de compilar supera o ganho |
 | `max_wal_size` | 4GB | checkpoints mais frequentes, porém picos de disco menores |
 
+Bloco do perfil (**são os defaults da imagem** — colar é opcional, serve
+como registro explícito no deploy):
+
+```env
+PG_SHARED_BUFFERS=2GB
+PG_EFFECTIVE_CACHE_SIZE=4GB
+PG_WORK_MEM=32MB
+PG_MAINTENANCE_WORK_MEM=512MB
+PG_RANDOM_PAGE_COST=1.5
+PG_EFFECTIVE_IO_CONCURRENCY=100
+PG_JIT=off
+PG_MAX_WAL_SIZE=4GB
+```
+
+Recursos do container: limite de memória **4G** / reserva 2G, `shm_size` 1gb.
+
 **Benefícios.** Não derruba o host: o banco convive com os vizinhos sem OOM.
 Zero configuração (defaults).
 
@@ -131,6 +145,26 @@ frequentes.
 | `max_wal_size` | 4GB | dimensionado ao disco pequeno |
 | autovacuum scale factors | 0.1 / 0.05 | metade do default: tabelas pequenas, vacuum barato e mais frequente |
 
+```env
+PG_MAX_CONNECTIONS=100
+PG_SHARED_BUFFERS=2GB
+PG_EFFECTIVE_CACHE_SIZE=6GB
+PG_WORK_MEM=16MB
+PG_MAINTENANCE_WORK_MEM=512MB
+PG_RANDOM_PAGE_COST=1.1
+PG_EFFECTIVE_IO_CONCURRENCY=200
+PG_MAX_WORKER_PROCESSES=4
+PG_MAX_PARALLEL_WORKERS=4
+PG_MAX_PARALLEL_WORKERS_PER_GATHER=2
+PG_MAX_PARALLEL_MAINTENANCE_WORKERS=2
+PG_MAX_WAL_SIZE=4GB
+PG_MIN_WAL_SIZE=1GB
+PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.1
+PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.05
+```
+
+Recursos do container: limite de memória **7G**, `shm_size` 1gb.
+
 **Benefícios.** Latência estável (sem vizinhos); custo mínimo de produção
 dedicada. **Limitações.** `work_mem` apertado penaliza sorts/hashes grandes;
 sem espaço para picos de manutenção concorrentes.
@@ -159,6 +193,26 @@ natural de Base Escolar/Base Hospitalar quando crescerem; consolidação de
 | `maintenance_work_mem` | 1GB | REINDEX/VACUUM de tabelas médias sem derramar |
 | `max_wal_size` | 8GB | checkpoints mais espaçados nas cargas |
 | demais | = 8gb | mesma máquina-alvo de 4 vCPU |
+
+```env
+PG_MAX_CONNECTIONS=100
+PG_SHARED_BUFFERS=4GB
+PG_EFFECTIVE_CACHE_SIZE=12GB
+PG_WORK_MEM=32MB
+PG_MAINTENANCE_WORK_MEM=1GB
+PG_RANDOM_PAGE_COST=1.1
+PG_EFFECTIVE_IO_CONCURRENCY=200
+PG_MAX_WORKER_PROCESSES=4
+PG_MAX_PARALLEL_WORKERS=4
+PG_MAX_PARALLEL_WORKERS_PER_GATHER=2
+PG_MAX_PARALLEL_MAINTENANCE_WORKERS=2
+PG_MAX_WAL_SIZE=8GB
+PG_MIN_WAL_SIZE=1GB
+PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.1
+PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.05
+```
+
+Recursos do container: limite de memória **14G**, `shm_size` 2gb.
 
 **Benefícios.** Working set típico inteiro em RAM; manutenção fora do caminho
 crítico. **Limitações.** 4 vCPUs limitam o paralelismo — uma agregação pesada
@@ -190,6 +244,26 @@ MVs), ETLs mensais de porte médio.
 | paralelismo | 8 workers / 4 por gather | espelha as 8 vCPUs; agregações usam metade da máquina no máximo |
 | `max_wal_size` / `min_wal_size` | 8GB / 2GB | cargas médias sem tempestade de checkpoints |
 | autovacuum scale factors | 0.05 / 0.02 | a partir daqui as tabelas são grandes: 20% de dead tuples (default) seria GB demais entre vacuums |
+
+```env
+PG_MAX_CONNECTIONS=150
+PG_SHARED_BUFFERS=8GB
+PG_EFFECTIVE_CACHE_SIZE=24GB
+PG_WORK_MEM=48MB
+PG_MAINTENANCE_WORK_MEM=2GB
+PG_RANDOM_PAGE_COST=1.1
+PG_EFFECTIVE_IO_CONCURRENCY=200
+PG_MAX_WORKER_PROCESSES=8
+PG_MAX_PARALLEL_WORKERS=8
+PG_MAX_PARALLEL_WORKERS_PER_GATHER=4
+PG_MAX_PARALLEL_MAINTENANCE_WORKERS=2
+PG_MAX_WAL_SIZE=8GB
+PG_MIN_WAL_SIZE=2GB
+PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.05
+PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.02
+```
+
+Recursos do container: limite de memória **28G**, `shm_size` 2gb.
 
 **Benefícios.** Analítica e OLTP convivem; consolidar projetos reduz custo
 por projeto. **Limitações.** Para bases do porte do Base Empresarial
@@ -225,6 +299,27 @@ ETL mensal com janela apertada.
 | `max_wal_size` / `min_wal_size` | 16GB / 2GB | a carga mensal reescreve tabelas inteiras — checkpoints espaçados |
 | autovacuum scale factors | 0.05 / 0.02 | 72M de linhas × 20% = 14M de dead tuples seria inaceitável |
 
+```env
+PG_MAX_CONNECTIONS=200
+PG_SHARED_BUFFERS=16GB
+PG_EFFECTIVE_CACHE_SIZE=48GB
+PG_WORK_MEM=64MB
+PG_MAINTENANCE_WORK_MEM=2GB
+PG_RANDOM_PAGE_COST=1.1
+PG_EFFECTIVE_IO_CONCURRENCY=200
+PG_DEFAULT_STATISTICS_TARGET=200
+PG_MAX_WORKER_PROCESSES=16
+PG_MAX_PARALLEL_WORKERS=12
+PG_MAX_PARALLEL_WORKERS_PER_GATHER=4
+PG_MAX_PARALLEL_MAINTENANCE_WORKERS=4
+PG_MAX_WAL_SIZE=16GB
+PG_MIN_WAL_SIZE=2GB
+PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.05
+PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.02
+```
+
+Recursos do container: limite de memória **56G**, `shm_size` 4gb.
+
 **Benefícios.** Busca textual sub-segundo com cache quente; ETL e produção
 convivem. **Limitações.** Working sets muito acima de ~40 GB (ex.: todos os
 índices da base toda) ainda excedem o cache.
@@ -252,6 +347,27 @@ base inteira sem degradar a produção.
 | `effective_cache_size` | 96GB | 75% da RAM |
 | `maintenance_work_mem` | 4GB | **revisado nesta versão**: no PostgreSQL 17 o VACUUM passou a usar de fato mais de 1 GB (novo TID store) — em tabelas de dezenas de GB isso reduz passadas de index-vacuum e encurta a manutenção |
 | demais | = 64gb | a máquina-alvo tem CPU semelhante; a diferença é RAM |
+
+```env
+PG_MAX_CONNECTIONS=200
+PG_SHARED_BUFFERS=32GB
+PG_EFFECTIVE_CACHE_SIZE=96GB
+PG_WORK_MEM=64MB
+PG_MAINTENANCE_WORK_MEM=4GB
+PG_RANDOM_PAGE_COST=1.1
+PG_EFFECTIVE_IO_CONCURRENCY=200
+PG_DEFAULT_STATISTICS_TARGET=200
+PG_MAX_WORKER_PROCESSES=16
+PG_MAX_PARALLEL_WORKERS=12
+PG_MAX_PARALLEL_WORKERS_PER_GATHER=4
+PG_MAX_PARALLEL_MAINTENANCE_WORKERS=4
+PG_MAX_WAL_SIZE=16GB
+PG_MIN_WAL_SIZE=2GB
+PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.05
+PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.02
+```
+
+Recursos do container: limite de memória **112G**, `shm_size` 4gb.
 
 **Benefícios.** Latência de leitura desacoplada do disco; margem para crescer
 sem re-tuning. **Limitações.** Custo; escritas continuam limitadas por
@@ -354,6 +470,91 @@ Notas:
 - **Servidores dedicados** (Hetzner AX/EX e equivalentes) entregam NVMe
   local muito superior por custo nos perfis 64/128 GB — ao preço de
   provisionamento mais lento e sem snapshot gerenciado.
+
+## Compose de referência
+
+Os composes diferem entre perfis apenas em três pontos: bloco de envs,
+limite de memória e `shm_size`. Copie o template, cole o bloco do perfil e
+ajuste os dois valores pela tabela:
+
+| Perfil | Limite de memória | `shm_size` |
+|---|---|---|
+| dedicada-8gb | 7G | 1gb |
+| dedicada-16gb | 14G | 2gb |
+| dedicada-32gb | 28G | 2gb |
+| dedicada-64gb | 56G | 4gb |
+| dedicada-128gb | 112G | 4gb |
+
+```yaml
+# Template para máquina DEDICADA (qualquer perfil dedicada-*).
+services:
+  postgres:
+    image: ghcr.io/brasildatahub/postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?defina POSTGRES_DB}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
+      DADOS_READ_PASSWORD: ${DADOS_READ_PASSWORD:-}
+      # >>> cole aqui o bloco PG_* do perfil escolhido <<<
+    volumes:
+      # bind no SSD/NVMe LOCAL — nunca volume de rede (ver seção Armazenamento)
+      - /data/pgdata:/var/lib/postgresql/data
+    ports:
+      # exclusivamente o IP privado — nunca 0.0.0.0
+      - "${PRIVATE_IP:?defina PRIVATE_IP}:5432:5432"
+    shm_size: 4gb                # <- tabela acima
+    deploy:
+      resources:
+        limits:
+          memory: 56G            # <- tabela acima
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+```
+
+Para o cenário **compartilhado** do baseempresarial (instância atual no
+Dokploy), a diferença é o volume — o Docker volume **existente** com os
+116 GB, que nunca deve ser recriado — e os limites menores:
+
+```yaml
+# Cenário compartilhado do baseempresarial (perfil compartilhada-8gb).
+services:
+  postgres:
+    image: ghcr.io/brasildatahub/postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: dados_cnpj
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
+      DADOS_READ_PASSWORD: ${DADOS_READ_PASSWORD:-}
+      # perfil compartilhada-8gb = defaults da imagem; nenhuma env PG_* necessária
+    volumes:
+      - baseempresarial-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "15432:5432"
+    shm_size: 1gb
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dados_cnpj"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  baseempresarial-postgres-data:
+    external: true
+    name: baseempresarial-postgres-ujnn8y-data
+```
 
 ## Validação de um perfil implantado
 

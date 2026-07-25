@@ -3,7 +3,7 @@
 #
 # Imagem ÚNICA: a conf base é embutida; o dimensionamento (maxmemory,
 # política de despejo) e a senha vêm de envs no start — os perfis por
-# orçamento de memória vivem em env.cache-* (ver README).
+# orçamento de memória estão documentados no README.
 
 FROM redis:7.4-alpine
 

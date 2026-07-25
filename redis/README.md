@@ -17,14 +17,32 @@ deploy, nenhum rebuild:
 ## Perfis por orçamento de memória
 
 Os perfis são definidos pelo orçamento de memória do serviço, independentes
-de projeto e de fornecedor. Cada perfil é um arquivo `env.<perfil>`:
+de projeto e de fornecedor. Cada perfil é um bloco de envs para **copiar e
+colar** no deploy (Environment do Dokploy ou `.env` do compose):
 
 | Perfil | maxmemory | Limite de container | Quando usar |
 |---|---|---|---|
-| [`cache-256mb`](env.cache-256mb) | 256mb | **512M** | projetos pequenos (ex.: Base Escolar): cache + fila leve |
-| [`cache-512mb`](env.cache-512mb) | 512mb | **1G** | default; aplicação de produção com cache + Horizon (Base Empresarial) |
-| [`cache-1gb`](env.cache-1gb) | 1gb | **2G** | cache pesado ou várias aplicações (um database lógico por app) |
-| [`cache-2gb`](env.cache-2gb) | 2gb | **3G** | teto do catálogo; acima disso, separe instâncias por projeto |
+| `cache-256mb` | 256mb | **512M** | projetos pequenos (ex.: Base Escolar): cache + fila leve |
+| `cache-512mb` | 512mb | **1G** | default da imagem; aplicação de produção com cache + Horizon (Base Empresarial) |
+| `cache-1gb` | 1gb | **2G** | cache pesado ou várias aplicações (um database lógico por app) |
+| `cache-2gb` | 2gb | **3G** | teto do catálogo; acima disso, separe instâncias por projeto |
+
+```env
+# cache-256mb (limite de container: 512M)
+REDIS_MAXMEMORY=256mb
+
+# cache-512mb (limite de container: 1G) — default da imagem; colar é opcional
+REDIS_MAXMEMORY=512mb
+
+# cache-1gb (limite de container: 2G)
+REDIS_MAXMEMORY=1gb
+
+# cache-2gb (limite de container: 3G)
+REDIS_MAXMEMORY=2gb
+```
+
+Em todos os perfis, `REDIS_MAXMEMORY_POLICY` fica no default `volatile-lru`
+(ver decisões abaixo); use o bloco de apenas UM perfil por deploy.
 
 **Por que o limite de container é ~2× o maxmemory:** com AOF ligado, o
 rewrite periódico faz `fork()` e as páginas copy-on-write podem
@@ -54,8 +72,8 @@ memória.
 
 1. No serviço `redis` do projeto, trocar a imagem para
    `ghcr.io/brasildatahub/redis:7`.
-2. Colar o conteúdo do `env.<perfil>` escolhido no painel de Environment,
-   mais `REDIS_PASSWORD` (a mesma que a aplicação/Horizon usam).
+2. Colar o bloco do perfil escolhido (tabela acima) no painel de
+   Environment, mais `REDIS_PASSWORD` (a mesma que a aplicação/Horizon usam).
 3. Conferir volume de dados montado em `/data`.
 4. Limite de memória do serviço: o da tabela de perfis (headroom do AOF).
 5. Redeploy e validar:
@@ -70,7 +88,7 @@ memória.
 
 ```bash
 docker build -t brasildatahub-redis:7 .
-docker run -d --name redis-test --env-file env.cache-256mb \
+docker run -d --name redis-test -e REDIS_MAXMEMORY=256mb \
     -e REDIS_PASSWORD=test brasildatahub-redis:7
 docker exec redis-test redis-cli -a test CONFIG GET maxmemory  # 268435456
 ```

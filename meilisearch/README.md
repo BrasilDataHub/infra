@@ -3,7 +3,8 @@
 Imagem `ghcr.io/brasildatahub/meilisearch` — wrapper **pinado** de
 `getmeili/meilisearch:v1.34` (mesma minor da produção) para manter todos os
 serviços de infra sob o namespace da org. Toda a configuração do Meilisearch
-é por variável de ambiente, versionada aqui em perfis (`env.*`).
+é por variável de ambiente; os perfis são blocos de env documentados abaixo,
+prontos para copiar e colar no deploy.
 
 ## Perfis por orçamento de memória
 
@@ -12,13 +13,40 @@ serviço — independentes de projeto e de fornecedor:
 
 | Perfil | MAX_INDEXING_MEMORY | Threads | Limite de container | Quando usar |
 |---|---|---|---|---|
-| [`busca-512mb`](env.busca-512mb) | 256MiB | 1 | 512M | projetos pequenos (ex.: Base Escolar, ~170 mil docs); índices de MB a centenas de MB |
-| [`busca-1gb`](env.busca-1gb) | 1GiB | 1 | 1G | default; host compartilhado ou índices de poucos GB (instância atual do Base Empresarial) |
-| [`busca-4gb`](env.busca-4gb) | 2GiB | 2 | 4G na indexação; ~2G em regime | índices médios: milhões de documentos |
-| [`busca-16gb`](env.busca-16gb) | 8GiB | 4 | ~16G durante indexação | índices grandes: dezenas de milhões de docs (Base Empresarial pós-migração: 72M establishments + 26M partners, 15–25 GB) |
+| `busca-512mb` | 256MiB | 1 | 512M | projetos pequenos (ex.: Base Escolar, ~170 mil docs); índices de MB a centenas de MB |
+| `busca-1gb` | 1GiB | 1 | 1G | default; host compartilhado ou índices de poucos GB (instância atual do Base Empresarial) |
+| `busca-4gb` | 2GiB | 2 | 4G na indexação; ~2G em regime | índices médios: milhões de documentos |
+| `busca-16gb` | 8GiB | 4 | ~16G durante indexação | índices grandes: dezenas de milhões de docs (Base Empresarial pós-migração: 72M establishments + 26M partners, 15–25 GB) |
 
-Nomes antigos (referenciados em documentos do baseempresarial):
-`env.atual` → `busca-1gb`; `env.pos-migracao` → `busca-16gb`.
+Blocos para colar no deploy (as demais envs — `MEILI_ENV=production`,
+`MEILI_NO_ANALYTICS`, `MEILI_DB_PATH` — já têm default no compose de
+referência; `MEILI_MASTER_KEY` é secreta, nunca commitada):
+
+```env
+# busca-512mb (limite de container: 512M)
+MEILI_MAX_INDEXING_MEMORY=256MiB
+MEILI_MAX_INDEXING_THREADS=1
+MEILI_HTTP_PAYLOAD_SIZE_LIMIT=50MB
+
+# busca-1gb (limite de container: 1G) — default do compose; colar é opcional
+MEILI_MAX_INDEXING_MEMORY=1GiB
+MEILI_MAX_INDEXING_THREADS=1
+MEILI_HTTP_PAYLOAD_SIZE_LIMIT=100MB
+
+# busca-4gb (limite de container: 4G na indexação; ~2G em regime)
+MEILI_MAX_INDEXING_MEMORY=2GiB
+MEILI_MAX_INDEXING_THREADS=2
+MEILI_HTTP_PAYLOAD_SIZE_LIMIT=100MB
+
+# busca-16gb (limite de container: ~16G durante indexação)
+MEILI_MAX_INDEXING_MEMORY=8GiB
+MEILI_MAX_INDEXING_THREADS=4
+MEILI_HTTP_PAYLOAD_SIZE_LIMIT=250MB
+```
+
+Use o bloco de apenas UM perfil por deploy. Nomes antigos referenciados em
+documentos do baseempresarial: `atual` → `busca-1gb`; `pos-migracao` →
+`busca-16gb`.
 
 **Regra de dimensionamento** (vale para qualquer perfil):
 `MEILI_MAX_INDEXING_MEMORY` ≈ metade da RAM disponível para o serviço;
@@ -39,8 +67,9 @@ com Postgres e Redis — sentença de OOM. Todo perfil limita explicitamente.
 
 1. No serviço `meilisearch` do projeto: fixar a imagem
    `ghcr.io/brasildatahub/meilisearch:1.34`.
-2. Aplicar as envs do `env.<perfil>` escolhido (colar no painel de
-   Environment), mais `MEILI_MASTER_KEY` (secreta — nunca commitada).
+2. Colar o bloco do perfil escolhido (acima) no painel de Environment,
+   mais `MEILI_MASTER_KEY` (secreta — nunca commitada) e
+   `MEILI_ENV=production`.
 3. Conferir o volume de dados montado em `/meili_data`.
 4. Limite de memória do serviço: o da tabela de perfis.
 5. Redeploy e validar:
@@ -52,7 +81,8 @@ com Postgres e Redis — sentença de OOM. Todo perfil limita explicitamente.
 
 ### Indexação grande (ex.: Base Empresarial — tarefa F10)
 
-1. Aplicar `busca-16gb` ajustado à máquina (regra de dimensionamento acima).
+1. Aplicar o bloco `busca-16gb` ajustado à máquina (regra de dimensionamento
+   acima).
 2. Subir o limite de memória do serviço para ~2× o
    `MEILI_MAX_INDEXING_MEMORY` enquanto a reindexação roda.
 3. Rodar a reindexação blue/green do `search-indexer-service` (AG15).
@@ -64,7 +94,7 @@ com Postgres e Redis — sentença de OOM. Todo perfil limita explicitamente.
 # antes da primeira publicação na CI, builde o wrapper localmente:
 docker build -t ghcr.io/brasildatahub/meilisearch:1.34 .
 
-MEILI_MASTER_KEY=local-test PROFILE=busca-512mb docker compose up -d
+MEILI_MASTER_KEY=local-test MEILI_MAX_INDEXING_MEMORY=256MiB docker compose up -d
 curl -s http://localhost:7700/health
 ```
 

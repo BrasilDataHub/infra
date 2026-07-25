@@ -1,8 +1,8 @@
 # Exemplo de implantação — imagem única, tuning por envs PG_*.
 # Os perfis por máquina-alvo (compartilhada-8gb, dedicada-8gb/16gb/32gb/
-# 64gb/128gb) vivem em env.<perfil> (guia: docs/perfis.md); copie o conteúdo
-# do perfil para o painel de Environment do Dokploy (ou use diretamente o
-# docker-compose.<perfil>.yml correspondente).
+# 64gb/128gb) estão documentados em docs/perfis.md como blocos de env para
+# copiar e colar (no Environment do Dokploy ou neste compose); lá também
+# estão os templates de compose por cenário.
 
 services:
   postgres:

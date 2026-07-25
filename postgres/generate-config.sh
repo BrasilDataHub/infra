@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Gera /etc/postgresql/postgresql.conf a partir de variáveis de ambiente
 # PG_* com defaults seguros para um host compartilhado pequeno (~4 GB para
-# o Postgres). Perfis por máquina em env.<perfil> e docs/perfis.md.
+# o Postgres). Perfis por máquina documentados em docs/perfis.md.
 set -euo pipefail
 
 CONF=/etc/postgresql/postgresql.conf

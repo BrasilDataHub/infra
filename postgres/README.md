@@ -21,21 +21,23 @@ higiene do projeto (ex.: `cnpj-pipeline/sql/prod_hygiene.sql`).
 
 Os perfis são definidos por **características da máquina** (RAM, vCPUs,
 tipo de disco), independentes de fornecedor, e servem a todos os projetos
-da org. Cada perfil = `env.<perfil>` (parâmetros) +
-`docker-compose.<perfil>.yml` (referência de deploy).
+da org. Cada perfil é um **bloco de envs documentado no guia**, pronto para
+copiar e colar no deploy (Dokploy Environment ou compose) — sem arquivos
+extras neste repositório.
 
 | Perfil | Máquina-alvo | Uso típico |
 |---|---|---|
-| [`compartilhada-8gb`](env.compartilhada-8gb) | host de 8 GB **dividido** com app/cache (defaults da imagem) | início de projeto num host único |
-| [`dedicada-8gb`](env.dedicada-8gb) | 8 GB / 2–4 vCPU / SSD, só Postgres | produção pequena (ex.: Base Escolar), staging |
-| [`dedicada-16gb`](env.dedicada-16gb) | 16 GB / 4 vCPU / SSD | bases de dezenas de GB |
-| [`dedicada-32gb`](env.dedicada-32gb) | 32 GB / 8 vCPU / SSD | centenas de GB; consolidação multi-projeto |
-| [`dedicada-64gb`](env.dedicada-64gb) | 64 GB / 16 vCPU / NVMe local | base grande com busca textual (Base Empresarial) |
-| [`dedicada-128gb`](env.dedicada-128gb) | 128 GB / 16–24 vCPU / NVMe local | working set inteiro em RAM |
+| `compartilhada-8gb` | host de 8 GB **dividido** com app/cache (defaults da imagem) | início de projeto num host único |
+| `dedicada-8gb` | 8 GB / 2–4 vCPU / SSD, só Postgres | produção pequena (ex.: Base Escolar), staging |
+| `dedicada-16gb` | 16 GB / 4 vCPU / SSD | bases de dezenas de GB |
+| `dedicada-32gb` | 32 GB / 8 vCPU / SSD | centenas de GB; consolidação multi-projeto |
+| `dedicada-64gb` | 64 GB / 16 vCPU / NVMe local | base grande com busca textual (Base Empresarial) |
+| `dedicada-128gb` | 128 GB / 16–24 vCPU / NVMe local | working set inteiro em RAM |
 
-**Guia completo — objetivo, cenários, justificativa de cada parâmetro,
-limitações, quando migrar de perfil e máquinas equivalentes por provedor
-(Hetzner, Netcup, DigitalOcean, Linode etc.): [docs/perfis.md](docs/perfis.md).**
+**Guia completo — blocos de env de cada perfil (copy-paste), objetivo,
+cenários, justificativa de cada parâmetro, limitações, quando migrar,
+templates de compose e máquinas equivalentes por provedor (Hetzner, Netcup,
+DigitalOcean, Linode etc.): [docs/perfis.md](docs/perfis.md).**
 
 ## Variáveis de tuning
 
@@ -97,8 +99,9 @@ Rollback: voltar o campo Docker Image para `postgres:17` e Redeploy.
    [docs/perfis.md](docs/perfis.md)) com rede privada e firewall expondo o
    5432 **apenas** à rede privada; `mkdir -p /data/pgdata` no disco local.
 2. Criar o serviço com `ghcr.io/brasildatahub/postgres:17`, montar
-   `/data/pgdata` em `/var/lib/postgresql/data` e colar o conteúdo do
-   `env.<perfil>` + `POSTGRES_DB`/`POSTGRES_PASSWORD`/`DADOS_READ_PASSWORD`.
+   `/data/pgdata` em `/var/lib/postgresql/data` e colar o bloco de envs do
+   perfil ([docs/perfis.md](docs/perfis.md)) +
+   `POSTGRES_DB`/`POSTGRES_PASSWORD`/`DADOS_READ_PASSWORD`.
 3. Primeira subida em volume vazio executa o initdb (extensões + role).
 4. Validar `pg_settings` (query pronta em
    [docs/perfis.md](docs/perfis.md#validação-de-um-perfil-implantado)).
