@@ -1,30 +1,36 @@
 # Exemplo de implantação — imagem única, tuning por envs PG_*.
-# Os perfis por máquina-alvo (compartilhada-8gb, dedicada-8gb/16gb/32gb/
-# 64gb/128gb) estão documentados em docs/perfis.md como blocos de env para
-# copiar e colar (no Environment do Dokploy ou neste compose); lá também
-# estão os templates de compose por cenário.
+# Os perfis por máquina-alvo (dedicada-8gb/16gb/32gb/64gb/128gb; todos assumem
+# máquina dedicada com NVMe local) estão em docs/perfis.md como blocos de env
+# para copiar e colar (no Environment do Dokploy ou no .env deste compose);
+# lá também estão o template de compose e a fórmula de coexistência com
+# Redis/Meilisearch no mesmo host. Prepare o host antes: docs/host.md.
 
 services:
   postgres:
     image: ghcr.io/brasildatahub/postgres:17
     restart: unless-stopped
+    # Cole o bloco PG_* do perfil escolhido num .env ao lado deste arquivo.
+    # Toda env PG_* definida ali chega ao container; o que não estiver
+    # definido usa o default da imagem (= perfil dedicada-8gb).
+    env_file:
+      - path: .env
+        required: false
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?defina POSTGRES_DB}
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
       DADOS_READ_PASSWORD: ${DADOS_READ_PASSWORD:-}
-      # Tuning (defaults = host compartilhado pequeno; ver README):
-      PG_SHARED_BUFFERS: ${PG_SHARED_BUFFERS:-2GB}
-      PG_EFFECTIVE_CACHE_SIZE: ${PG_EFFECTIVE_CACHE_SIZE:-4GB}
-      PG_WORK_MEM: ${PG_WORK_MEM:-32MB}
-      PG_RANDOM_PAGE_COST: ${PG_RANDOM_PAGE_COST:-1.5}
     volumes:
+      # em produção, bind mount no NVMe LOCAL (ex.: /data/pgdata) —
+      # nunca volume de rede (ver docs/perfis.md, Premissas)
       - pgdata:/var/lib/postgresql/data
+    # limite e shm_size da tabela de recursos do container (docs/perfis.md);
+    # os defaults abaixo são os do perfil dedicada-8gb
     shm_size: ${PG_SHM_SIZE:-1gb}
     deploy:
       resources:
         limits:
-          memory: ${PG_MEMORY_LIMIT:-4G}
+          memory: ${PG_MEMORY_LIMIT:-7G}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d $${POSTGRES_DB}"]
       interval: 10s

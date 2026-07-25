@@ -1,34 +1,90 @@
-# Validação LOCAL (volume descartável). Os cenários dedicados usam
-# shared_buffers de 16/32 GB — inviáveis numa máquina de desenvolvimento —,
-# então valide-os sobrescrevendo só a memória e conferindo o restante em
-# pg_settings.
+# Validação LOCAL (volume descartável). Os perfis maiores usam shared_buffers
+# de 24/48 GB — inviáveis numa máquina de desenvolvimento —, então valide-os
+# sobrescrevendo só a memória e conferindo o restante em pg_settings.
 #
-#   docker compose -f docker-compose.local.yml up --build -d          # defaults
-#   PG_SHARED_BUFFERS=512MB PG_RANDOM_PAGE_COST=1.1 PG_MAX_PARALLEL_WORKERS=12 \
-#       docker compose -f docker-compose.local.yml up --build -d     # "dedicada" em miniatura
+#   docker compose -f docker-compose.local.yml up --build -d      # = dedicada-8gb
+#   PG_SHARED_BUFFERS=512MB PG_EFFECTIVE_CACHE_SIZE=1GB PG_MAX_WAL_SIZE=2GB \
+#   PG_MAX_PARALLEL_WORKERS=16 PG_AUTOVACUUM_VACUUM_COST_LIMIT=6000 \
+#       docker compose -f docker-compose.local.yml up --build -d  # "64gb" em miniatura
 #
 # Verificação:
 #   docker compose -f docker-compose.local.yml exec postgres \
-#       psql -U postgres -d dados_cnpj -c "SHOW shared_buffers; SHOW random_page_cost;"
+#       psql -U postgres -d dados_cnpj -c "SELECT sourceline, name, error
+#         FROM pg_file_settings WHERE NOT applied OR error IS NOT NULL;"
+#
+# A lista de envs abaixo (nomes sem valor, repassados do shell quando
+# definidos) precisa cobrir TODAS as PG_* de generate-config.sh — senão o
+# parâmetro fica impossível de validar localmente. Conferência:
+#   comm -23 <(grep -oE '\$\{PG_[A-Z0-9_]+' generate-config.sh | sed 's/^\${//' | sort -u) \
+#            <(grep -oE 'PG_[A-Z0-9_]+' docker-compose.local.yml | sort -u)
 
 services:
   postgres:
     build: .
     environment:
-      POSTGRES_DB: dados_cnpj
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: local-test
-      DADOS_READ_PASSWORD: local-test
-      PG_SHARED_BUFFERS: ${PG_SHARED_BUFFERS:-}
-      PG_EFFECTIVE_CACHE_SIZE: ${PG_EFFECTIVE_CACHE_SIZE:-}
-      PG_WORK_MEM: ${PG_WORK_MEM:-}
-      PG_RANDOM_PAGE_COST: ${PG_RANDOM_PAGE_COST:-}
-      PG_MAX_PARALLEL_WORKERS: ${PG_MAX_PARALLEL_WORKERS:-}
-      PG_MAX_PARALLEL_WORKERS_PER_GATHER: ${PG_MAX_PARALLEL_WORKERS_PER_GATHER:-}
-      PG_AUTOVACUUM_VACUUM_SCALE_FACTOR: ${PG_AUTOVACUUM_VACUUM_SCALE_FACTOR:-}
-      PG_DEFAULT_STATISTICS_TARGET: ${PG_DEFAULT_STATISTICS_TARGET:-}
+      - POSTGRES_DB=dados_cnpj
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=local-test
+      - DADOS_READ_PASSWORD=local-test
+      # conexões
+      - PG_MAX_CONNECTIONS
+      # memória
+      - PG_SHARED_BUFFERS
+      - PG_EFFECTIVE_CACHE_SIZE
+      - PG_WORK_MEM
+      - PG_HASH_MEM_MULTIPLIER
+      - PG_MAINTENANCE_WORK_MEM
+      - PG_AUTOVACUUM_WORK_MEM
+      - PG_HUGE_PAGES
+      - PG_MAX_LOCKS_PER_TRANSACTION
+      # planner e IO
+      - PG_RANDOM_PAGE_COST
+      - PG_EFFECTIVE_IO_CONCURRENCY
+      - PG_MAINTENANCE_IO_CONCURRENCY
+      - PG_IO_COMBINE_LIMIT
+      - PG_DEFAULT_STATISTICS_TARGET
+      - PG_JIT
+      # paralelismo
+      - PG_MAX_WORKER_PROCESSES
+      - PG_MAX_PARALLEL_WORKERS
+      - PG_MAX_PARALLEL_WORKERS_PER_GATHER
+      - PG_MAX_PARALLEL_MAINTENANCE_WORKERS
+      - PG_PARALLEL_SETUP_COST
+      - PG_PARALLEL_TUPLE_COST
+      # WAL e checkpoints
+      - PG_MAX_WAL_SIZE
+      - PG_MIN_WAL_SIZE
+      - PG_WAL_COMPRESSION
+      - PG_WAL_BUFFERS
+      - PG_CHECKPOINT_TIMEOUT
+      - PG_CHECKPOINT_COMPLETION_TARGET
+      - PG_SYNCHRONOUS_COMMIT
+      # backup físico
+      - PG_ARCHIVE_MODE
+      - PG_ARCHIVE_COMMAND
+      # autovacuum
+      - PG_AUTOVACUUM_MAX_WORKERS
+      - PG_AUTOVACUUM_NAPTIME
+      - PG_AUTOVACUUM_VACUUM_SCALE_FACTOR
+      - PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR
+      - PG_AUTOVACUUM_VACUUM_INSERT_SCALE_FACTOR
+      - PG_AUTOVACUUM_VACUUM_COST_DELAY
+      - PG_AUTOVACUUM_VACUUM_COST_LIMIT
+      # busca textual
+      - PG_GIN_PENDING_LIST_LIMIT
+      # timeouts
+      - PG_STATEMENT_TIMEOUT
+      - PG_IDLE_IN_TRANSACTION_SESSION_TIMEOUT
+      # diagnóstico
+      - PG_SHARED_PRELOAD_LIBRARIES
+      - PG_STAT_STATEMENTS_MAX
+      - PG_TRACK_IO_TIMING
+      - PG_LOG_MIN_DURATION_STATEMENT
+      - PG_LOG_TEMP_FILES
+      - PG_LOG_LOCK_WAITS
+      - PG_LOG_AUTOVACUUM_MIN_DURATION
     ports:
-      - "55433:5432"
+      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d dados_cnpj"]
       interval: 5s

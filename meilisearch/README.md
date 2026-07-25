@@ -14,7 +14,7 @@ serviço — independentes de projeto e de fornecedor:
 | Perfil | MAX_INDEXING_MEMORY | Threads | Limite de container | Quando usar |
 |---|---|---|---|---|
 | `busca-512mb` | 256MiB | 1 | 512M | projetos pequenos (ex.: Base Escolar, ~170 mil docs); índices de MB a centenas de MB |
-| `busca-1gb` | 1GiB | 1 | 1G | default; host compartilhado ou índices de poucos GB (instância atual do Base Empresarial) |
+| `busca-1gb` | 1GiB | 1 | 1G | default; índices de poucos GB |
 | `busca-4gb` | 2GiB | 2 | 4G na indexação; ~2G em regime | índices médios: milhões de documentos |
 | `busca-16gb` | 8GiB | 4 | ~16G durante indexação | índices grandes: dezenas de milhões de docs (Base Empresarial pós-migração: 72M establishments + 26M partners, 15–25 GB) |
 
@@ -54,9 +54,16 @@ limite de container ≈ 2× esse valor **durante a indexação** (o Meili usa
 memória além do teto de indexação para o próprio processo e mmap do índice).
 Em regime (sem indexar), o limite pode cair para ~1,5× o índice quente.
 
+> **A conferir no `busca-16gb`:** a tabela declara ~16G de limite, mas a regra
+> de regime (1,5× o índice quente) daria mais que isso se o índice quente for
+> próximo dos 15–25 GB totais. Os dois números precisam ser reconciliados com
+> medição real do índice em produção. Até lá, a
+> [coexistência com o Postgres](../postgres/docs/perfis.md#combinações-prováveis)
+> usa os 16G declarados.
+
 **Quando migrar de perfil:** indexação abortando por OOM ou demorando por
 swap/backpressure; ou o índice crescendo além do que o limite de regime
-comporta. Migrar de perfil é trocar o `env.*` e o limite de memória no
+comporta. Migrar de perfil é trocar o bloco de envs e o limite de memória no
 deploy — nenhum rebuild.
 
 **Motivação histórica do teto:** a config de produção do baseempresarial
@@ -79,14 +86,20 @@ com Postgres e Redis — sentença de OOM. Todo perfil limita explicitamente.
    curl -s -H "Authorization: Bearer $MEILI_MASTER_KEY" http://localhost:7700/stats
    ```
 
-### Indexação grande (ex.: Base Empresarial — tarefa F10)
+### Indexação grande (ex.: Base Empresarial)
 
 1. Aplicar o bloco `busca-16gb` ajustado à máquina (regra de dimensionamento
    acima).
 2. Subir o limite de memória do serviço para ~2× o
    `MEILI_MAX_INDEXING_MEMORY` enquanto a reindexação roda.
-3. Rodar a reindexação blue/green do `search-indexer-service` (AG15).
+3. Rodar a reindexação blue/green do indexador do projeto.
 4. Após estabilizar, reduzir o limite para ~1,5× o tamanho do índice quente.
+
+> Se o Meilisearch dividir o host com o Postgres, a indexação despeja o page
+> cache do banco — dimensione pela
+> [fórmula de coexistência](../postgres/docs/perfis.md#fórmula-de-reserva) e,
+> em bases grandes com busca textual, prefira separar os dois em máquinas
+> distintas.
 
 ## Validação local
 
