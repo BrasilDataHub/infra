@@ -1,4 +1,4 @@
-# meilisearch — imagem Meilisearch da organização
+# meilisearch
 
 Imagem `ghcr.io/brasildatahub/meilisearch` — wrapper **pinado** de
 `getmeili/meilisearch:v1.34` (mesma minor da produção) para manter todos os

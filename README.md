@@ -1,9 +1,9 @@
-# infra — infraestrutura de serviços da BrasilDataHub
+# Infraestrutura de serviços da BrasilDataHub
 
 Configuração **versionada** dos serviços de dados da organização
 [BrasilDataHub](https://github.com/BrasilDataHub). As imagens são genéricas
 por desenho: qualquer projeto da org (baseempresarial, baseescolar,
-basehospitalar, ...) consome as mesmas imagens; o que é específico de cada
+basehospitalar) consome as mesmas imagens; o que é específico de cada
 projeto (envs, volumes, limites) vive no deploy.
 
 ## Serviços

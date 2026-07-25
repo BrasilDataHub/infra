@@ -1,4 +1,4 @@
-# postgres — imagem PostgreSQL da organização
+# postgres
 
 `ghcr.io/brasildatahub/postgres:17` — o PostgreSQL padrão dos projetos
 BrasilDataHub (baseempresarial, baseescolar, basehospitalar, ...).
@@ -50,15 +50,6 @@ pages, filesystem): [docs/host.md](docs/host.md).
 
 Os valores por perfil estão em [docs/perfis.md](docs/perfis.md); o default de
 cada env abaixo é o valor do perfil `dedicada-8gb`.
-
-> **Mudança de defaults.** Os defaults deixaram de representar um host
-> compartilhado e passaram a ser o menor perfil dedicado em NVMe:
-> `PG_EFFECTIVE_CACHE_SIZE` 4GB→6GB, `PG_WORK_MEM` 32MB→16MB,
-> `PG_RANDOM_PAGE_COST` 1.5→1.1, `PG_EFFECTIVE_IO_CONCURRENCY` 100→200,
-> `PG_MAX_WORKER_PROCESSES`/`PG_MAX_PARALLEL_WORKERS` 8→4, `PG_MAX_WAL_SIZE`
-> 4GB→8GB, `PG_MIN_WAL_SIZE` 512MB→2GB, autovacuum 0.2/0.1→0.1/0.05.
-> Deploys que dependiam dos defaults antigos precisam pinar os valores no
-> Environment antes do próximo redeploy, ou fixar a tag `:17.10`.
 
 ### Conexões
 

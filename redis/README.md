@@ -1,4 +1,4 @@
-# redis — imagem Redis da organização
+# redis
 
 Imagem `ghcr.io/brasildatahub/redis` (base `redis:7.4-alpine`) — o Redis
 padrão dos projetos BrasilDataHub. Papel: cache de aplicação Laravel e fila
