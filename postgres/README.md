@@ -24,8 +24,8 @@ existentes, use o script de higiene do repositório de ETL do projeto.
 
 Os perfis são definidos por **características da máquina** (RAM, vCPUs),
 independentes de fornecedor, e servem a todos os projetos da org. Cada perfil é
-um **bloco de envs documentado no guia**, pronto para copiar e colar no `.env`
-do compose — sem arquivos extras neste repositório.
+um **arquivo `.env` versionado** em [`profiles/`](profiles/), pronto para copiar
+para o lado do compose — a mesma fonte que o script de setup usa.
 
 | Perfil | Orçamento de RAM do Postgres | vCPU | Uso típico |
 |---|---|---|---|
@@ -40,15 +40,16 @@ número no nome é o **orçamento de RAM do Postgres**, não a RAM do host: se o
 host também rodar Redis ou Meilisearch, some os limites de container deles
 ([fórmula](docs/perfis.md#fórmula-de-reserva)).
 
-**Guia completo — blocos de env de cada perfil (copy-paste), carga-alvo,
+**Guia completo — arquivo de cada perfil, carga-alvo,
 justificativa de cada parâmetro, coexistência com outros serviços, limitações,
 quando migrar e máquinas equivalentes por provedor:
 [docs/perfis.md](docs/perfis.md).** Preparação do host (disco, kernel, huge
 pages, filesystem): [docs/host.md](docs/host.md).
 
-> ⚠️ **Um perfil não é só o bloco de envs.** O limite de memória e o `/dev/shm`
-> são recursos do container, não variáveis — e é aí que um perfil se perde pela
-> metade. A receita única (Compose ou painel) está em
+> ⚠️ **Um perfil não é só tuning do Postgres.** Ele inclui o limite de memória e
+> o `/dev/shm`, que são recursos do container — por isso os dois vêm junto no
+> arquivo do perfil (`PG_MEMORY_LIMIT` e `PG_SHM_BYTES`), e é aí que um perfil
+> costuma se perder pela metade. A receita única (Compose ou painel) está em
 > **[docs/deploy.md](docs/deploy.md)**; quando algo der errado,
 > **[docs/troubleshooting.md](docs/troubleshooting.md)**.
 

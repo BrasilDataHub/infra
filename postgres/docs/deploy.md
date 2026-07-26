@@ -39,36 +39,32 @@ não muda com a plataforma.
 
 ## A receita
 
-Copie [`docker-compose.yml`](../docker-compose.yml) para o host e crie um
-`.env` ao lado, com o bloco do perfil e os dois recursos do container:
-
-```env
-POSTGRES_DB=dados_cnpj
-POSTGRES_PASSWORD=...
-DADOS_READ_PASSWORD=...
-
-PG_SHM_BYTES=2147483648          # /dev/shm do perfil (tabela abaixo)
-PG_MEMORY_LIMIT=14G              # limite de memória do perfil
-
-# opcionais
-# BIND_IP=10.0.0.5               # publica só nesta interface (default: 0.0.0.0)
-# POSTGRES_PORT=5432
-# PG_VOLUME=bdh_pg_data          # nome do volume nomeado
-
-# >>> bloco PG_* do perfil (perfis.md) <<<
-PG_SHARED_BUFFERS=5GB
-PG_WORK_MEM=32MB
-...
-```
-
-| | 8gb | 16gb | 32gb | 64gb | 128gb |
-|---|---|---|---|---|---|
-| `PG_MEMORY_LIMIT` | 7G | 14G | 28G | 56G | 120G |
-| `PG_SHM_BYTES` | 1073741824 | 2147483648 | 4294967296 | 4294967296 | 8589934592 |
+Dois arquivos, ambos vindos do repositório: o compose e o `.env` do perfil
+escolhido ([catálogo](perfis.md#os-perfis)).
 
 ```bash
+BASE=https://raw.githubusercontent.com/BrasilDataHub/infra/main/postgres
+mkdir -p /srv/postgres && cd /srv/postgres
+
+curl -fsSL "$BASE/docker-compose.yml" -o docker-compose.yml
+curl -fsSL "$BASE/profiles/dedicada-16gb.env" -o .env    # <- perfil escolhido
+
+# o perfil já traz o tuning PG_*, o PG_MEMORY_LIMIT e o PG_SHM_BYTES;
+# falta o que só este deploy sabe:
+cat >> .env <<'EOF'
+POSTGRES_DB=dados_cnpj
+POSTGRES_PASSWORD=troque-esta-senha
+DADOS_READ_PASSWORD=troque-esta-senha
+# opcionais: BIND_IP (default 0.0.0.0), POSTGRES_PORT, PG_VOLUME
+EOF
+chmod 600 .env
+
 docker compose up -d
 ```
+
+Os arquivos de perfil ficam em [`postgres/profiles/`](../profiles/) e são **os
+mesmos** que o [`infra-setup.sh`](../../README.md#setup-automatizado-de-vps)
+baixa — não há uma segunda cópia dos valores em lugar nenhum.
 
 O `restart: unless-stopped` cobre o boot do host desde que o Docker suba com a
 máquina (`systemctl enable docker`).

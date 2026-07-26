@@ -23,9 +23,11 @@ específico.
 
 A imagem é **única**: o `postgresql.conf` é gerado no start do container a
 partir de envs `PG_*` (ver `generate-config.sh`). Trocar de perfil é trocar
-envs no deploy — nenhum rebuild. Cada perfil é um **bloco de envs documentado
-neste guia**, pronto para colar no `.env` do compose de produção
-([receita](deploy.md#a-receita)).
+envs no deploy — nenhum rebuild. Cada perfil é um **arquivo `.env` versionado**
+em [`postgres/profiles/`](../profiles/), que você copia para o lado do compose
+([receita](deploy.md#a-receita)). O mesmo arquivo é o que o
+[`infra-setup.sh`](../../README.md#setup-automatizado-de-vps) baixa — este guia
+explica os valores, não os duplica.
 
 Quatro premissas valem para **todos** os perfis, sem exceção:
 
@@ -253,45 +255,12 @@ para picos de manutenção concorrentes.
 abaixo de ~99%), ou sorts derramarem para disco com frequência (`log_temp_files`
 já registra isso no log).
 
-<details>
-<summary><b>Bloco de envs — copiar inteiro</b> (são os defaults da imagem; colar é opcional, serve como registro explícito no deploy)</summary>
+**Arquivo do perfil:** [`profiles/dedicada-8gb.env`](../profiles/dedicada-8gb.env) (são os defaults da imagem; o arquivo serve como registro explícito no deploy) — traz o bloco `PG_*` e também o limite de memória e o `/dev/shm` do container.
 
-```env
-# ===== perfil dedicada-8gb =====
-PG_MAX_CONNECTIONS=100
-# memória
-PG_SHARED_BUFFERS=2GB
-PG_EFFECTIVE_CACHE_SIZE=6GB
-PG_WORK_MEM=16MB
-PG_HASH_MEM_MULTIPLIER=2.0
-PG_MAINTENANCE_WORK_MEM=512MB
-PG_AUTOVACUUM_WORK_MEM=-1
-# planner e IO
-PG_EFFECTIVE_IO_CONCURRENCY=200
-PG_MAINTENANCE_IO_CONCURRENCY=200
-PG_DEFAULT_STATISTICS_TARGET=100
-# paralelismo
-PG_MAX_WORKER_PROCESSES=4
-PG_MAX_PARALLEL_WORKERS=4
-PG_MAX_PARALLEL_WORKERS_PER_GATHER=2
-PG_MAX_PARALLEL_MAINTENANCE_WORKERS=2
-PG_PARALLEL_SETUP_COST=1000
-PG_PARALLEL_TUPLE_COST=0.1
-# WAL e checkpoints
-PG_MAX_WAL_SIZE=8GB
-PG_MIN_WAL_SIZE=2GB
-PG_WAL_BUFFERS=32MB
-# autovacuum
-PG_AUTOVACUUM_MAX_WORKERS=3
-PG_AUTOVACUUM_NAPTIME=30s
-PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.1
-PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.05
-PG_AUTOVACUUM_VACUUM_INSERT_SCALE_FACTOR=0.1
-PG_AUTOVACUUM_VACUUM_COST_LIMIT=1000
-# diagnóstico
-PG_STAT_STATEMENTS_MAX=5000
+```bash
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/postgres/profiles/dedicada-8gb.env -o .env
+# depois acrescente POSTGRES_DB, POSTGRES_PASSWORD e DADOS_READ_PASSWORD
 ```
-</details>
 
 ### `dedicada-16gb` — o ponto de entrada confortável
 
@@ -317,45 +286,12 @@ tráfego.
 **Migrar para 32 GB quando:** consultas analíticas recorrentes disputarem CPU
 com o OLTP, ou o working set passar de ~10 GB.
 
-<details>
-<summary><b>Bloco de envs — copiar inteiro</b></summary>
+**Arquivo do perfil:** [`profiles/dedicada-16gb.env`](../profiles/dedicada-16gb.env) — traz o bloco `PG_*` e também o limite de memória e o `/dev/shm` do container.
 
-```env
-# ===== perfil dedicada-16gb =====
-PG_MAX_CONNECTIONS=100
-# memória
-PG_SHARED_BUFFERS=5GB
-PG_EFFECTIVE_CACHE_SIZE=12GB
-PG_WORK_MEM=32MB
-PG_HASH_MEM_MULTIPLIER=2.0
-PG_MAINTENANCE_WORK_MEM=1GB
-PG_AUTOVACUUM_WORK_MEM=-1
-# planner e IO
-PG_EFFECTIVE_IO_CONCURRENCY=200
-PG_MAINTENANCE_IO_CONCURRENCY=200
-PG_DEFAULT_STATISTICS_TARGET=100
-# paralelismo
-PG_MAX_WORKER_PROCESSES=8
-PG_MAX_PARALLEL_WORKERS=8
-PG_MAX_PARALLEL_WORKERS_PER_GATHER=4
-PG_MAX_PARALLEL_MAINTENANCE_WORKERS=2
-PG_PARALLEL_SETUP_COST=1000
-PG_PARALLEL_TUPLE_COST=0.1
-# WAL e checkpoints
-PG_MAX_WAL_SIZE=16GB
-PG_MIN_WAL_SIZE=4GB
-PG_WAL_BUFFERS=32MB
-# autovacuum
-PG_AUTOVACUUM_MAX_WORKERS=4
-PG_AUTOVACUUM_NAPTIME=30s
-PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.1
-PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.05
-PG_AUTOVACUUM_VACUUM_INSERT_SCALE_FACTOR=0.1
-PG_AUTOVACUUM_VACUUM_COST_LIMIT=2000
-# diagnóstico
-PG_STAT_STATEMENTS_MAX=5000
+```bash
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/postgres/profiles/dedicada-16gb.env -o .env
+# depois acrescente POSTGRES_DB, POSTGRES_PASSWORD e DADOS_READ_PASSWORD
 ```
-</details>
 
 ### `dedicada-32gb` — equilíbrio para crescer
 
@@ -385,45 +321,12 @@ tocando disco.
 textual/trigram sobre dezenas de milhões de linhas, ou o working set agregado
 passar de ~20 GB.
 
-<details>
-<summary><b>Bloco de envs — copiar inteiro</b></summary>
+**Arquivo do perfil:** [`profiles/dedicada-32gb.env`](../profiles/dedicada-32gb.env) — traz o bloco `PG_*` e também o limite de memória e o `/dev/shm` do container.
 
-```env
-# ===== perfil dedicada-32gb =====
-PG_MAX_CONNECTIONS=150
-# memória
-PG_SHARED_BUFFERS=10GB
-PG_EFFECTIVE_CACHE_SIZE=24GB
-PG_WORK_MEM=48MB
-PG_HASH_MEM_MULTIPLIER=2.0
-PG_MAINTENANCE_WORK_MEM=2GB
-PG_AUTOVACUUM_WORK_MEM=512MB
-# planner e IO
-PG_EFFECTIVE_IO_CONCURRENCY=200
-PG_MAINTENANCE_IO_CONCURRENCY=200
-PG_DEFAULT_STATISTICS_TARGET=200
-# paralelismo
-PG_MAX_WORKER_PROCESSES=8
-PG_MAX_PARALLEL_WORKERS=8
-PG_MAX_PARALLEL_WORKERS_PER_GATHER=4
-PG_MAX_PARALLEL_MAINTENANCE_WORKERS=4
-PG_PARALLEL_SETUP_COST=500
-PG_PARALLEL_TUPLE_COST=0.05
-# WAL e checkpoints
-PG_MAX_WAL_SIZE=32GB
-PG_MIN_WAL_SIZE=8GB
-PG_WAL_BUFFERS=64MB
-# autovacuum
-PG_AUTOVACUUM_MAX_WORKERS=4
-PG_AUTOVACUUM_NAPTIME=15s
-PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.05
-PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.02
-PG_AUTOVACUUM_VACUUM_INSERT_SCALE_FACTOR=0.1
-PG_AUTOVACUUM_VACUUM_COST_LIMIT=4000
-# diagnóstico
-PG_STAT_STATEMENTS_MAX=10000
+```bash
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/postgres/profiles/dedicada-32gb.env -o .env
+# depois acrescente POSTGRES_DB, POSTGRES_PASSWORD e DADOS_READ_PASSWORD
 ```
-</details>
 
 ### `dedicada-64gb` — produção de base grande
 
@@ -452,45 +355,12 @@ base inteira) ainda excedem o cache. Escritas continuam limitadas por WAL/fsync.
 **Migrar para 128 GB quando:** o hit ratio cair com o crescimento mensal da
 base, ou novas cargas ampliarem o working set além dos ~40 GB.
 
-<details>
-<summary><b>Bloco de envs — copiar inteiro</b></summary>
+**Arquivo do perfil:** [`profiles/dedicada-64gb.env`](../profiles/dedicada-64gb.env) — traz o bloco `PG_*` e também o limite de memória e o `/dev/shm` do container.
 
-```env
-# ===== perfil dedicada-64gb =====
-PG_MAX_CONNECTIONS=200
-# memória
-PG_SHARED_BUFFERS=24GB
-PG_EFFECTIVE_CACHE_SIZE=48GB
-PG_WORK_MEM=64MB
-PG_HASH_MEM_MULTIPLIER=3.0
-PG_MAINTENANCE_WORK_MEM=4GB
-PG_AUTOVACUUM_WORK_MEM=1GB
-# planner e IO
-PG_EFFECTIVE_IO_CONCURRENCY=300
-PG_MAINTENANCE_IO_CONCURRENCY=300
-PG_DEFAULT_STATISTICS_TARGET=200
-# paralelismo
-PG_MAX_WORKER_PROCESSES=16
-PG_MAX_PARALLEL_WORKERS=16
-PG_MAX_PARALLEL_WORKERS_PER_GATHER=4
-PG_MAX_PARALLEL_MAINTENANCE_WORKERS=4
-PG_PARALLEL_SETUP_COST=500
-PG_PARALLEL_TUPLE_COST=0.05
-# WAL e checkpoints
-PG_MAX_WAL_SIZE=48GB
-PG_MIN_WAL_SIZE=8GB
-PG_WAL_BUFFERS=64MB
-# autovacuum
-PG_AUTOVACUUM_MAX_WORKERS=6
-PG_AUTOVACUUM_NAPTIME=15s
-PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.02
-PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.01
-PG_AUTOVACUUM_VACUUM_INSERT_SCALE_FACTOR=0.05
-PG_AUTOVACUUM_VACUUM_COST_LIMIT=6000
-# diagnóstico
-PG_STAT_STATEMENTS_MAX=10000
+```bash
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/postgres/profiles/dedicada-64gb.env -o .env
+# depois acrescente POSTGRES_DB, POSTGRES_PASSWORD e DADOS_READ_PASSWORD
 ```
-</details>
 
 ### `dedicada-128gb` — working set inteiro em RAM
 
@@ -514,45 +384,12 @@ workers e gather 4→6 · `max_wal_size` 48→64GB.
 **Limitações.** Custo; escritas continuam limitadas por WAL/fsync (RAM não
 acelera commit); acima disso o caminho é sharding/réplicas, não mais RAM.
 
-<details>
-<summary><b>Bloco de envs — copiar inteiro</b></summary>
+**Arquivo do perfil:** [`profiles/dedicada-128gb.env`](../profiles/dedicada-128gb.env) — traz o bloco `PG_*` e também o limite de memória e o `/dev/shm` do container.
 
-```env
-# ===== perfil dedicada-128gb =====
-PG_MAX_CONNECTIONS=300
-# memória
-PG_SHARED_BUFFERS=48GB
-PG_EFFECTIVE_CACHE_SIZE=96GB
-PG_WORK_MEM=96MB
-PG_HASH_MEM_MULTIPLIER=3.0
-PG_MAINTENANCE_WORK_MEM=8GB
-PG_AUTOVACUUM_WORK_MEM=2GB
-# planner e IO
-PG_EFFECTIVE_IO_CONCURRENCY=300
-PG_MAINTENANCE_IO_CONCURRENCY=300
-PG_DEFAULT_STATISTICS_TARGET=200
-# paralelismo
-PG_MAX_WORKER_PROCESSES=24
-PG_MAX_PARALLEL_WORKERS=24
-PG_MAX_PARALLEL_WORKERS_PER_GATHER=6
-PG_MAX_PARALLEL_MAINTENANCE_WORKERS=6
-PG_PARALLEL_SETUP_COST=500
-PG_PARALLEL_TUPLE_COST=0.05
-# WAL e checkpoints
-PG_MAX_WAL_SIZE=64GB
-PG_MIN_WAL_SIZE=16GB
-PG_WAL_BUFFERS=64MB
-# autovacuum
-PG_AUTOVACUUM_MAX_WORKERS=6
-PG_AUTOVACUUM_NAPTIME=15s
-PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.02
-PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.01
-PG_AUTOVACUUM_VACUUM_INSERT_SCALE_FACTOR=0.05
-PG_AUTOVACUUM_VACUUM_COST_LIMIT=8000
-# diagnóstico
-PG_STAT_STATEMENTS_MAX=10000
+```bash
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/postgres/profiles/dedicada-128gb.env -o .env
+# depois acrescente POSTGRES_DB, POSTGRES_PASSWORD e DADOS_READ_PASSWORD
 ```
-</details>
 
 ## Coexistência com outros serviços no mesmo host
 
@@ -843,7 +680,7 @@ SELECT sourceline, name, setting, applied, error
  WHERE NOT applied OR error IS NOT NULL;   -- deve voltar vazio
 ```
 
-Depois, compare os valores efetivos com o bloco de envs do perfil:
+Depois, compare os valores efetivos com o arquivo do perfil:
 
 ```bash
 psql -U postgres -d <database> -c "

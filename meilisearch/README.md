@@ -3,8 +3,8 @@
 Imagem `ghcr.io/brasildatahub/meilisearch` — wrapper **pinado** de
 `getmeili/meilisearch:v1.34` (mesma minor da produção) para manter todos os
 serviços de infra sob o namespace da org. Toda a configuração do Meilisearch
-é por variável de ambiente; os perfis são blocos de env documentados abaixo,
-prontos para copiar e colar no deploy.
+é por variável de ambiente; os perfis são arquivos `.env` versionados em
+[`profiles/`](profiles/), prontos para copiar.
 
 ## Perfis por orçamento de memória
 
@@ -18,35 +18,27 @@ serviço — independentes de projeto e de fornecedor:
 | `busca-4gb` | 2GiB | 2 | 4G na indexação; ~2G em regime | índices médios: milhões de documentos |
 | `busca-16gb` | 8GiB | 4 | ~16G durante indexação | índices grandes: dezenas de milhões de docs (Base Empresarial pós-migração: 72M establishments + 26M partners, 15–25 GB) |
 
-Blocos para colar no deploy (as demais envs — `MEILI_ENV=production`,
-`MEILI_NO_ANALYTICS`, `MEILI_DB_PATH` — já têm default no compose de
-referência; `MEILI_MASTER_KEY` é secreta, nunca commitada):
+As demais envs (`MEILI_ENV=production`, `MEILI_NO_ANALYTICS`, `MEILI_DB_PATH`)
+já têm default no compose; `MEILI_MASTER_KEY` é secreta e nunca vai para o git.
 
-```env
-# busca-512mb (limite de container: 512M)
-MEILI_MAX_INDEXING_MEMORY=256MiB
-MEILI_MAX_INDEXING_THREADS=1
-MEILI_HTTP_PAYLOAD_SIZE_LIMIT=50MB
+Cada perfil é um arquivo `.env` versionado em [`profiles/`](profiles/) — envs de
+indexação e limite de container juntos. É o mesmo arquivo que o
+[`infra-setup.sh`](../README.md#setup-automatizado-de-vps) baixa:
 
-# busca-1gb (limite de container: 1G) — default do compose; colar é opcional
-MEILI_MAX_INDEXING_MEMORY=1GiB
-MEILI_MAX_INDEXING_THREADS=1
-MEILI_HTTP_PAYLOAD_SIZE_LIMIT=100MB
-
-# busca-4gb (limite de container: 4G na indexação; ~2G em regime)
-MEILI_MAX_INDEXING_MEMORY=2GiB
-MEILI_MAX_INDEXING_THREADS=2
-MEILI_HTTP_PAYLOAD_SIZE_LIMIT=100MB
-
-# busca-16gb (limite de container: ~16G durante indexação)
-MEILI_MAX_INDEXING_MEMORY=8GiB
-MEILI_MAX_INDEXING_THREADS=4
-MEILI_HTTP_PAYLOAD_SIZE_LIMIT=250MB
+```bash
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/meilisearch/profiles/busca-1gb.env -o .env
+# depois acrescente: MEILI_MASTER_KEY=...   (mínimo 16 bytes)
 ```
 
-Use o bloco de apenas UM perfil por deploy. Nomes antigos referenciados em
-documentos do baseempresarial: `atual` → `busca-1gb`; `pos-migracao` →
-`busca-16gb`.
+| Perfil | Arquivo |
+|---|---|
+| `busca-512mb` | [`profiles/busca-512mb.env`](profiles/busca-512mb.env) |
+| `busca-1gb` | [`profiles/busca-1gb.env`](profiles/busca-1gb.env) |
+| `busca-4gb` | [`profiles/busca-4gb.env`](profiles/busca-4gb.env) |
+| `busca-16gb` | [`profiles/busca-16gb.env`](profiles/busca-16gb.env) |
+
+Use apenas UM perfil por deploy. Nomes antigos referenciados em documentos do
+baseempresarial: `atual` → `busca-1gb`; `pos-migracao` → `busca-16gb`.
 
 **Regra de dimensionamento** (vale para qualquer perfil):
 `MEILI_MAX_INDEXING_MEMORY` ≈ metade da RAM disponível para o serviço;
@@ -63,8 +55,8 @@ Em regime (sem indexar), o limite pode cair para ~1,5× o índice quente.
 
 **Quando migrar de perfil:** indexação abortando por OOM ou demorando por
 swap/backpressure; ou o índice crescendo além do que o limite de regime
-comporta. Migrar de perfil é trocar o bloco de envs e o limite de memória no
-deploy — nenhum rebuild.
+comporta. Migrar de perfil é trocar o arquivo `.env` (que já traz o limite de
+memória) e recriar o container — nenhum rebuild.
 
 **Motivação histórica do teto:** a config de produção do baseempresarial
 permitia `MEILI_MAX_INDEXING_MEMORY` de **6 GiB** num host de 8 GB dividido
@@ -79,16 +71,17 @@ Coolify), crie o serviço como **Compose stack** e cole o mesmo YAML; o Meili n�
 usa `/dev/shm`, então não há a armadilha do Postgres — mas o **limite de memória
 continua sendo recurso do serviço**, e é ele que impede o OOM na indexação.
 
-```env
-MEILI_MASTER_KEY=...              # secreta, ≥ 16 bytes — nunca commitada
-MEILI_MAX_INDEXING_MEMORY=1GiB    # bloco do perfil
-MEILI_MAX_INDEXING_THREADS=1
-MEILI_HTTP_PAYLOAD_SIZE_LIMIT=100MB
-MEILI_MEMORY_LIMIT=1G             # limite de container do perfil
-# opcionais: BIND_IP, MEILI_PORT, MEILI_VOLUME
-```
-
 ```bash
+BASE=https://raw.githubusercontent.com/BrasilDataHub/infra/main/meilisearch
+curl -fsSL "$BASE/docker-compose.yml" -o docker-compose.yml
+curl -fsSL "$BASE/profiles/busca-1gb.env" -o .env     # <- perfil escolhido
+
+cat >> .env <<'EOF'
+MEILI_MASTER_KEY=chave-secreta-de-no-minimo-16-bytes
+# opcionais: BIND_IP, MEILI_PORT, MEILI_VOLUME
+EOF
+chmod 600 .env
+
 docker compose up -d
 
 docker inspect <container> --format 'Memory={{.HostConfig.Memory}}'   # ≠ 0
@@ -112,8 +105,8 @@ barreira; para restringir, `BIND_IP` ou firewall por origem
 
 ### Indexação grande (ex.: Base Empresarial)
 
-1. Aplicar o bloco `busca-16gb` ajustado à máquina (regra de dimensionamento
-   acima).
+1. Aplicar o perfil [`busca-16gb`](profiles/busca-16gb.env), ajustado à máquina
+   (regra de dimensionamento acima).
 2. Subir o limite de memória do serviço para ~2× o
    `MEILI_MAX_INDEXING_MEMORY` enquanto a reindexação roda.
 3. Rodar a reindexação blue/green do indexador do projeto.

@@ -10,6 +10,7 @@ on:
       - "infra-setup.sh"
       - "test/infra-setup.test.sh"
       - "postgres/docs/perfis.md"
+      - "*/profiles/*.env"
       - "*/docker-compose.yml"
       - ".github/workflows/lint-setup.yml"
   pull_request:
@@ -17,6 +18,7 @@ on:
       - "infra-setup.sh"
       - "test/infra-setup.test.sh"
       - "postgres/docs/perfis.md"
+      - "*/profiles/*.env"
       - "*/docker-compose.yml"
   workflow_dispatch:
 

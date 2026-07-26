@@ -36,6 +36,9 @@ TIMEZONE="America/Sao_Paulo"
 SERVICES_INPUT="postgres,redis,meilisearch"
 POSTGRES_DB="dados"
 PG_PROFILE="auto"
+REDIS_PROFILE="cache-512mb"
+MEILI_PROFILE="busca-1gb"
+PROFILES_DIR=""
 VOLUMES_MODE="named"
 DATA_DIR="/data"
 POSTGRES_DATA_DIR=""
@@ -155,6 +158,16 @@ OPTIONS (serviços):
       --postgres-db NOME     Database inicial do Postgres (default: dados)
       --pg-profile PERFIL    auto | dedicada-8gb | dedicada-16gb | dedicada-32gb
                              | dedicada-64gb | dedicada-128gb   (default: auto, pela RAM)
+      --redis-profile PERFIL cache-256mb | cache-512mb | cache-1gb | cache-2gb
+                             (default: cache-512mb)
+      --meili-profile PERFIL busca-512mb | busca-1gb | busca-4gb | busca-16gb
+                             (default: busca-1gb)
+      --profiles-dir PATH    Lê os perfis de uma cópia local do repositório em
+                             vez de baixá-los (ex.: um clone ou fork)
+
+    Cada perfil é um arquivo .env versionado no repositório
+    (postgres/profiles/, redis/profiles/, meilisearch/profiles/). O script baixa
+    o arquivo e acrescenta senhas e rede — nenhum valor de tuning vive aqui.
 
 OPTIONS (volumes):
       --volumes MODE         named | bind (default: named)
@@ -208,6 +221,9 @@ while [[ $# -gt 0 ]]; do
         --services) SERVICES_INPUT="$2"; shift 2 ;;
         --postgres-db) POSTGRES_DB="$2"; shift 2 ;;
         --pg-profile) PG_PROFILE="$2"; shift 2 ;;
+        --redis-profile) REDIS_PROFILE="$2"; shift 2 ;;
+        --meili-profile|--meilisearch-profile) MEILI_PROFILE="$2"; shift 2 ;;
+        --profiles-dir) PROFILES_DIR="$2"; shift 2 ;;
         --volumes) VOLUMES_MODE="$2"; shift 2 ;;
         --data-dir) DATA_DIR="$2"; VOLUMES_MODE="bind"; shift 2 ;;
         --postgres-data-dir) POSTGRES_DATA_DIR="$2"; VOLUMES_MODE="bind"; shift 2 ;;
@@ -323,169 +339,41 @@ detect_pg_profile() {
     fi
 }
 
-# Recursos do container por perfil: limite de memória e /dev/shm em bytes.
-# Fonte: postgres/docs/perfis.md#recursos-do-container
-profile_resources() {
+# Perfis válidos por serviço. Os VALORES não vivem aqui: cada perfil é um
+# arquivo .env no repositório (postgres/profiles/, redis/profiles/,
+# meilisearch/profiles/), baixado no momento do provisionamento. É o mesmo
+# arquivo que a documentação manda copiar num deploy manual.
+PG_PROFILES="dedicada-8gb dedicada-16gb dedicada-32gb dedicada-64gb dedicada-128gb"
+REDIS_PROFILES="cache-256mb cache-512mb cache-1gb cache-2gb"
+MEILI_PROFILES="busca-512mb busca-1gb busca-4gb busca-16gb"
+
+profile_valid() {
+    local wanted="$1" list="$2" p
+    for p in $list; do [[ "$p" == "$wanted" ]] && return 0; done
+    return 1
+}
+
+# Perfil escolhido para cada serviço (usado ao montar o .env).
+service_profile() {
     case "$1" in
-        dedicada-8gb)   printf '7G 1073741824' ;;
-        dedicada-16gb)  printf '14G 2147483648' ;;
-        dedicada-32gb)  printf '28G 4294967296' ;;
-        dedicada-64gb)  printf '56G 4294967296' ;;
-        dedicada-128gb) printf '120G 8589934592' ;;
-        *) return 1 ;;
+        postgres) printf '%s' "$PG_PROFILE" ;;
+        redis) printf '%s' "$REDIS_PROFILE" ;;
+        meilisearch) printf '%s' "$MEILI_PROFILE" ;;
     esac
 }
 
-# Bloco de envs PG_* do perfil. Fonte: postgres/docs/perfis.md (mantenha em
-# sincronia com o guia — ele é a referência, este é um espelho).
-profile_env_block() {
-    case "$1" in
-    dedicada-8gb) cat <<'EOF'
-PG_MAX_CONNECTIONS=100
-PG_SHARED_BUFFERS=2GB
-PG_EFFECTIVE_CACHE_SIZE=6GB
-PG_WORK_MEM=16MB
-PG_HASH_MEM_MULTIPLIER=2.0
-PG_MAINTENANCE_WORK_MEM=512MB
-PG_AUTOVACUUM_WORK_MEM=-1
-PG_EFFECTIVE_IO_CONCURRENCY=200
-PG_MAINTENANCE_IO_CONCURRENCY=200
-PG_DEFAULT_STATISTICS_TARGET=100
-PG_MAX_WORKER_PROCESSES=4
-PG_MAX_PARALLEL_WORKERS=4
-PG_MAX_PARALLEL_WORKERS_PER_GATHER=2
-PG_MAX_PARALLEL_MAINTENANCE_WORKERS=2
-PG_PARALLEL_SETUP_COST=1000
-PG_PARALLEL_TUPLE_COST=0.1
-PG_MAX_WAL_SIZE=8GB
-PG_MIN_WAL_SIZE=2GB
-PG_WAL_BUFFERS=32MB
-PG_AUTOVACUUM_MAX_WORKERS=3
-PG_AUTOVACUUM_NAPTIME=30s
-PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.1
-PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.05
-PG_AUTOVACUUM_VACUUM_INSERT_SCALE_FACTOR=0.1
-PG_AUTOVACUUM_VACUUM_COST_LIMIT=1000
-PG_STAT_STATEMENTS_MAX=5000
-EOF
-    ;;
-    dedicada-16gb) cat <<'EOF'
-PG_MAX_CONNECTIONS=100
-PG_SHARED_BUFFERS=5GB
-PG_EFFECTIVE_CACHE_SIZE=12GB
-PG_WORK_MEM=32MB
-PG_HASH_MEM_MULTIPLIER=2.0
-PG_MAINTENANCE_WORK_MEM=1GB
-PG_AUTOVACUUM_WORK_MEM=-1
-PG_EFFECTIVE_IO_CONCURRENCY=200
-PG_MAINTENANCE_IO_CONCURRENCY=200
-PG_DEFAULT_STATISTICS_TARGET=100
-PG_MAX_WORKER_PROCESSES=8
-PG_MAX_PARALLEL_WORKERS=8
-PG_MAX_PARALLEL_WORKERS_PER_GATHER=4
-PG_MAX_PARALLEL_MAINTENANCE_WORKERS=2
-PG_PARALLEL_SETUP_COST=1000
-PG_PARALLEL_TUPLE_COST=0.1
-PG_MAX_WAL_SIZE=16GB
-PG_MIN_WAL_SIZE=4GB
-PG_WAL_BUFFERS=32MB
-PG_AUTOVACUUM_MAX_WORKERS=4
-PG_AUTOVACUUM_NAPTIME=30s
-PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.1
-PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.05
-PG_AUTOVACUUM_VACUUM_INSERT_SCALE_FACTOR=0.1
-PG_AUTOVACUUM_VACUUM_COST_LIMIT=2000
-PG_STAT_STATEMENTS_MAX=5000
-EOF
-    ;;
-    dedicada-32gb) cat <<'EOF'
-PG_MAX_CONNECTIONS=150
-PG_SHARED_BUFFERS=10GB
-PG_EFFECTIVE_CACHE_SIZE=24GB
-PG_WORK_MEM=48MB
-PG_HASH_MEM_MULTIPLIER=2.0
-PG_MAINTENANCE_WORK_MEM=2GB
-PG_AUTOVACUUM_WORK_MEM=512MB
-PG_EFFECTIVE_IO_CONCURRENCY=200
-PG_MAINTENANCE_IO_CONCURRENCY=200
-PG_DEFAULT_STATISTICS_TARGET=200
-PG_MAX_WORKER_PROCESSES=8
-PG_MAX_PARALLEL_WORKERS=8
-PG_MAX_PARALLEL_WORKERS_PER_GATHER=4
-PG_MAX_PARALLEL_MAINTENANCE_WORKERS=4
-PG_PARALLEL_SETUP_COST=500
-PG_PARALLEL_TUPLE_COST=0.05
-PG_MAX_WAL_SIZE=32GB
-PG_MIN_WAL_SIZE=8GB
-PG_WAL_BUFFERS=64MB
-PG_AUTOVACUUM_MAX_WORKERS=4
-PG_AUTOVACUUM_NAPTIME=15s
-PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.05
-PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.02
-PG_AUTOVACUUM_VACUUM_INSERT_SCALE_FACTOR=0.1
-PG_AUTOVACUUM_VACUUM_COST_LIMIT=4000
-PG_STAT_STATEMENTS_MAX=10000
-EOF
-    ;;
-    dedicada-64gb) cat <<'EOF'
-PG_MAX_CONNECTIONS=200
-PG_SHARED_BUFFERS=24GB
-PG_EFFECTIVE_CACHE_SIZE=48GB
-PG_WORK_MEM=64MB
-PG_HASH_MEM_MULTIPLIER=3.0
-PG_MAINTENANCE_WORK_MEM=4GB
-PG_AUTOVACUUM_WORK_MEM=1GB
-PG_EFFECTIVE_IO_CONCURRENCY=300
-PG_MAINTENANCE_IO_CONCURRENCY=300
-PG_DEFAULT_STATISTICS_TARGET=200
-PG_MAX_WORKER_PROCESSES=16
-PG_MAX_PARALLEL_WORKERS=16
-PG_MAX_PARALLEL_WORKERS_PER_GATHER=4
-PG_MAX_PARALLEL_MAINTENANCE_WORKERS=4
-PG_PARALLEL_SETUP_COST=500
-PG_PARALLEL_TUPLE_COST=0.05
-PG_MAX_WAL_SIZE=48GB
-PG_MIN_WAL_SIZE=8GB
-PG_WAL_BUFFERS=64MB
-PG_AUTOVACUUM_MAX_WORKERS=6
-PG_AUTOVACUUM_NAPTIME=15s
-PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.02
-PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.01
-PG_AUTOVACUUM_VACUUM_INSERT_SCALE_FACTOR=0.05
-PG_AUTOVACUUM_VACUUM_COST_LIMIT=6000
-PG_STAT_STATEMENTS_MAX=10000
-EOF
-    ;;
-    dedicada-128gb) cat <<'EOF'
-PG_MAX_CONNECTIONS=300
-PG_SHARED_BUFFERS=48GB
-PG_EFFECTIVE_CACHE_SIZE=96GB
-PG_WORK_MEM=96MB
-PG_HASH_MEM_MULTIPLIER=3.0
-PG_MAINTENANCE_WORK_MEM=8GB
-PG_AUTOVACUUM_WORK_MEM=2GB
-PG_EFFECTIVE_IO_CONCURRENCY=300
-PG_MAINTENANCE_IO_CONCURRENCY=300
-PG_DEFAULT_STATISTICS_TARGET=200
-PG_MAX_WORKER_PROCESSES=24
-PG_MAX_PARALLEL_WORKERS=24
-PG_MAX_PARALLEL_WORKERS_PER_GATHER=6
-PG_MAX_PARALLEL_MAINTENANCE_WORKERS=6
-PG_PARALLEL_SETUP_COST=500
-PG_PARALLEL_TUPLE_COST=0.05
-PG_MAX_WAL_SIZE=64GB
-PG_MIN_WAL_SIZE=16GB
-PG_WAL_BUFFERS=64MB
-PG_AUTOVACUUM_MAX_WORKERS=6
-PG_AUTOVACUUM_NAPTIME=15s
-PG_AUTOVACUUM_VACUUM_SCALE_FACTOR=0.02
-PG_AUTOVACUUM_ANALYZE_SCALE_FACTOR=0.01
-PG_AUTOVACUUM_VACUUM_INSERT_SCALE_FACTOR=0.05
-PG_AUTOVACUUM_VACUUM_COST_LIMIT=8000
-PG_STAT_STATEMENTS_MAX=10000
-EOF
-    ;;
-    esac
+# Baixa o .env do perfil do repositório (ou copia de --profiles-dir, útil para
+# fork/teste sem rede).
+fetch_profile() {
+    local svc="$1" prof; prof="$(service_profile "$svc")"
+    if [[ -n "$PROFILES_DIR" ]]; then
+        local src="$PROFILES_DIR/$svc/profiles/$prof.env"
+        [[ -f "$src" ]] || die "perfil não encontrado: $src"
+        cat "$src"
+        return 0
+    fi
+    curl -fsSL "${RAW_BASE}/${svc}/profiles/${prof}.env" \
+        || die "falha ao baixar ${RAW_BASE}/${svc}/profiles/${prof}.env"
 }
 
 # =============================================================================
@@ -516,7 +404,16 @@ validate_and_prompt() {
         PG_PROFILE="$(ask "Perfil do Postgres (auto detecta pela RAM)" "$PG_PROFILE")"
         # shellcheck disable=SC2119  # sem argumento = detectar pela RAM do host
         [[ "$PG_PROFILE" == "auto" ]] && PG_PROFILE="$(detect_pg_profile)"
-        profile_resources "$PG_PROFILE" >/dev/null || die "perfil inválido: $PG_PROFILE"
+        profile_valid "$PG_PROFILE" "$PG_PROFILES" \
+            || die "perfil inválido: $PG_PROFILE (use: auto $PG_PROFILES)"
+    fi
+    if service_selected redis; then
+        profile_valid "$REDIS_PROFILE" "$REDIS_PROFILES" \
+            || die "perfil de Redis inválido: $REDIS_PROFILE (use: $REDIS_PROFILES)"
+    fi
+    if service_selected meilisearch; then
+        profile_valid "$MEILI_PROFILE" "$MEILI_PROFILES" \
+            || die "perfil de Meilisearch inválido: $MEILI_PROFILE (use: $MEILI_PROFILES)"
     fi
 
     VOLUMES_MODE="$(ask "Modo de volume (named|bind)" "$VOLUMES_MODE")"
@@ -542,7 +439,9 @@ validate_and_prompt() {
     fi
 
     info "serviços ....... ${SERVICES[*]}"
-    service_selected postgres && info "perfil PG ...... $PG_PROFILE"
+    if service_selected postgres; then info "perfil PG ...... $PG_PROFILE"; fi
+    if service_selected redis; then info "perfil Redis ... $REDIS_PROFILE"; fi
+    if service_selected meilisearch; then info "perfil Meili ... $MEILI_PROFILE"; fi
     info "volumes ........ $VOLUMES_MODE"
     info "publicação ..... ${BIND_IP} (firewall: ${ALLOW_FROM:-qualquer origem})"
     info "workdir ........ $WORKDIR"
@@ -794,7 +693,7 @@ EOF
 
 write_env_files() {
     section "Credenciais e .env"
-    local s dir env_file limit shm
+    local s dir env_file
 
     # Preserva senhas de uma instalação anterior (o volume já foi inicializado
     # com elas; trocar aqui não mudaria a senha do banco).
@@ -813,48 +712,33 @@ write_env_files() {
     for s in "${SERVICES[@]}"; do
         dir="$(service_dir "$s")"
         env_file="$dir/.env"
-        [[ "$DRY_RUN" == "true" ]] && { _log "    ${C_DIM}[dry-run] escreveria $env_file${C_RESET}"; continue; }
+        [[ "$DRY_RUN" == "true" ]] && { _log "    ${C_DIM}[dry-run] escreveria $env_file a partir de $s/profiles/$(service_profile "$s").env${C_RESET}"; continue; }
 
-        case "$s" in
-        postgres)
-            read -r limit shm <<< "$(profile_resources "$PG_PROFILE")"
-            {
-                printf '# Gerado por infra-setup.sh (%s) — perfil %s\n' "$(now_iso)" "$PG_PROFILE"
-                printf '# Referência dos parâmetros: postgres/docs/perfis.md\n\n'
+        # O .env é o arquivo do perfil (baixado do repositório, íntegro) mais o
+        # que só o deploy sabe: senhas e rede. Mesma origem que a documentação
+        # manda copiar num deploy manual.
+        {
+            fetch_profile "$s"
+            printf '\n# --- deploy (gerado por infra-setup.sh em %s) ---\n' "$(now_iso)"
+            case "$s" in
+            postgres)
                 printf 'POSTGRES_DB=%s\n' "$POSTGRES_DB"
                 printf 'POSTGRES_PASSWORD=%s\n' "$POSTGRES_PASSWORD"
-                printf 'DADOS_READ_PASSWORD=%s\n\n' "$DADOS_READ_PASSWORD"
-                printf '# rede\nBIND_IP=%s\nPOSTGRES_PORT=%s\n\n' "$BIND_IP" "$POSTGRES_PORT"
-                printf '# recursos do container (perfil %s)\n' "$PG_PROFILE"
-                printf 'PG_MEMORY_LIMIT=%s\nPG_SHM_BYTES=%s\n\n' "$limit" "$shm"
-                printf '# tuning do perfil\n'
-                profile_env_block "$PG_PROFILE"
-            } > "$env_file"
-            ;;
-        redis)
-            {
-                printf '# Gerado por infra-setup.sh (%s)\n' "$(now_iso)"
-                printf '# Perfis de memória: redis/README.md\n\n'
+                printf 'DADOS_READ_PASSWORD=%s\n' "$DADOS_READ_PASSWORD"
+                printf 'BIND_IP=%s\nPOSTGRES_PORT=%s\n' "$BIND_IP" "$POSTGRES_PORT"
+                ;;
+            redis)
                 printf 'REDIS_PASSWORD=%s\n' "$REDIS_PASSWORD"
-                printf 'REDIS_MAXMEMORY=%s\n' "512mb"
-                printf 'REDIS_MEMORY_LIMIT=%s\n\n' "1G"
-                printf '# rede\nBIND_IP=%s\nREDIS_PORT=%s\n' "$BIND_IP" "$REDIS_PORT"
-            } > "$env_file"
-            ;;
-        meilisearch)
-            {
-                printf '# Gerado por infra-setup.sh (%s)\n' "$(now_iso)"
-                printf '# Perfis de memória: meilisearch/README.md\n\n'
+                printf 'BIND_IP=%s\nREDIS_PORT=%s\n' "$BIND_IP" "$REDIS_PORT"
+                ;;
+            meilisearch)
                 printf 'MEILI_MASTER_KEY=%s\n' "$MEILI_MASTER_KEY"
-                printf 'MEILI_MAX_INDEXING_MEMORY=%s\n' "1GiB"
-                printf 'MEILI_MAX_INDEXING_THREADS=%s\n' "1"
-                printf 'MEILI_MEMORY_LIMIT=%s\n\n' "1G"
-                printf '# rede\nBIND_IP=%s\nMEILI_PORT=%s\n' "$BIND_IP" "$MEILI_PORT"
-            } > "$env_file"
-            ;;
-        esac
+                printf 'BIND_IP=%s\nMEILI_PORT=%s\n' "$BIND_IP" "$MEILI_PORT"
+                ;;
+            esac
+        } > "$env_file"
         chmod 600 "$env_file"
-        ok "$s: .env gerado"
+        ok "$s: .env gerado do perfil $(service_profile "$s")"
     done
 
     if [[ "$DRY_RUN" != "true" ]]; then
@@ -865,8 +749,12 @@ write_env_files() {
                 printf 'POSTGRES_DB=%s\nPOSTGRES_USER=postgres\nPOSTGRES_PASSWORD=%s\nDADOS_READ_PASSWORD=%s\nPOSTGRES_PORT=%s\n\n' \
                     "$POSTGRES_DB" "$POSTGRES_PASSWORD" "$DADOS_READ_PASSWORD" "$POSTGRES_PORT"
             fi
-            service_selected redis && printf 'REDIS_PASSWORD=%s\nREDIS_PORT=%s\n\n' "$REDIS_PASSWORD" "$REDIS_PORT"
-            service_selected meilisearch && printf 'MEILI_MASTER_KEY=%s\nMEILI_PORT=%s\n' "$MEILI_MASTER_KEY" "$MEILI_PORT"
+            if service_selected redis; then
+                printf 'REDIS_PASSWORD=%s\nREDIS_PORT=%s\n\n' "$REDIS_PASSWORD" "$REDIS_PORT"
+            fi
+            if service_selected meilisearch; then
+                printf 'MEILI_MASTER_KEY=%s\nMEILI_PORT=%s\n' "$MEILI_MASTER_KEY" "$MEILI_PORT"
+            fi
         } > "$WORKDIR/secrets/credentials.env"
         chmod 600 "$WORKDIR/secrets/credentials.env"
         ok "credenciais em $WORKDIR/secrets/credentials.env (chmod 600)"
@@ -877,7 +765,12 @@ write_env_files() {
             printf 'INSTALLED_AT=%s\n' "$(now_iso)"
             printf 'SERVICES=%s\n' "$(IFS=,; printf '%s' "${SERVICES[*]}")"
             printf 'VOLUMES_MODE=%s\n' "$VOLUMES_MODE"
-            service_selected postgres && printf 'PG_PROFILE=%s\n' "$PG_PROFILE"
+            # Cada bloco num `if`: uma condição falsa como última expressão do
+            # grupo faria o `set -e` abortar o script (era o caso quando o
+            # Meilisearch não estava entre os serviços escolhidos).
+            if service_selected postgres; then printf 'PG_PROFILE=%s\n' "$PG_PROFILE"; fi
+            if service_selected redis; then printf 'REDIS_PROFILE=%s\n' "$REDIS_PROFILE"; fi
+            if service_selected meilisearch; then printf 'MEILI_PROFILE=%s\n' "$MEILI_PROFILE"; fi
         } > "$WORKDIR/.setup-state"
     fi
 }

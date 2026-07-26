@@ -19,8 +19,9 @@ máquina e o passo a passo de implantação.
 
 ## Como implantar
 
-**Docker Compose direto no host** — cada pasta traz o compose de produção; o
-perfil vai num `.env` ao lado. Se um painel (Dokploy, Coolify) for obrigatório,
+**Docker Compose direto no host** — cada pasta traz o compose de produção e os
+perfis em [`<serviço>/profiles/*.env`](postgres/profiles/); o deploy é copiar os
+dois e acrescentar as senhas. Se um painel (Dokploy, Coolify) for obrigatório,
 use-o em modo **Compose stack** com o mesmo YAML, nunca em modo banco
 gerenciado.
 
@@ -109,6 +110,12 @@ sudo bash infra-setup.sh --help      # todas as opções
 
 Baixar e revisar antes de executar é a forma recomendada: o script roda como
 root e altera o sistema.
+
+Os valores de cada perfil ficam **só** nos arquivos `.env` versionados
+(`postgres/profiles/`, `redis/profiles/`, `meilisearch/profiles/`): o script os
+baixa em vez de embutir cópias, então doc, script e deploy manual usam
+exatamente os mesmos números. `--pg-profile`, `--redis-profile` e
+`--meili-profile` escolhem qual; `--profiles-dir` lê de um clone local.
 
 ### O que fica onde
 

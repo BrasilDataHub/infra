@@ -17,8 +17,7 @@ deploy, nenhum rebuild:
 ## Perfis por orçamento de memória
 
 Os perfis são definidos pelo orçamento de memória do serviço, independentes
-de projeto e de fornecedor. Cada perfil é um bloco de envs para **copiar e
-colar** no `.env` do compose:
+de projeto e de fornecedor:
 
 | Perfil | maxmemory | Limite de container | Quando usar |
 |---|---|---|---|
@@ -27,22 +26,24 @@ colar** no `.env` do compose:
 | `cache-1gb` | 1gb | **2G** | cache pesado ou várias aplicações (um database lógico por app) |
 | `cache-2gb` | 2gb | **3G** | teto do catálogo; acima disso, separe instâncias por projeto |
 
-```env
-# cache-256mb (limite de container: 512M)
-REDIS_MAXMEMORY=256mb
+Cada perfil é um arquivo `.env` versionado em [`profiles/`](profiles/) —
+`maxmemory`, política de despejo e limite de container juntos. É o mesmo arquivo
+que o [`infra-setup.sh`](../README.md#setup-automatizado-de-vps) baixa:
 
-# cache-512mb (limite de container: 1G) — default da imagem; colar é opcional
-REDIS_MAXMEMORY=512mb
-
-# cache-1gb (limite de container: 2G)
-REDIS_MAXMEMORY=1gb
-
-# cache-2gb (limite de container: 3G)
-REDIS_MAXMEMORY=2gb
+```bash
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/redis/profiles/cache-512mb.env -o .env
+# depois acrescente: REDIS_PASSWORD=...
 ```
 
-Em todos os perfis, `REDIS_MAXMEMORY_POLICY` fica no default `volatile-lru`
-(ver decisões abaixo); use o bloco de apenas UM perfil por deploy.
+| Perfil | Arquivo |
+|---|---|
+| `cache-256mb` | [`profiles/cache-256mb.env`](profiles/cache-256mb.env) |
+| `cache-512mb` | [`profiles/cache-512mb.env`](profiles/cache-512mb.env) |
+| `cache-1gb` | [`profiles/cache-1gb.env`](profiles/cache-1gb.env) |
+| `cache-2gb` | [`profiles/cache-2gb.env`](profiles/cache-2gb.env) |
+
+Use apenas UM perfil por deploy. Em todos eles `REDIS_MAXMEMORY_POLICY` fica em
+`volatile-lru` (ver decisões abaixo).
 
 Se o Redis dividir o host com o Postgres, é o **limite de container** da tabela
 acima (não o `maxmemory`) que entra na
@@ -81,14 +82,17 @@ Coolify), crie o serviço como **Compose stack** e cole o mesmo YAML; o Redis
 não usa `/dev/shm`, então não há a armadilha do Postgres — mas o **limite de
 memória continua sendo recurso do serviço**, e é ele que dá o headroom do AOF.
 
-```env
-REDIS_PASSWORD=...            # a mesma que a aplicação/Horizon usam
-REDIS_MAXMEMORY=512mb         # bloco do perfil
-REDIS_MEMORY_LIMIT=1G         # limite de container do perfil
-# opcionais: BIND_IP, REDIS_PORT, REDIS_VOLUME
-```
-
 ```bash
+BASE=https://raw.githubusercontent.com/BrasilDataHub/infra/main/redis
+curl -fsSL "$BASE/docker-compose.yml" -o docker-compose.yml
+curl -fsSL "$BASE/profiles/cache-512mb.env" -o .env    # <- perfil escolhido
+
+cat >> .env <<'EOF'
+REDIS_PASSWORD=a-mesma-senha-que-a-aplicacao-e-o-horizon-usam
+# opcionais: BIND_IP, REDIS_PORT, REDIS_VOLUME
+EOF
+chmod 600 .env
+
 docker compose up -d
 
 # validação (limite aplicado + conf efetiva)
