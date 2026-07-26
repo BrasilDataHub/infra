@@ -1,0 +1,47 @@
+name: Lint e testes do infra-setup.sh
+
+# O script provisiona máquinas como root; um erro de sintaxe ou uma divergência
+# entre os perfis embutidos e postgres/docs/perfis.md sai caro em produção.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra-setup.sh"
+      - "test/infra-setup.test.sh"
+      - "postgres/docs/perfis.md"
+      - "*/docker-compose.yml"
+      - ".github/workflows/lint-setup.yml"
+  pull_request:
+    paths:
+      - "infra-setup.sh"
+      - "test/infra-setup.test.sh"
+      - "postgres/docs/perfis.md"
+      - "*/docker-compose.yml"
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sintaxe
+        run: bash -n infra-setup.sh
+
+      - name: ShellCheck
+        run: shellcheck -x infra-setup.sh test/infra-setup.test.sh
+
+      # Cobre, entre outras coisas, se os blocos PG_* do script continuam
+      # idênticos aos de postgres/docs/perfis.md e se as envs existem na imagem.
+      - name: Testes
+        run: bash test/infra-setup.test.sh
+
+      - name: Ajuda não falha
+        run: bash infra-setup.sh --help > /dev/null
+
+      - name: Composes válidos
+        run: |
+          POSTGRES_DB=d POSTGRES_PASSWORD=p docker compose -f postgres/docker-compose.yml config -q
+          REDIS_PASSWORD=x docker compose -f redis/docker-compose.yml config -q
+          MEILI_MASTER_KEY=chave-de-teste-com-32-bytes-abc docker compose -f meilisearch/docker-compose.yml config -q
