@@ -259,6 +259,7 @@ service_port() {
 # Perfil do Postgres a partir da RAM total (ou do valor em GiB passado como
 # argumento, usado pelos testes). Margem generosa porque a RAM reportada é
 # sempre menor que a nominal do plano.
+# shellcheck disable=SC2120  # o argumento é opcional: em produção lê /proc/meminfo
 detect_pg_profile() {
     local ram_gb="${1:-}"
     [[ -z "$ram_gb" ]] && ram_gb=$(awk '/MemTotal/ {printf "%d", $2 / 1024 / 1024}' /proc/meminfo)
@@ -461,6 +462,7 @@ validate_and_prompt() {
 
     if service_selected postgres; then
         PG_PROFILE="$(ask "Perfil do Postgres (auto detecta pela RAM)" "$PG_PROFILE")"
+        # shellcheck disable=SC2119  # sem argumento = detectar pela RAM do host
         [[ "$PG_PROFILE" == "auto" ]] && PG_PROFILE="$(detect_pg_profile)"
         profile_resources "$PG_PROFILE" >/dev/null || die "perfil inválido: $PG_PROFILE"
     fi
