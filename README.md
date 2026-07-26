@@ -1,4 +1,4 @@
-# Infraestrutura de serviços da BrasilDataHub
+# Ambiente Docker da BrasilDataHub
 
 Configuração **versionada** dos serviços de dados da organização
 [BrasilDataHub](https://github.com/BrasilDataHub). As imagens são genéricas
