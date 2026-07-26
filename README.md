@@ -1,10 +1,6 @@
 # Ambiente Docker da BrasilDataHub
 
-Configuração **versionada** dos serviços de dados da organização
-[BrasilDataHub](https://github.com/BrasilDataHub). As imagens são genéricas
-por desenho: qualquer projeto da org (baseempresarial, baseescolar,
-basehospitalar) consome as mesmas imagens; o que é específico de cada
-projeto (envs, volumes, limites) vive no deploy.
+Este repositório centraliza a configuração da stack Docker utilizada por alguns projetos da [BrasilDataHub](https://github.com/BrasilDataHub). As imagens são reutilizáveis entre diferentes aplicações, enquanto as configurações específicas de cada projeto, como variáveis de ambiente, volumes e limites de recursos, permanecem definidas no ambiente de deploy.
 
 ## Serviços
 
