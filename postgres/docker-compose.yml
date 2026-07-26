@@ -58,7 +58,11 @@ services:
         limits:
           memory: ${PG_MEMORY_LIMIT:-7G}      # default = dedicada-8gb
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d $${POSTGRES_DB}"]
+      # SELECT em vez de `pg_isready`: o pg_isready responde "accepting
+      # connections" mesmo quando o database do projeto não existe — o que
+      # acontece se um initdb for interrompido (volume inicializado pela
+      # metade). A query só passa com o database realmente utilizável.
+      test: ["CMD-SHELL", "psql -U postgres -d $${POSTGRES_DB} -c 'SELECT 1' > /dev/null"]
       interval: 10s
       timeout: 5s
       retries: 5

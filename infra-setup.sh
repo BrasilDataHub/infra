@@ -39,6 +39,7 @@ PG_PROFILE="auto"
 REDIS_PROFILE="cache-512mb"
 MEILI_PROFILE="busca-1gb"
 PROFILES_DIR=""
+ALLOW_OVERSIZED="false"
 VOLUMES_MODE="named"
 DATA_DIR="/data"
 POSTGRES_DATA_DIR=""
@@ -164,6 +165,10 @@ OPTIONS (serviços):
                              (default: busca-1gb)
       --profiles-dir PATH    Lê os perfis de uma cópia local do repositório em
                              vez de baixá-los (ex.: um clone ou fork)
+      --allow-oversized-profile
+                             Aceita um perfil de Postgres maior que a memória
+                             disponível (por default isso é recusado, porque o
+                             banco não subiria)
 
     Cada perfil é um arquivo .env versionado no repositório
     (postgres/profiles/, redis/profiles/, meilisearch/profiles/). O script baixa
@@ -224,6 +229,7 @@ while [[ $# -gt 0 ]]; do
         --redis-profile) REDIS_PROFILE="$2"; shift 2 ;;
         --meili-profile|--meilisearch-profile) MEILI_PROFILE="$2"; shift 2 ;;
         --profiles-dir) PROFILES_DIR="$2"; shift 2 ;;
+        --allow-oversized-profile) ALLOW_OVERSIZED="true"; shift ;;
         --volumes) VOLUMES_MODE="$2"; shift 2 ;;
         --data-dir) DATA_DIR="$2"; VOLUMES_MODE="bind"; shift 2 ;;
         --postgres-data-dir) POSTGRES_DATA_DIR="$2"; VOLUMES_MODE="bind"; shift 2 ;;
@@ -282,7 +288,16 @@ service_data_dir() {
     esac
 }
 
-# Nome do volume declarado no compose de cada serviço (ver docker-compose.yml).
+# Nome REAL do volume no Docker (o que aparece em `docker volume ls`).
+service_volume_name() {
+    case "$1" in
+        postgres) printf '%s' "${PG_VOLUME:-bdh_pg_data}" ;;
+        redis) printf '%s' "${REDIS_VOLUME:-bdh_redis_data}" ;;
+        meilisearch) printf '%s' "${MEILI_VOLUME:-bdh_meili_data}" ;;
+    esac
+}
+
+# Chave do volume dentro do compose — é o que o override do modo bind ajusta.
 service_volume_key() {
     case "$1" in
         postgres) printf 'pg_data' ;;
@@ -313,24 +328,32 @@ service_internal_port() {
 # argumento, usado pelos testes). Margem generosa porque a RAM reportada é
 # sempre menor que a nominal do plano.
 # shellcheck disable=SC2120  # o argumento é opcional: em produção lê /proc/meminfo
+# Memória disponível ao Docker, em GiB. Em Linux nativo é a RAM do host; no
+# macOS o daemon roda numa VM que costuma receber metade dela — dimensionar pelo
+# host geraria limites maiores do que a VM tem.
+available_mem_gb() {
+    local bytes
+    bytes="$(docker info -f '{{.MemTotal}}' 2>/dev/null || true)"
+    case "$bytes" in ''|*[!0-9]*) bytes="" ;; esac
+    if [[ -z "$bytes" ]]; then
+        if [[ -r /proc/meminfo ]]; then
+            bytes=$(awk '/MemTotal/ {printf "%d", $2 * 1024}' /proc/meminfo)
+        else
+            bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+        fi
+    fi
+    printf '%d' $(( bytes / 1024 / 1024 / 1024 ))
+}
+
+# 'dedicada-16gb' -> 16. É o orçamento de RAM que o perfil pressupõe.
+profile_budget_gb() {
+    local n="${1#dedicada-}"
+    printf '%s' "${n%gb}"
+}
+
 detect_pg_profile() {
     local ram_gb="${1:-}"
-    if [[ -z "$ram_gb" ]]; then
-        # A referência é a memória que o Docker realmente tem: em Linux nativo é
-        # a RAM do host, mas no macOS o daemon roda numa VM que costuma receber
-        # metade dela — dimensionar pelo host geraria um limite maior que a VM.
-        local bytes
-        bytes="$(docker info -f '{{.MemTotal}}' 2>/dev/null || true)"
-        case "$bytes" in ''|*[!0-9]*) bytes="" ;; esac
-        if [[ -z "$bytes" ]]; then
-            if [[ -r /proc/meminfo ]]; then
-                bytes=$(awk '/MemTotal/ {printf "%d", $2 * 1024}' /proc/meminfo)
-            else
-                bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
-            fi
-        fi
-        ram_gb=$(( bytes / 1024 / 1024 / 1024 ))
-    fi
+    [[ -z "$ram_gb" ]] && ram_gb="$(available_mem_gb)"
     if   (( ram_gb >= 120 )); then printf 'dedicada-128gb'
     elif (( ram_gb >= 56 ));  then printf 'dedicada-64gb'
     elif (( ram_gb >= 28 ));  then printf 'dedicada-32gb'
@@ -406,6 +429,23 @@ validate_and_prompt() {
         [[ "$PG_PROFILE" == "auto" ]] && PG_PROFILE="$(detect_pg_profile)"
         profile_valid "$PG_PROFILE" "$PG_PROFILES" \
             || die "perfil inválido: $PG_PROFILE (use: auto $PG_PROFILES)"
+
+        # Um perfil maior do que a memória disponível não sobe: o Postgres falha
+        # com "could not map anonymous shared memory" e fica em restart loop.
+        # Melhor falhar aqui, com a razão explícita.
+        local mem_gb budget
+        mem_gb="$(available_mem_gb)"
+        budget="$(profile_budget_gb "$PG_PROFILE")"
+        if (( budget > mem_gb + 1 )) && [[ "$ALLOW_OVERSIZED" != "true" ]]; then
+            die "perfil $PG_PROFILE pressupõe ${budget} GB, mas o Docker tem ${mem_gb} GB.
+       O Postgres não subiria (shared_buffers maior que a memória disponível).
+       Use --pg-profile $(detect_pg_profile "$mem_gb"), aumente a máquina (ou a
+       memória da VM do Docker, no macOS), ou passe --allow-oversized-profile
+       se souber que a memória vai crescer antes do primeiro uso."
+        fi
+        if (( budget > mem_gb + 1 )); then
+            warn "perfil $PG_PROFILE acima da memória disponível (${mem_gb} GB) — seguindo por --allow-oversized-profile"
+        fi
     fi
     if service_selected redis; then
         profile_valid "$REDIS_PROFILE" "$REDIS_PROFILES" \
@@ -806,6 +846,30 @@ start_services() {
         sleep 5; waited=$((waited + 5))
     done
     if (( pending == 0 )); then ok "todos os serviços saudáveis"; else warn "$pending serviço(s) ainda não saudáveis — veja 'bdh logs <serviço>'"; fi
+
+    # O initdb só roda na primeira subida em volume vazio. Se aquela subida
+    # falhou no meio (perfil grande demais, por exemplo), o cluster existe mas o
+    # database, as extensões e a role dados_read não — e nada mais vai criá-los.
+    if service_selected postgres; then
+        local cid
+        cid="$(docker ps -q --filter "label=org.brasildatahub.service=postgres" | head -1)"
+        if [[ -n "$cid" ]]; then
+            if docker exec "$cid" psql -U postgres -tAc \
+                 "SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB'" 2>/dev/null | grep -q 1; then
+                local exts
+                exts="$(docker exec "$cid" psql -U postgres -d "$POSTGRES_DB" -tAc \
+                    "SELECT count(*) FROM pg_extension" 2>/dev/null || echo 0)"
+                ok "database '$POSTGRES_DB' pronto ($exts extensões)"
+            else
+                warn "o database '$POSTGRES_DB' NÃO existe no volume $(service_volume_name postgres)."
+                warn "isso indica um initdb interrompido numa subida anterior: o cluster foi"
+                warn "criado, mas database, extensões e role dados_read não. Como o entrypoint"
+                warn "não repete o initdb num volume já inicializado, escolha um caminho:"
+                warn "  a) descartar os dados e refazer: docker compose down && docker volume rm $(service_volume_name postgres)"
+                warn "  b) criar à mão o database, as extensões e a role (postgres/initdb/)"
+            fi
+        fi
+    fi
     notify "progress" "serviços no ar"
 }
 

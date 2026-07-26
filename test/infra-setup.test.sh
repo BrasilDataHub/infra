@@ -48,6 +48,11 @@ check "125 GB → dedicada-128gb" "dedicada-128gb"  "$(detect_pg_profile 125)"
 check "2 GB → menor perfil"     "dedicada-8gb"    "$(detect_pg_profile 2)"
 check "13 GB não sobe de perfil" "dedicada-8gb"   "$(detect_pg_profile 13)"
 
+printf '\nOrçamento do perfil (nome → GB)\n'
+check "dedicada-8gb → 8"     "8"   "$(profile_budget_gb dedicada-8gb)"
+check "dedicada-16gb → 16"   "16"  "$(profile_budget_gb dedicada-16gb)"
+check "dedicada-128gb → 128" "128" "$(profile_budget_gb dedicada-128gb)"
+
 printf '\nValidação de nomes de perfil\n'
 profile_valid dedicada-16gb "$PG_PROFILES";       check "perfil de PG válido" "0" "$?"
 profile_valid dedicada-999gb "$PG_PROFILES";      check "perfil de PG inválido" "1" "$?"
@@ -170,6 +175,7 @@ for svc in postgres redis meilisearch; do
 done
 
 printf '\nAjuda\n'
+check "usage() cita a recusa de perfil grande demais" "ok" "$(usage | grep -q -- '--allow-oversized-profile' && echo ok)"
 usage >/dev/null 2>&1
 check "usage() não falha" "0" "$?"
 check "usage() cita o modo bind" "ok" "$(usage | grep -q -- '--volumes MODE' && echo ok)"
