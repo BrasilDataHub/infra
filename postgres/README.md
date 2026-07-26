@@ -24,8 +24,8 @@ existentes, use o script de higiene do repositório de ETL do projeto.
 
 Os perfis são definidos por **características da máquina** (RAM, vCPUs),
 independentes de fornecedor, e servem a todos os projetos da org. Cada perfil é
-um **bloco de envs documentado no guia**, pronto para copiar e colar no deploy
-(Dokploy Environment ou compose) — sem arquivos extras neste repositório.
+um **bloco de envs documentado no guia**, pronto para copiar e colar no `.env`
+do compose — sem arquivos extras neste repositório.
 
 | Perfil | Orçamento de RAM do Postgres | vCPU | Uso típico |
 |---|---|---|---|
@@ -42,9 +42,15 @@ host também rodar Redis ou Meilisearch, some os limites de container deles
 
 **Guia completo — blocos de env de cada perfil (copy-paste), carga-alvo,
 justificativa de cada parâmetro, coexistência com outros serviços, limitações,
-quando migrar, compose de referência e máquinas equivalentes por provedor:
+quando migrar e máquinas equivalentes por provedor:
 [docs/perfis.md](docs/perfis.md).** Preparação do host (disco, kernel, huge
 pages, filesystem): [docs/host.md](docs/host.md).
+
+> ⚠️ **Um perfil não é só o bloco de envs.** O limite de memória e o `/dev/shm`
+> são recursos do container, não variáveis — e é aí que um perfil se perde pela
+> metade. A receita única (Compose ou painel) está em
+> **[docs/deploy.md](docs/deploy.md)**; quando algo der errado,
+> **[docs/troubleshooting.md](docs/troubleshooting.md)**.
 
 ## Variáveis de tuning
 
@@ -92,6 +98,19 @@ cada env abaixo é o valor do perfil `dedicada-8gb`.
 | `PG_PARALLEL_SETUP_COST` | `1000` | custo estimado de iniciar workers |
 | `PG_PARALLEL_TUPLE_COST` | `0.1` | custo estimado por tupla transferida |
 
+### Guarda de `/dev/shm`
+
+As hash tables de Parallel Hash Join vivem em `/dev/shm`, que em container tem
+**64 MB** por default. No start, [`shm-guard.sh`](shm-guard.sh) compara o
+`/dev/shm` real com o pico que o perfil exige e age antes que uma query quebre
+no meio — rede de segurança, não substituto da
+[receita de deploy](docs/deploy.md#a-receita).
+
+| Env | Default | O que controla |
+|---|---|---|
+| `PG_SHM_PREFLIGHT` | `adapt` | `adapt` reduz o paralelismo até caber; `fail` aborta o start; `warn` só avisa; `off` desliga a checagem |
+| `PG_SHM_HASH_NODES` | `2` | nós de hash simultâneos assumidos no cálculo do pico |
+
 ### WAL e checkpoints
 
 | Env | Default | O que controla |
@@ -138,27 +157,30 @@ cada env abaixo é o valor do perfil `dedicada-8gb`.
 
 ## Implantação
 
+**Docker Compose direto no host** é a forma recomendada
+([por quê](docs/estrategia-deploy.md)); se um painel for obrigatório, use-o em
+modo Compose stack com o mesmo YAML — nunca em modo banco gerenciado
+([docs/deploy.md](docs/deploy.md#se-for-obrigatório-usar-dokploy-ou-coolify)).
 Todos os perfis são de máquina dedicada com NVMe local.
 
 1. Escolher o perfil pelo working set
    ([como escolher](docs/perfis.md#como-escolher)). Se o host for compartilhar
    com Redis/Meilisearch, dimensionar a máquina pela
    [fórmula de reserva](docs/perfis.md#fórmula-de-reserva).
-2. Provisionar a máquina e **preparar o host antes de instalar**
-   ([docs/host.md](docs/host.md)): validar o disco com `fio`/`pg_test_fsync`,
-   aplicar os sysctl, desligar THP, criar `/data/pgdata` no NVMe local, e expor
-   o 5432 **apenas** à rede privada.
-3. Criar o serviço com `ghcr.io/brasildatahub/postgres:17`, montar
-   `/data/pgdata` em `/var/lib/postgresql/data` e colar o bloco de envs do
-   perfil ([docs/perfis.md](docs/perfis.md)) +
-   `POSTGRES_DB`/`POSTGRES_PASSWORD`/`DADOS_READ_PASSWORD`. Ajustar o limite de
-   memória e o `shm_size` do serviço pela
-   [tabela de recursos](docs/perfis.md#recursos-do-container).
+2. **Preparar o host antes de instalar** ([docs/host.md](docs/host.md)):
+   validar o disco com `fio`/`pg_test_fsync`, aplicar os sysctl, desligar THP e
+   confirmar que o data-root do Docker está no NVMe — é onde o volume nomeado
+   vive.
+3. Copiar o [compose de produção](docker-compose.yml) e preencher o `.env`:
+   bloco `PG_*` do perfil ([docs/perfis.md](docs/perfis.md)), senhas,
+   `PG_SHM_BYTES` e `PG_MEMORY_LIMIT` da
+   [tabela de recursos](docs/perfis.md#recursos-do-container). `docker compose up -d`.
+   Os dados ficam no volume `bdh_pg_data`; nada a criar antes.
 4. Primeira subida em volume vazio executa o initdb (extensões + role).
-5. Validar `pg_file_settings` e `pg_settings` (queries prontas em
-   [docs/perfis.md](docs/perfis.md#validação-de-um-perfil-implantado)).
+5. Rodar a **[verificação pós-deploy](docs/deploy.md#verificação-pós-deploy)** —
+   quatro comandos que separam um perfil aplicado de um aplicado pela metade.
 6. Ativar backups: snapshot do provedor + pgBackRest com `PG_ARCHIVE_MODE=on` e
-   `PG_ARCHIVE_COMMAND` (ver `backup/`).
+   `PG_ARCHIVE_COMMAND` (ver [`backup/`](backup/)).
 
 ## Validação local
 

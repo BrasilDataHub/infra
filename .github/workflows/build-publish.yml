@@ -31,6 +31,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Roda ANTES do push: o shm-guard decide o paralelismo efetivo da
+      # instância, então uma regressão silenciosa aqui volta a expor o erro
+      # "could not resize shared memory segment" (ver docs/troubleshooting.md).
+      - name: Testes do shm-guard
+        run: bash postgres/test/shm-guard.test.sh
+
       - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}

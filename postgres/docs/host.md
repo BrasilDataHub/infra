@@ -10,7 +10,7 @@ não se aplica sem ressalvas.
 - [Pré-voo: validar o disco antes de instalar](#pré-voo-validar-o-disco-antes-de-instalar)
 - [Kernel](#kernel)
 - [Huge pages](#huge-pages)
-- [Filesystem e layout do PGDATA](#filesystem-e-layout-do-pgdata)
+- [Filesystem e layout dos dados](#filesystem-e-layout-dos-dados)
 - [Limites de processo](#limites-de-processo)
 - [Rede](#rede)
 - [Checklist](#checklist)
@@ -109,14 +109,12 @@ SHOW huge_pages_status;   -- 'on' quando efetivamente em uso
 A memória reservada em hugepages **não fica disponível** para o resto do sistema,
 então some-a ao orçamento do Postgres, nunca ao dos vizinhos.
 
-## Filesystem e layout do PGDATA
+## Filesystem e layout dos dados
 
 - **XFS ou ext4**, montados com `noatime`. XFS lida melhor com arquivos grandes e
   paralelismo de escrita; ext4 é igualmente aceitável.
 - **`noatime` no fstab** — sem ele, toda leitura vira também uma escrita de
   metadado.
-- **PGDATA em bind mount de diretório local** (`/data/pgdata`), nunca em volume
-  de rede e nunca num volume Docker gerenciado num disco diferente do NVMe.
 - **RAID1 de dois NVMe** em servidores dedicados. NVMe de consumo falha, e o PITR
   (ver [`../backup/`](../backup/README.md)) não elimina a janela de perda entre o
   último WAL arquivado e o incidente.
@@ -127,6 +125,88 @@ então some-a ao orçamento do Postgres, nunca ao dos vizinhos.
 /etc/fstab
 UUID=…  /data  xfs  defaults,noatime  0 2
 ```
+
+### Volumes nomeados
+
+Os três serviços da org usam o **mesmo padrão**: volume nomeado com o driver
+`local`, o default do Docker ([justificativa](../../README.md#dados-em-volumes-nomeados)).
+Nada a criar antes de subir — nem diretório, nem dono, nem permissão.
+
+| Serviço | Volume | Dentro do container | Override |
+|---|---|---|---|
+| PostgreSQL | `bdh_pg_data` | `/var/lib/postgresql/data` | `PG_VOLUME` |
+| Redis | `bdh_redis_data` | `/data` | `REDIS_VOLUME` |
+| Meilisearch | `bdh_meili_data` | `/meili_data` | `MEILI_VOLUME` |
+
+```bash
+docker volume ls | grep bdh_
+docker volume inspect bdh_pg_data -f '{{.Mountpoint}}'   # /var/lib/docker/volumes/bdh_pg_data/_data
+```
+
+Os entrypoints do Postgres e do Redis ajustam o dono no start e degradam o
+processo para o uid 999 (`postgres` e `redis`, não root); o Meilisearch roda como
+root, que é o default da imagem oficial.
+
+> ⚠️ `docker compose down -v` **apaga** o volume. Use `down` sem `-v`.
+
+#### Confirme que o Docker está no NVMe
+
+Volume nomeado vive sob o *data-root* do Docker. Como o padrão não fixa um
+caminho no disco certo, essa checagem passa a ser parte da preparação do host:
+
+```bash
+docker info -f '{{.DockerRootDir}}'      # normalmente /var/lib/docker
+df -h /var/lib/docker                    # tem de ser o NVMe local
+lsblk -o NAME,ROTA,SIZE,MOUNTPOINT       # ROTA=0 → SSD/NVMe
+```
+
+#### Quando o NVMe não é o disco do Docker
+
+Duas saídas, e a escolha depende do que você quer mover:
+
+**1. Mover o data-root do Docker** — leva tudo (imagens, containers, todos os
+volumes) para o outro disco de uma vez. É o mais simples numa máquina dedicada a
+dados:
+
+```json
+/* /etc/docker/daemon.json — com o Docker parado */
+{ "data-root": "/mnt/nvme/docker" }
+```
+
+**2. Manter o volume nomeado com backing num diretório** — granular, por serviço,
+sem tocar no daemon. Um `docker-compose.override.yml` ao lado do compose:
+
+```yaml
+volumes:
+  pg_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/nvme/postgres     # precisa EXISTIR: o Docker não cria
+```
+
+O volume continua se chamando `bdh_pg_data`, então backup, `bdh status` e a
+documentação seguem valendo. É exatamente o que o
+[`infra-setup.sh`](../../README.md#setup-automatizado-de-vps) gera no modo
+`--volumes bind`.
+
+> Para conferir o backing, olhe `Options`, não `Mountpoint` — este último segue
+> mostrando o caminho sob `/var/lib/docker/volumes` mesmo quando os dados estão
+> em outro lugar:
+> ```bash
+> docker volume inspect bdh_pg_data -f '{{.Options.device}}'
+> ```
+
+Onde o disco realmente importa por serviço:
+
+- **Postgres** — latência de `fsync` no commit e IOPS de leitura aleatória; é o
+  que o [pré-voo](#pré-voo-validar-o-disco-antes-de-instalar) mede.
+- **Meilisearch** — o índice é LMDB acessado por `mmap`: precisa de disco local
+  (`mmap` sobre rede é patológico) e de page cache livre no host.
+- **Redis** — dados em memória; o disco só entra no `fsync` do AOF (1×/s) e no
+  rewrite. É o menos sensível dos três, mas o rewrite compete por IO com os
+  vizinhos.
 
 ## Limites de processo
 
@@ -142,12 +222,28 @@ LimitNPROC=65536
 
 ## Rede
 
-- Exponha o 5432 **apenas** na rede privada — no compose, faça o bind no IP
-  privado (`"${PRIVATE_IP}:5432:5432"`), nunca em `0.0.0.0`.
-- Firewall liberando o 5432 só para os IPs privados das máquinas de aplicação.
-- Se os vizinhos (Redis, Meilisearch) estiverem em outra máquina, a rede privada
-  entre elas passa a estar no caminho crítico de cada request — prefira o mesmo
-  datacenter/zona.
+O padrão do repositório é **publicar as portas em `0.0.0.0`** (`BIND_IP` com
+default aberto), para que qualquer máquina — inclusive fora da rede privada —
+consiga conectar. É uma escolha de conveniência operacional, e tem
+consequências que vale conhecer:
+
+- com a porta pública, **a senha é a única barreira**: as portas 5432 e 6379 são
+  varridas continuamente na internet;
+- o **Redis não faz TLS**: fora de rede confiável, a senha e os dados trafegam em
+  claro. O Postgres suporta TLS, mas a imagem não o habilita por default;
+- senhas precisam ser longas e aleatórias — o `infra-setup.sh` gera 32 bytes.
+
+Três formas de reduzir a exposição, quando desejado:
+
+| Como | Efeito |
+|---|---|
+| `BIND_IP=10.0.0.5` no `.env` | publica só na interface privada |
+| firewall por origem (`ufw allow from <CIDR> to any port 5432`) | libera só as máquinas de aplicação |
+| VPN/túnel (WireGuard) entre as máquinas | nada exposto; melhor opção fora do mesmo datacenter |
+
+Independentemente disso: se os vizinhos (Redis, Meilisearch) estiverem em outra
+máquina, a rede entre elas fica no caminho crítico de cada request — prefira o
+mesmo datacenter/zona e a rede privada do provedor.
 
 ## Checklist
 
@@ -158,10 +254,12 @@ Antes de subir o container:
 - [ ] THP em `never`
 - [ ] Scheduler de I/O em `none` e persistido via udev
 - [ ] Hugepages reservadas (perfis 64/128 GB) e somadas ao orçamento do Postgres
-- [ ] `/data` em XFS/ext4 com `noatime`, com folga para `max_wal_size × 2`
+- [ ] Filesystem em XFS/ext4 com `noatime`, com folga para `max_wal_size × 2`
+- [ ] **`docker info -f '{{.DockerRootDir}}'` no NVMe** — é onde os volumes vivem
 - [ ] RAID1 em servidor dedicado
 - [ ] `LimitNOFILE` ajustado
-- [ ] 5432 apenas na rede privada
+- [ ] Senhas longas e aleatórias (as portas são públicas por default) e, se
+      quiser restringir, `BIND_IP`/firewall/VPN definidos
 
 Depois de subir, confirme o que dependia do host:
 

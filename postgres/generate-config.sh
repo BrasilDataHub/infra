@@ -12,6 +12,14 @@ set -euo pipefail
 
 CONF=/etc/postgresql/postgresql.conf
 
+# Confere o /dev/shm real contra o que o perfil precisa e, por default, reduz
+# max_parallel_workers_per_gather se não couber — em vez de deixar a primeira
+# query paralela pesada morrer com "could not resize shared memory segment".
+# Precisa vir ANTES do heredoc, que é onde a variável é consumida.
+# Ver shm-guard.sh e docs/troubleshooting.md.
+# shellcheck source=shm-guard.sh
+. /usr/local/bin/shm-guard.sh
+
 cat > "$CONF" <<EOF
 # ARQUIVO GERADO no start do container por generate-config.sh — não editar
 # à mão: defina as envs PG_* no deploy (ver README do infra/postgres).
@@ -123,4 +131,6 @@ dynamic_shared_memory_type = posix
 EOF
 
 chmod 644 "$CONF"
-echo "postgresql.conf gerado (shared_buffers=${PG_SHARED_BUFFERS:-2GB}, effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-6GB}, max_parallel_workers=${PG_MAX_PARALLEL_WORKERS:-4}, random_page_cost=${PG_RANDOM_PAGE_COST:-1.1})"
+# max_parallel_workers_per_gather entra no resumo porque o shm-guard pode
+# tê-lo reduzido — sem isso, a degradação passa despercebida.
+echo "postgresql.conf gerado (shared_buffers=${PG_SHARED_BUFFERS:-2GB}, effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-6GB}, max_parallel_workers=${PG_MAX_PARALLEL_WORKERS:-4}, max_parallel_workers_per_gather=${PG_MAX_PARALLEL_WORKERS_PER_GATHER:-2}, random_page_cost=${PG_RANDOM_PAGE_COST:-1.1})"

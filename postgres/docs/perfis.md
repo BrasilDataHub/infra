@@ -17,7 +17,6 @@ específico.
 - [Justificativas](#justificativas)
 - [Limitações transversais](#limitações-transversais)
 - [Máquinas equivalentes por provedor](#máquinas-equivalentes-por-provedor)
-- [Compose de referência](#compose-de-referência)
 - [Validação de um perfil implantado](#validação-de-um-perfil-implantado)
 
 ## Premissas do catálogo
@@ -25,9 +24,8 @@ específico.
 A imagem é **única**: o `postgresql.conf` é gerado no start do container a
 partir de envs `PG_*` (ver `generate-config.sh`). Trocar de perfil é trocar
 envs no deploy — nenhum rebuild. Cada perfil é um **bloco de envs documentado
-neste guia**, pronto para copiar e colar: em painéis como o Dokploy, no
-Environment do serviço; fora deles, no `environment:`/`.env` do seu compose
-(template em [Compose de referência](#compose-de-referência)).
+neste guia**, pronto para colar no `.env` do compose de produção
+([receita](deploy.md#a-receita)).
 
 Quatro premissas valem para **todos** os perfis, sem exceção:
 
@@ -36,7 +34,10 @@ Quatro premissas valem para **todos** os perfis, sem exceção:
    storage de rede tem latência de ms e IOPS por cota, e transforma busca
    textual em base grande num problema de IO que nenhum tuning resolve. Se for
    inevitável, suba `PG_RANDOM_PAGE_COST` para 1.5–2.0 e trate os números deste
-   guia como otimistas. Requisitos e pré-voo de disco: [host.md](host.md).
+   guia como otimistas. Como os dados vivem num volume nomeado, o disco que
+   importa é o do **data-root do Docker** — confirme com
+   `docker info -f '{{.DockerRootDir}}'`. Requisitos e pré-voo:
+   [host.md](host.md).
 2. **Máquina dedicada ao Postgres.** A máquina pode hospedar outros containers
    de infraestrutura da org (Redis, Meilisearch) — ver
    [Coexistência](#coexistência-com-outros-serviços-no-mesmo-host) —, mas nunca
@@ -215,8 +216,16 @@ OOM-killer.
 
 | | 8gb | 16gb | 32gb | 64gb | 128gb |
 |---|---|---|---|---|---|
-| Limite de memória | 7G | 14G | 28G | 56G | 120G |
-| `shm_size` | 1gb | 2gb | 4gb | 4gb | 8gb |
+| Limite de memória (`PG_MEMORY_LIMIT`) | 7G | 14G | 28G | 56G | 120G |
+| `/dev/shm` | 1 GB | 2 GB | 4 GB | 4 GB | 8 GB |
+| em bytes (`PG_SHM_BYTES`)¹ | 1073741824 | 2147483648 | 4294967296 | 4294967296 | 8589934592 |
+
+¹ o mount `tmpfs` da [receita de deploy](deploy.md#a-receita) só aceita bytes.
+
+> ⚠️ **Estes dois valores são a parte do perfil que mais se perde no caminho** —
+> não são envs do Postgres, então copiar o bloco `PG_*` não os leva junto. Um
+> perfil aplicado só pelas envs parece correto em `pg_settings` e quebra horas
+> depois, na primeira query paralela pesada. Ver **[deploy.md](deploy.md)**.
 
 ## Os perfis
 
@@ -224,7 +233,7 @@ OOM-killer.
 
 | Orçamento PG | vCPU | Disco | Container |
 |---|---|---|---|
-| 8 GB | 2–4 | NVMe local | 7G · `shm_size` 1gb |
+| 8 GB | 2–4 | NVMe local | 7G · `/dev/shm` 1 GB |
 
 **Objetivo.** O menor perfil de produção séria, e os **defaults da imagem**:
 subir o container sem env nenhuma produz exatamente este perfil.
@@ -288,7 +297,7 @@ PG_STAT_STATEMENTS_MAX=5000
 
 | Orçamento PG | vCPU | Disco | Container |
 |---|---|---|---|
-| 16 GB | 8 | NVMe local | 14G · `shm_size` 2gb |
+| 16 GB | 8 | NVMe local | 14G · `/dev/shm` 2 GB |
 
 **Objetivo.** Folga real de cache e manutenção para bases de dezenas de GB — o
 melhor custo-benefício para projetos da org que já têm tráfego.
@@ -352,7 +361,7 @@ PG_STAT_STATEMENTS_MAX=5000
 
 | Orçamento PG | vCPU | Disco | Container |
 |---|---|---|---|
-| 32 GB | 8–16 | NVMe local | 28G · `shm_size` 4gb |
+| 32 GB | 8–16 | NVMe local | 28G · `/dev/shm` 4 GB |
 
 **Objetivo.** Serve tráfego enquanto roda agregação, e comporta várias bases
 médias juntas.
@@ -420,7 +429,7 @@ PG_STAT_STATEMENTS_MAX=10000
 
 | Orçamento PG | vCPU | Disco | Container |
 |---|---|---|---|
-| 64 GB | 16 | NVMe local | 56G · `shm_size` 4gb |
+| 64 GB | 16 | NVMe local | 56G · `/dev/shm` 4 GB |
 
 **Objetivo.** O perfil de produção do **Base Empresarial**: os índices críticos
 de busca (GIN trigram, btrees compostos, a tabela desnormalizada de ~10–12 GB)
@@ -487,7 +496,7 @@ PG_STAT_STATEMENTS_MAX=10000
 
 | Orçamento PG | vCPU | Disco | Container |
 |---|---|---|---|
-| 128 GB | 24 | NVMe local | 120G · `shm_size` 8gb |
+| 128 GB | 24 | NVMe local | 120G · `/dev/shm` 8 GB |
 
 **Objetivo.** Teto do catálogo: praticamente toda a parte quente de uma base
 grande (dados + índices) residente em memória; o disco sai do caminho crítico
@@ -771,10 +780,17 @@ e vivem no repositório de ETL do projeto, não aqui:
   (memória e contenção de latch).
 - **Huge pages.** `huge_pages=try` só tem efeito se o host reservar hugepages; em
   `shared_buffers` ≥ 16GB o ganho de TLB é mensurável. Ver [host.md](host.md).
-- **`shm_size` e paralelismo.** Com `dynamic_shared_memory_type=posix`, os
-  segmentos de memória compartilhada dos workers saem de `/dev/shm`. `shm_size`
-  insuficiente derruba queries paralelas com erro obscuro; os valores da tabela
-  de recursos consideram `max_parallel_workers × work_mem × hash_mem_multiplier`.
+- **`/dev/shm` e paralelismo.** Com `dynamic_shared_memory_type=posix`, os
+  segmentos de memória compartilhada dos workers saem de `/dev/shm`; em
+  container, o default é 64 MB. `/dev/shm` insuficiente derruba queries
+  paralelas com um erro que aponta para o lugar errado, e o risco **cresce com
+  o perfil** — o pico é `(workers+1) × work_mem × hash_mem_multiplier × nós de
+  hash`, então migrar para uma máquina maior torna o estouro mais provável, não
+  menos. Foi assim que a Base Empresarial perdeu 6h43 de ETL em 25/07/2026.
+  Aplique o mount `tmpfs` da [receita de deploy](deploy.md#a-receita); sintoma e
+  correção em [troubleshooting.md](troubleshooting.md#1-could-not-resize-shared-memory-segment).
+  Desde 2026-07 a imagem detecta a situação no start e degrada o paralelismo em
+  vez de quebrar (`PG_SHM_PREFLIGHT`, ver [shm-guard.sh](../shm-guard.sh)).
 - **Parâmetros que exigem restart:** `shared_buffers`, `max_connections`,
   `max_worker_processes`, `autovacuum_max_workers`, `wal_buffers`, `huge_pages`,
   `shared_preload_libraries`, `pg_stat_statements.max`,
@@ -815,42 +831,6 @@ Notas:
   muito superior por custo nos perfis 64/128 GB — ao preço de provisionamento
   mais lento e sem snapshot gerenciado. Prefira RAID1 de dois NVMe à unidade
   única: NVMe de consumo falha, e o PITR não elimina a janela de perda.
-
-## Compose de referência
-
-Os composes diferem entre perfis em três pontos: bloco de envs, limite de
-memória e `shm_size`. Copie o template, cole o bloco do perfil e ajuste os dois
-valores pela tabela de [recursos do container](#recursos-do-container).
-
-```yaml
-services:
-  postgres:
-    image: ghcr.io/brasildatahub/postgres:17
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:?defina POSTGRES_DB}
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
-      DADOS_READ_PASSWORD: ${DADOS_READ_PASSWORD:-}
-      # >>> cole aqui o bloco PG_* do perfil escolhido <<<
-    volumes:
-      # bind no NVMe LOCAL — nunca volume de rede (ver Premissas)
-      - /data/pgdata:/var/lib/postgresql/data
-    ports:
-      # exclusivamente o IP privado — nunca 0.0.0.0
-      - "${PRIVATE_IP:?defina PRIVATE_IP}:5432:5432"
-    shm_size: 4gb                # <- tabela de recursos do container
-    deploy:
-      resources:
-        limits:
-          memory: 56G            # <- tabela de recursos do container
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d $${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
-```
 
 ## Validação de um perfil implantado
 

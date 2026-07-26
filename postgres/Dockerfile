@@ -18,10 +18,11 @@ ARG PG_VERSION=17.10
 FROM postgres:${PG_VERSION}
 
 COPY generate-config.sh /usr/local/bin/generate-config.sh
+COPY shm-guard.sh /usr/local/bin/shm-guard.sh
 COPY docker-entrypoint-wrapper.sh /usr/local/bin/docker-entrypoint-wrapper.sh
 COPY initdb/ /docker-entrypoint-initdb.d/
 
-RUN chmod +x /usr/local/bin/generate-config.sh /usr/local/bin/docker-entrypoint-wrapper.sh \
+RUN chmod +x /usr/local/bin/generate-config.sh /usr/local/bin/shm-guard.sh /usr/local/bin/docker-entrypoint-wrapper.sh \
     && mkdir -p /etc/postgresql \
     && chown -R postgres:postgres /etc/postgresql
 

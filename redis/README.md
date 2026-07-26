@@ -18,7 +18,7 @@ deploy, nenhum rebuild:
 
 Os perfis são definidos pelo orçamento de memória do serviço, independentes
 de projeto e de fornecedor. Cada perfil é um bloco de envs para **copiar e
-colar** no deploy (Environment do Dokploy ou `.env` do compose):
+colar** no `.env` do compose:
 
 | Perfil | maxmemory | Limite de container | Quando usar |
 |---|---|---|---|
@@ -72,21 +72,42 @@ memória.
 - **`appendonly yes` (AOF, fsync a cada segundo)** — jobs enfileirados
   sobrevivem a restart.
 
-## Implantação no Dokploy
+## Implantação
 
-1. No serviço `redis` do projeto, trocar a imagem para
-   `ghcr.io/brasildatahub/redis:7`.
-2. Colar o bloco do perfil escolhido (tabela acima) no painel de
-   Environment, mais `REDIS_PASSWORD` (a mesma que a aplicação/Horizon usam).
-3. Conferir volume de dados montado em `/data`.
-4. Limite de memória do serviço: o da tabela de perfis (headroom do AOF).
-5. Redeploy e validar:
+Use o [`docker-compose.yml`](docker-compose.yml) desta pasta com um `.env` ao
+lado — é a forma recomendada, pelos mesmos motivos do Postgres
+([por quê](../postgres/docs/estrategia-deploy.md)). Num painel (Dokploy,
+Coolify), crie o serviço como **Compose stack** e cole o mesmo YAML; o Redis
+não usa `/dev/shm`, então não há a armadilha do Postgres — mas o **limite de
+memória continua sendo recurso do serviço**, e é ele que dá o headroom do AOF.
 
-   ```bash
-   redis-cli -a $REDIS_PASSWORD CONFIG GET maxmemory        # bytes do perfil
-   redis-cli -a $REDIS_PASSWORD CONFIG GET maxmemory-policy # volatile-lru
-   redis-cli -a $REDIS_PASSWORD CONFIG GET appendonly       # yes
-   ```
+```env
+REDIS_PASSWORD=...            # a mesma que a aplicação/Horizon usam
+REDIS_MAXMEMORY=512mb         # bloco do perfil
+REDIS_MEMORY_LIMIT=1G         # limite de container do perfil
+# opcionais: BIND_IP, REDIS_PORT, REDIS_VOLUME
+```
+
+```bash
+docker compose up -d
+
+# validação (limite aplicado + conf efetiva)
+docker inspect <container> --format 'Memory={{.HostConfig.Memory}}'   # ≠ 0
+redis-cli -a $REDIS_PASSWORD CONFIG GET maxmemory        # bytes do perfil
+redis-cli -a $REDIS_PASSWORD CONFIG GET maxmemory-policy # volatile-lru
+redis-cli -a $REDIS_PASSWORD CONFIG GET appendonly       # yes
+```
+
+**Volume.** O AOF fica no volume nomeado `bdh_redis_data`, montado em `/data` —
+mesmo padrão dos três serviços da org
+([layout](../postgres/docs/host.md#volumes-nomeados)). Nada a criar ou ajustar de
+permissão: o entrypoint corrige o dono no start e o Redis roda como uid 999, não
+como root. `docker compose down -v` **apaga** o volume; use `down` sem `-v`.
+
+**Porta.** Publicada em `0.0.0.0:6379` por default — o Redis não faz TLS, então
+fora de rede confiável a senha trafega em claro. Use uma senha longa e, se quiser
+restringir, `BIND_IP` numa interface privada ou firewall por origem
+([Rede](../postgres/docs/host.md#rede)).
 
 ## Validação local
 

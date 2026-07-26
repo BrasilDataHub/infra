@@ -1,20 +1,47 @@
-# Referência de implantação. O perfil é definido pelas envs REDIS_MAXMEMORY
-# e REDIS_MEMORY_LIMIT — blocos por perfil (cache-256mb/512mb/1gb/2gb) e a
-# regra do headroom de memória estão documentados no README.
+# Compose de PRODUÇÃO do Redis — mesma forma de deploy do Postgres
+# (por quê: ../postgres/docs/estrategia-deploy.md).
+#
+# .env ao lado deste arquivo:
+#   REDIS_PASSWORD=...
+#   REDIS_MAXMEMORY=512mb        # bloco do perfil (README)
+#   REDIS_MEMORY_LIMIT=1G        # limite de container do perfil (~2× maxmemory)
+#   # opcionais:
+#   # BIND_IP=10.0.0.5           # restringe a publicação a uma interface
+#   # REDIS_PORT=6379
+#   # REDIS_VOLUME=bdh_redis_data
+#
+#   docker compose up -d
+#
+# Em painel (Dokploy/Coolify), use recurso do tipo Compose stack com este mesmo
+# YAML e as variáveis no Environment.
 
 services:
   redis:
     image: ghcr.io/brasildatahub/redis:7
     restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?defina REDIS_PASSWORD}
       REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-512mb}
       REDIS_MAXMEMORY_POLICY: ${REDIS_MAXMEMORY_POLICY:-volatile-lru}
+    # consumida pelo `bdh status` e pela mensagem de login (ver infra-setup.sh)
+    labels:
+      org.brasildatahub.service: redis
     volumes:
-      - redis-data:/data
+      # o AOF vive aqui; o entrypoint ajusta o dono no start (uid 999)
+      - redis_data:/data
+    ports:
+      # 0.0.0.0 por default. O Redis não faz TLS: fora de rede confiável a senha
+      # trafega em claro. Para restringir, defina BIND_IP e/ou limite a origem
+      # no firewall — ver ../postgres/docs/host.md, Rede.
+      - "${BIND_IP:-0.0.0.0}:${REDIS_PORT:-6379}:6379"
     deploy:
       resources:
         limits:
+          # ~2× maxmemory: o rewrite do AOF forka e as páginas copy-on-write
+          # podem dobrar a memória do processo (ver README).
           memory: ${REDIS_MEMORY_LIMIT:-1G}
     healthcheck:
       test: ["CMD-SHELL", "redis-cli ${REDIS_PASSWORD:+-a \"$REDIS_PASSWORD\"} ping | grep PONG"]
@@ -23,4 +50,8 @@ services:
       retries: 5
 
 volumes:
-  redis-data:
+  # Volume nomeado com driver local — padrão do repositório (justificativa no
+  # README da raiz); `name` fixo para não depender do nome do projeto Compose.
+  redis_data:
+    driver: local
+    name: ${REDIS_VOLUME:-bdh_redis_data}

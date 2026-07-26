@@ -1,12 +1,28 @@
-# Referência de implantação. O perfil é definido pelas envs MEILI_* e
-# MEILI_MEMORY_LIMIT — os defaults abaixo são o perfil busca-1gb; blocos por
-# perfil (busca-512mb/1gb/4gb/16gb) e a regra de dimensionamento estão
-# documentados no README.
+# Compose de PRODUÇÃO do Meilisearch — mesma forma de deploy do Postgres
+# (por quê: ../postgres/docs/estrategia-deploy.md).
+#
+# .env ao lado deste arquivo:
+#   MEILI_MASTER_KEY=...              # ≥ 16 bytes com MEILI_ENV=production
+#   MEILI_MAX_INDEXING_MEMORY=1GiB    # bloco do perfil (README)
+#   MEILI_MAX_INDEXING_THREADS=1
+#   MEILI_MEMORY_LIMIT=1G             # limite de container do perfil
+#   # opcionais:
+#   # BIND_IP=10.0.0.5                # restringe a publicação a uma interface
+#   # MEILI_PORT=7700
+#   # MEILI_VOLUME=bdh_meili_data
+#
+#   docker compose up -d
+#
+# Em painel (Dokploy/Coolify), use recurso do tipo Compose stack com este mesmo
+# YAML e as variáveis no Environment.
 
 services:
   meilisearch:
     image: ghcr.io/brasildatahub/meilisearch:1.34
     restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
     environment:
       MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?defina MEILI_MASTER_KEY}
       MEILI_ENV: production
@@ -15,11 +31,20 @@ services:
       MEILI_MAX_INDEXING_MEMORY: ${MEILI_MAX_INDEXING_MEMORY:-1GiB}
       MEILI_MAX_INDEXING_THREADS: ${MEILI_MAX_INDEXING_THREADS:-1}
       MEILI_HTTP_PAYLOAD_SIZE_LIMIT: ${MEILI_HTTP_PAYLOAD_SIZE_LIMIT:-100MB}
+    # consumida pelo `bdh status` e pela mensagem de login (ver infra-setup.sh)
+    labels:
+      org.brasildatahub.service: meilisearch
     volumes:
-      - meili-data:/meili_data
+      # índice LMDB acessado por mmap — precisa de disco local
+      - meili_data:/meili_data
+    ports:
+      # 0.0.0.0 por default; a master key é a única barreira. Para restringir,
+      # defina BIND_IP e/ou limite a origem no firewall.
+      - "${BIND_IP:-0.0.0.0}:${MEILI_PORT:-7700}:7700"
     deploy:
       resources:
         limits:
+          # ~2× MEILI_MAX_INDEXING_MEMORY durante a indexação (ver README)
           memory: ${MEILI_MEMORY_LIMIT:-1G}
     healthcheck:
       # 127.0.0.1 (não "localhost"): o wget do busybox resolve localhost
@@ -30,4 +55,8 @@ services:
       retries: 5
 
 volumes:
-  meili-data:
+  # Volume nomeado com driver local — padrão do repositório (justificativa no
+  # README da raiz); `name` fixo para não depender do nome do projeto Compose.
+  meili_data:
+    driver: local
+    name: ${MEILI_VOLUME:-bdh_meili_data}

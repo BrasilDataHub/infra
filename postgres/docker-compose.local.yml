@@ -13,10 +13,18 @@
 #         FROM pg_file_settings WHERE NOT applied OR error IS NOT NULL;"
 #
 # A lista de envs abaixo (nomes sem valor, repassados do shell quando
-# definidos) precisa cobrir TODAS as PG_* de generate-config.sh — senão o
-# parâmetro fica impossível de validar localmente. Conferência:
-#   comm -23 <(grep -oE '\$\{PG_[A-Z0-9_]+' generate-config.sh | sed 's/^\${//' | sort -u) \
+# definidos) precisa cobrir TODAS as PG_* de generate-config.sh e de
+# shm-guard.sh — senão o parâmetro fica impossível de validar localmente.
+# Conferência:
+#   comm -23 <(grep -ohE '\$\{PG_[A-Z0-9_]+' generate-config.sh shm-guard.sh | sed 's/^\${//' | sort -u) \
 #            <(grep -oE 'PG_[A-Z0-9_]+' docker-compose.local.yml | sort -u)
+#
+# Para reproduzir localmente o incidente de 2026-07 (/dev/shm menor que o
+# perfil) — o shm-guard deve avisar e degradar o paralelismo, em vez de deixar
+# a falha para a primeira query pesada:
+#   PG_SHM_BYTES=67108864 PG_WORK_MEM=32MB PG_MAX_PARALLEL_WORKERS_PER_GATHER=4 \
+#       docker compose -f docker-compose.local.yml up --build -d
+#   docker compose -f docker-compose.local.yml logs postgres | grep shm-guard
 
 services:
   postgres:
@@ -83,8 +91,18 @@ services:
       - PG_LOG_TEMP_FILES
       - PG_LOG_LOCK_WAITS
       - PG_LOG_AUTOVACUUM_MIN_DURATION
+      # guarda de /dev/shm (ver shm-guard.sh)
+      - PG_SHM_PREFLIGHT
+      - PG_SHM_HASH_NODES
     ports:
       - "5432:5432"
+    volumes:
+      # mesma forma do compose de produção (ver docs/deploy.md);
+      # 1 GB = /dev/shm do perfil dedicada-8gb, o default desta validação
+      - type: tmpfs
+        target: /dev/shm
+        tmpfs:
+          size: ${PG_SHM_BYTES:-1073741824}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d dados_cnpj"]
       interval: 5s

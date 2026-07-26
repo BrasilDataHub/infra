@@ -14,8 +14,8 @@
   tempo, não só ao momento do último dump).
 - **Destino:** object storage S3-compatível, um bucket por projeto
   (ex.: `baseempresarial-pgbackrest` na Hetzner, ~€5/mês).
-- **Execução:** container sidecar no mesmo host do Postgres, compartilhando
-  o PGDATA (`/data/pgdata`) e o socket.
+- **Execução:** container sidecar no mesmo host do Postgres, montando o **volume
+  de dados** (`bdh_pg_data`) e o socket.
 
 ## Configuração (modelo)
 
@@ -37,10 +37,27 @@ process-max=4
 start-fast=y
 
 [dados-cnpj]
-pg1-path=/data/pgdata
+pg1-path=/var/lib/postgresql/data
 pg1-port=5432
 pg1-socket-path=/var/run/postgresql
 ```
+
+`pg1-path` é o caminho **dentro do container** — o sidecar monta o volume de
+dados ali, exatamente como o Postgres faz:
+
+```yaml
+  pgbackrest:
+    image: <imagem com pgbackrest>
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - /etc/pgbackrest:/etc/pgbackrest:ro
+      - pg_socket:/var/run/postgresql
+```
+
+Com isso a configuração não depende de nenhum caminho do host. Para snapshot ou
+inspeção pelo host, o diretório real do volume sai de
+`docker volume inspect bdh_pg_data -f '{{.Mountpoint}}'` — mas **copiar dali com
+o banco no ar não é backup consistente**; use o pgBackRest.
 
 No deploy da instância dedicada, definir as envs de archiving da imagem:
 
@@ -77,17 +94,23 @@ archive de um segmento de WAL (segundos a poucos minutos), não 24 h.
 
 ## Restore (testar antes de precisar — backup não testado não é backup)
 
+Restaure num **volume separado** (ex.: `bdh_pg_restore`), montado no sidecar em
+`/restore`, para nunca escrever sobre o volume em produção:
+
 ```bash
-# Restauração completa numa máquina/diretório limpo:
-pgbackrest --stanza=dados-cnpj --pg1-path=/data/pgdata-restore restore
+docker volume create bdh_pg_restore
+
+# Restauração completa:
+pgbackrest --stanza=dados-cnpj --pg1-path=/restore restore
 
 # PITR (ex.: logo antes de um incidente):
-pgbackrest --stanza=dados-cnpj --pg1-path=/data/pgdata-restore \
+pgbackrest --stanza=dados-cnpj --pg1-path=/restore \
     --type=time --target="2026-08-01 03:00:00-03" restore
 ```
 
-Depois do restore: subir o Postgres apontando para o diretório restaurado e
-validar contagem de linhas de ao menos uma tabela grande
+Depois do restore: subir um Postgres com `bdh_pg_restore` montado em
+`/var/lib/postgresql/data` e validar contagem de linhas de ao menos uma tabela
+grande
 (`SELECT count(*) FROM estabelecimento;` ≈ 72,3 M no mês de referência).
 
 **Teste de restore trimestral** (mínimo): executar o fluxo acima num

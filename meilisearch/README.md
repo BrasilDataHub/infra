@@ -70,21 +70,45 @@ deploy — nenhum rebuild.
 permitia `MEILI_MAX_INDEXING_MEMORY` de **6 GiB** num host de 8 GB dividido
 com Postgres e Redis — sentença de OOM. Todo perfil limita explicitamente.
 
-## Implantação no Dokploy
+## Implantação
 
-1. No serviço `meilisearch` do projeto: fixar a imagem
-   `ghcr.io/brasildatahub/meilisearch:1.34`.
-2. Colar o bloco do perfil escolhido (acima) no painel de Environment,
-   mais `MEILI_MASTER_KEY` (secreta — nunca commitada) e
-   `MEILI_ENV=production`.
-3. Conferir o volume de dados montado em `/meili_data`.
-4. Limite de memória do serviço: o da tabela de perfis.
-5. Redeploy e validar:
+Use o [`docker-compose.yml`](docker-compose.yml) desta pasta com um `.env` ao
+lado — é a forma recomendada, pelos mesmos motivos do Postgres
+([por quê](../postgres/docs/estrategia-deploy.md)). Num painel (Dokploy,
+Coolify), crie o serviço como **Compose stack** e cole o mesmo YAML; o Meili não
+usa `/dev/shm`, então não há a armadilha do Postgres — mas o **limite de memória
+continua sendo recurso do serviço**, e é ele que impede o OOM na indexação.
 
-   ```bash
-   curl -s http://localhost:7700/health          # {"status":"available"}
-   curl -s -H "Authorization: Bearer $MEILI_MASTER_KEY" http://localhost:7700/stats
-   ```
+```env
+MEILI_MASTER_KEY=...              # secreta, ≥ 16 bytes — nunca commitada
+MEILI_MAX_INDEXING_MEMORY=1GiB    # bloco do perfil
+MEILI_MAX_INDEXING_THREADS=1
+MEILI_HTTP_PAYLOAD_SIZE_LIMIT=100MB
+MEILI_MEMORY_LIMIT=1G             # limite de container do perfil
+# opcionais: BIND_IP, MEILI_PORT, MEILI_VOLUME
+```
+
+```bash
+docker compose up -d
+
+docker inspect <container> --format 'Memory={{.HostConfig.Memory}}'   # ≠ 0
+curl -s http://localhost:7700/health          # {"status":"available"}
+curl -s -H "Authorization: Bearer $MEILI_MASTER_KEY" http://localhost:7700/stats
+```
+
+> Com `MEILI_ENV=production`, a master key precisa ter **no mínimo 16 bytes** —
+> uma chave menor faz o container sair com erro no start.
+
+**Volume.** O índice fica no volume nomeado `bdh_meili_data`, montado em
+`/meili_data` — mesmo padrão dos três serviços da org
+([layout](../postgres/docs/host.md#volumes-nomeados)). Aqui o disco local não é
+preferência e sim requisito: o índice é LMDB acessado por `mmap`, que sobre volume
+de rede degrada de forma patológica — confirme que o data-root do Docker está no
+NVMe. `docker compose down -v` **apaga** o volume; use `down` sem `-v`.
+
+**Porta.** Publicada em `0.0.0.0:7700` por default, com a master key como única
+barreira; para restringir, `BIND_IP` ou firewall por origem
+([Rede](../postgres/docs/host.md#rede)).
 
 ### Indexação grande (ex.: Base Empresarial)
 
@@ -111,5 +135,5 @@ MEILI_MASTER_KEY=local-test MEILI_MAX_INDEXING_MEMORY=256MiB docker compose up -
 curl -s http://localhost:7700/health
 ```
 
-> O compose local não expõe porta por padrão no Dokploy; para testar fora
-> dele, adicione `ports: ["7700:7700"]` num override.
+> O compose de referência não publica porta; para testar localmente, adicione
+> `ports: ["7700:7700"]` num override.

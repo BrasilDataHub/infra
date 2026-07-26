@@ -1,0 +1,7 @@
+# Nada aqui vai para a imagem — o Dockerfile copia arquivo a arquivo. Manter
+# fora do contexto evita rebuild desnecessário quando só a documentação muda.
+docs/
+test/
+README.md
+docker-compose.yml
+docker-compose.local.yml

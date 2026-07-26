@@ -1,17 +1,32 @@
-# Exemplo de implantação — imagem única, tuning por envs PG_*.
-# Os perfis por máquina-alvo (dedicada-8gb/16gb/32gb/64gb/128gb; todos assumem
-# máquina dedicada com NVMe local) estão em docs/perfis.md como blocos de env
-# para copiar e colar (no Environment do Dokploy ou no .env deste compose);
-# lá também estão o template de compose e a fórmula de coexistência com
-# Redis/Meilisearch no mesmo host. Prepare o host antes: docs/host.md.
+# Compose de PRODUÇÃO do PostgreSQL — a forma recomendada de implantar esta
+# imagem (por quê: docs/estrategia-deploy.md).
+#
+# Um perfil tem três partes e só uma é env: bloco PG_*, /dev/shm e limite de
+# memória. Os três valores vêm de docs/perfis.md; cole o bloco PG_* do perfil
+# num .env ao lado deste arquivo, junto com as variáveis abaixo.
+#
+#   POSTGRES_DB=dados_cnpj
+#   POSTGRES_PASSWORD=...
+#   DADOS_READ_PASSWORD=...
+#   PG_SHM_BYTES=2147483648      # perfil dedicada-16gb
+#   PG_MEMORY_LIMIT=14G          # perfil dedicada-16gb
+#   # opcionais:
+#   # BIND_IP=10.0.0.5           # restringe a publicação a uma interface
+#   # POSTGRES_PORT=5432
+#   # PG_VOLUME=bdh_pg_data
+#
+#   docker compose up -d && docker compose logs -f postgres
+#
+# Depois: rodar a verificação pós-deploy (docs/deploy.md) — são 4 comandos, e
+# são o que separa um perfil aplicado de um perfil aplicado pela metade.
+#
+# Este mesmo YAML serve para um recurso Compose stack de Dokploy/Coolify.
+# Prepare o host antes: docs/host.md.
 
 services:
   postgres:
     image: ghcr.io/brasildatahub/postgres:17
     restart: unless-stopped
-    # Cole o bloco PG_* do perfil escolhido num .env ao lado deste arquivo.
-    # Toda env PG_* definida ali chega ao container; o que não estiver
-    # definido usa o default da imagem (= perfil dedicada-8gb).
     env_file:
       - path: .env
         required: false
@@ -20,23 +35,39 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
       DADOS_READ_PASSWORD: ${DADOS_READ_PASSWORD:-}
+    # consumida pelo `bdh status` e pela mensagem de login (ver infra-setup.sh)
+    labels:
+      org.brasildatahub.service: postgres
     volumes:
-      # em produção, bind mount no NVMe LOCAL (ex.: /data/pgdata) —
-      # nunca volume de rede (ver docs/perfis.md, Premissas)
-      - pgdata:/var/lib/postgresql/data
-    # limite e shm_size da tabela de recursos do container (docs/perfis.md);
-    # os defaults abaixo são os do perfil dedicada-8gb
-    shm_size: ${PG_SHM_SIZE:-1gb}
+      - pg_data:/var/lib/postgresql/data
+      # /dev/shm do perfil. Mount tmpfs, e não shm_size: esta forma funciona
+      # tanto em `docker compose up` quanto em Swarm/painel — shm_size é
+      # descartado sem aviso em Swarm e /dev/shm cai para os 64 MB de default
+      # do Docker, quebrando queries paralelas pesadas (docs/deploy.md).
+      - type: tmpfs
+        target: /dev/shm
+        tmpfs:
+          size: ${PG_SHM_BYTES:-1073741824}   # bytes; default = dedicada-8gb
+    ports:
+      # 0.0.0.0 por default: o banco fica alcançável de qualquer origem, e a
+      # senha é a única barreira. Para restringir, defina BIND_IP (interface
+      # privada) e/ou limite a origem no firewall — ver docs/host.md, Rede.
+      - "${BIND_IP:-0.0.0.0}:${POSTGRES_PORT:-5432}:5432"
     deploy:
       resources:
         limits:
-          memory: ${PG_MEMORY_LIMIT:-7G}
+          memory: ${PG_MEMORY_LIMIT:-7G}      # default = dedicada-8gb
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      start_period: 60s
 
 volumes:
-  pgdata:
+  # Volume nomeado com driver local — o padrão do repositório (justificativa no
+  # README da raiz). `name` fixo para que backup, `docker volume inspect` e o
+  # `bdh` não dependam do nome do projeto Compose.
+  pg_data:
+    driver: local
+    name: ${PG_VOLUME:-bdh_pg_data}
