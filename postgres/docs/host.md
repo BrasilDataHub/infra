@@ -237,9 +237,47 @@ Três formas de reduzir a exposição, quando desejado:
 
 | Como | Efeito |
 |---|---|
-| `BIND_IP=10.0.0.5` no `.env` | publica só na interface privada |
-| firewall por origem (`ufw allow from <CIDR> to any port 5432`) | libera só as máquinas de aplicação |
+| `BIND_IP=10.0.0.5` no `.env` | publica só na interface privada — simples e efetivo |
+| firewall por origem | libera só as máquinas de aplicação, **mas leia a ressalva abaixo** |
 | VPN/túnel (WireGuard) entre as máquinas | nada exposto; melhor opção fora do mesmo datacenter |
+
+### `ufw` não filtra portas publicadas pelo Docker
+
+Esta é a armadilha mais perigosa desta página, porque falha em silêncio:
+
+```bash
+ufw allow from 10.0.0.0/8 to any port 5432 proto tcp   # NÃO restringe o container
+```
+
+O pacote destinado a um container entra por `FORWARD → DOCKER-USER → DOCKER`,
+enquanto o ufw só instala regras em `INPUT`. Resultado: a porta continua
+acessível de qualquer origem e o `ufw status` mostra uma regra que dá a impressão
+contrária. Verificado em Debian 12 + Docker 29.
+
+A restrição real vive na chain **`DOCKER-USER`**, usando a **porta interna** do
+container (o DNAT já aconteceu quando o filtro roda):
+
+```bash
+# libera só a rede da aplicação e derruba o resto — porta INTERNA (5432)
+iptables -I DOCKER-USER -p tcp --dport 5432 -j DROP
+iptables -I DOCKER-USER -p tcp --dport 5432 -s 10.0.0.0/8 -j RETURN
+iptables -I DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+```
+
+Para persistir no boot, coloque as mesmas regras num bloco `*filter` no fim de
+`/etc/ufw/after.rules` (o ufw as reaplica no `reload` e no boot) — é o que o
+[`infra-setup.sh`](../../README.md#setup-automatizado-de-vps) faz com
+`--allow-from`. Duas notas:
+
+- **remover as regras do arquivo não as remove do kernel**: faça
+  `iptables -F DOCKER-USER` antes de reaplicar;
+- as regras acima são IPv4. Como o Docker vem sem IPv6 nas redes bridge
+  (`docker network inspect bridge -f '{{.EnableIPv6}}'` → `false`), o
+  `docker-proxy` escuta só em `0.0.0.0` e não há caminho IPv6 a filtrar. Se você
+  habilitar IPv6 no Docker, replique as regras em `ip6tables`.
+
+Se essa complexidade não é bem-vinda, prefira `BIND_IP` numa interface privada:
+o Docker respeita o IP do bind, e nada chega de fora.
 
 Independentemente disso: se os vizinhos (Redis, Meilisearch) estiverem em outra
 máquina, a rede entre elas fica no caminho crítico de cada request — prefira o

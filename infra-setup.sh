@@ -11,9 +11,20 @@
 # embutidos aqui — são baixados do próprio repositório, que segue sendo a única
 # fonte de verdade.
 #
-# Alvo: Ubuntu/Debian com systemd. Requer root.
+# Alvos:
+#   - Ubuntu/Debian com systemd (servidor): instala Docker, ajusta timezone e
+#     firewall, instala mensagem de login. Requer root.
+#   - macOS (estação de trabalho ou Mac mini como servidor): usa o Docker já
+#     instalado (Docker Desktop, OrbStack ou Colima), não mexe em firewall nem
+#     em arquivos de login. Funciona com ou sem sudo.
 # =============================================================================
 set -euo pipefail
+
+case "$(uname -s)" in
+    Linux)  OS_FAMILY="linux" ;;
+    Darwin) OS_FAMILY="macos" ;;
+    *)      printf 'Sistema não suportado: %s (use Linux Debian/Ubuntu ou macOS)\n' "$(uname -s)" >&2; exit 1 ;;
+esac
 
 SCRIPT_VERSION="1.0.0"
 
@@ -21,7 +32,6 @@ SCRIPT_VERSION="1.0.0"
 REPO_SLUG="BrasilDataHub/infra"
 REF="main"
 WORKDIR="/opt/brasildatahub"
-CONF_DIR="/etc/brasildatahub"
 TIMEZONE="America/Sao_Paulo"
 SERVICES_INPUT="postgres,redis,meilisearch"
 POSTGRES_DB="dados"
@@ -53,6 +63,14 @@ WEBHOOK_URL=""
 LOG_FILE=""
 declare -a SERVICES=()
 
+# Destinos que variam com a plataforma e com haver ou não privilégio de root.
+# Definidos em preflight().
+CONF_DIR=""
+BIN_DIR=""
+
+# `date -Is` é GNU; o BSD date do macOS não aceita.
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
 # --- saída -------------------------------------------------------------------
 if [[ -t 1 ]]; then
     C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
@@ -64,7 +82,7 @@ fi
 _log() {
     local line="$1"
     printf '%s\n' "$line"
-    [[ -n "$LOG_FILE" && -w "$(dirname "$LOG_FILE")" ]] && printf '%s %s\n' "$(date -Is)" "$line" >> "$LOG_FILE"
+    [[ -n "$LOG_FILE" && -w "$(dirname "$LOG_FILE")" ]] && printf '%s %s\n' "$(now_iso)" "$line" >> "$LOG_FILE"
     return 0
 }
 section() { _log ""; _log "${C_BOLD}${C_BLUE}==> $*${C_RESET}"; }
@@ -89,7 +107,7 @@ notify() {
     [[ "$DRY_RUN" == "true" ]] && return 0
     local payload
     payload=$(printf '{"host":"%s","script":"infra-setup","version":"%s","status":"%s","message":"%s","timestamp":"%s"}' \
-        "$(hostname)" "$SCRIPT_VERSION" "$status" "${message//\"/\\\"}" "$(date -Is)")
+        "$(hostname)" "$SCRIPT_VERSION" "$status" "${message//\"/\\\"}" "$(now_iso)")
     # Webhook nunca derruba o provisionamento.
     curl -fsS -m 5 -X POST -H 'Content-Type: application/json' -d "$payload" "$WEBHOOK_URL" >/dev/null 2>&1 || true
 }
@@ -99,7 +117,7 @@ trap 'notify "failed" "abortado na linha $LINENO"' ERR
 # --- ajuda -------------------------------------------------------------------
 usage() {
     cat <<'HELP'
-infra-setup.sh — provisiona um VPS para os serviços de dados da BrasilDataHub.
+infra-setup.sh — provisiona uma máquina para os serviços de dados da BrasilDataHub.
 
 USAGE:
     curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh \
@@ -108,6 +126,15 @@ USAGE:
     # ou, para revisar antes de executar (recomendado):
     curl -fsSL .../infra-setup.sh -o infra-setup.sh && less infra-setup.sh
     sudo bash infra-setup.sh [OPTIONS]
+
+PLATAFORMAS:
+    Ubuntu/Debian  instala Docker, ajusta timezone, configura ufw e a mensagem
+                   de login. Requer root.
+    macOS          usa o Docker já instalado (Docker Desktop/OrbStack/Colima);
+                   não mexe em firewall nem em arquivos de login, e roda sem
+                   sudo (configuração em ~/.config, bdh em ~/.local/bin).
+                   Ignorados no macOS: --docker-version, --docker-data-root,
+                   --skip-system-update, --allow-from.
 
 OPTIONS (geral):
   -h, --help                 Exibe esta ajuda
@@ -256,13 +283,38 @@ service_port() {
     esac
 }
 
+# Porta DENTRO do container. É ela que as regras da chain DOCKER-USER veem: o
+# DNAT da porta publicada acontece antes do filtro (ver configure_firewall).
+service_internal_port() {
+    case "$1" in
+        postgres) printf '5432' ;;
+        redis) printf '6379' ;;
+        meilisearch) printf '7700' ;;
+    esac
+}
+
 # Perfil do Postgres a partir da RAM total (ou do valor em GiB passado como
 # argumento, usado pelos testes). Margem generosa porque a RAM reportada é
 # sempre menor que a nominal do plano.
 # shellcheck disable=SC2120  # o argumento é opcional: em produção lê /proc/meminfo
 detect_pg_profile() {
     local ram_gb="${1:-}"
-    [[ -z "$ram_gb" ]] && ram_gb=$(awk '/MemTotal/ {printf "%d", $2 / 1024 / 1024}' /proc/meminfo)
+    if [[ -z "$ram_gb" ]]; then
+        # A referência é a memória que o Docker realmente tem: em Linux nativo é
+        # a RAM do host, mas no macOS o daemon roda numa VM que costuma receber
+        # metade dela — dimensionar pelo host geraria um limite maior que a VM.
+        local bytes
+        bytes="$(docker info -f '{{.MemTotal}}' 2>/dev/null || true)"
+        case "$bytes" in ''|*[!0-9]*) bytes="" ;; esac
+        if [[ -z "$bytes" ]]; then
+            if [[ -r /proc/meminfo ]]; then
+                bytes=$(awk '/MemTotal/ {printf "%d", $2 * 1024}' /proc/meminfo)
+            else
+                bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+            fi
+        fi
+        ram_gb=$(( bytes / 1024 / 1024 / 1024 ))
+    fi
     if   (( ram_gb >= 120 )); then printf 'dedicada-128gb'
     elif (( ram_gb >= 56 ));  then printf 'dedicada-64gb'
     elif (( ram_gb >= 28 ));  then printf 'dedicada-32gb'
@@ -498,15 +550,39 @@ validate_and_prompt() {
 
 preflight() {
     section "Pré-checagens"
-    [[ $EUID -eq 0 ]] || die "execute como root (sudo)"
-    [[ -f /etc/os-release ]] || die "não foi possível identificar a distribuição"
-    # shellcheck disable=SC1091
-    . /etc/os-release
-    case "${ID:-}${ID_LIKE:-}" in
-        *debian*|*ubuntu*) ok "distribuição suportada: ${PRETTY_NAME:-$ID}" ;;
-        *) die "só Ubuntu/Debian são suportados (encontrado: ${PRETTY_NAME:-$ID})" ;;
-    esac
-    command -v systemctl >/dev/null || die "systemd é necessário"
+
+    if [[ "$OS_FAMILY" == "linux" ]]; then
+        [[ $EUID -eq 0 ]] || die "execute como root (sudo)"
+        [[ -f /etc/os-release ]] || die "não foi possível identificar a distribuição"
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        case "${ID:-}${ID_LIKE:-}" in
+            *debian*|*ubuntu*) ok "distribuição suportada: ${PRETTY_NAME:-$ID}" ;;
+            *) die "no Linux, só Ubuntu/Debian são suportados (encontrado: ${PRETTY_NAME:-$ID})" ;;
+        esac
+        command -v systemctl >/dev/null || die "systemd é necessário"
+        CONF_DIR="/etc/brasildatahub"
+        BIN_DIR="/usr/local/bin"
+    else
+        ok "macOS $(sw_vers -productVersion 2>/dev/null || true)"
+        # Sem root: mantém tudo em caminhos do usuário em vez de falhar.
+        if [[ $EUID -eq 0 ]]; then
+            CONF_DIR="/etc/brasildatahub"
+            BIN_DIR="/usr/local/bin"
+        else
+            CONF_DIR="$HOME/.config/brasildatahub"
+            BIN_DIR="$HOME/.local/bin"
+            info "sem sudo: configuração em $CONF_DIR e comando bdh em $BIN_DIR"
+        fi
+        [[ -n "$DOCKER_DATA_ROOT" ]] && die "--docker-data-root não se aplica ao macOS (o Docker roda numa VM)"
+        [[ "$ENABLE_FIREWALL" == "true" ]] && info "firewall não é configurado no macOS (ver aviso no fim)"
+    fi
+
+    # Se o workdir não existe, o diretório-pai precisa ser gravável.
+    local parent; parent="$(dirname "$WORKDIR")"
+    if [[ ! -d "$WORKDIR" && ! -w "$parent" ]]; then
+        die "sem permissão para criar $WORKDIR — rode com sudo ou escolha outro --workdir"
+    fi
 
     if [[ -f "$WORKDIR/.setup-state" && "$FORCE" != "true" ]]; then
         die "instalação existente em $WORKDIR — use -f para refazer a configuração (volumes preservados)"
@@ -527,6 +603,30 @@ preflight() {
 
 setup_system() {
     section "Sistema"
+
+    if [[ "$OS_FAMILY" == "macos" ]]; then
+        # No macOS o script não atualiza o sistema nem instala pacotes: quem
+        # cuida disso é o próprio usuário (App Store/brew). Só confere as
+        # ferramentas que ele usa.
+        local missing=""
+        local tool
+        for tool in curl openssl; do
+            command -v "$tool" >/dev/null || missing+="$tool "
+        done
+        [[ -n "$missing" ]] && die "faltam ferramentas básicas: ${missing% } (instale com brew)"
+        if [[ $EUID -eq 0 ]]; then
+            if run systemsetup -settimezone "$TIMEZONE" >/dev/null 2>&1; then
+                ok "timezone: $TIMEZONE"
+            else
+                warn "não foi possível ajustar o timezone (ajuste em Configurações do Sistema)"
+            fi
+        else
+            info "timezone não alterado (precisa de sudo)"
+        fi
+        ok "ferramentas básicas presentes"
+        return 0
+    fi
+
     run timedatectl set-timezone "$TIMEZONE" && ok "timezone: $TIMEZONE"
 
     export DEBIAN_FRONTEND=noninteractive
@@ -550,8 +650,20 @@ install_docker() {
     section "Docker"
     if command -v docker >/dev/null && docker compose version >/dev/null 2>&1; then
         ok "já instalado: $(docker --version | cut -d, -f1), $(docker compose version --short 2>/dev/null || echo plugin)"
-        run systemctl enable --now docker
+        [[ "$OS_FAMILY" == "linux" ]] && run systemctl enable --now docker
+        if ! docker info >/dev/null 2>&1; then
+            die "o Docker está instalado mas não responde — inicie-o e rode de novo"
+        fi
         return 0
+    fi
+
+    if [[ "$OS_FAMILY" == "macos" ]]; then
+        # Instalar Docker Desktop por script exigiria interação gráfica; melhor
+        # falhar com instruções do que deixar meio instalado.
+        die "Docker não encontrado. Instale um destes e rode de novo:
+         brew install --cask docker      (Docker Desktop)
+         brew install orbstack           (OrbStack)
+         brew install colima docker docker-compose && colima start"
     fi
 
     # shellcheck disable=SC1091
@@ -586,6 +698,15 @@ install_docker() {
 
 configure_docker_data_root() {
     section "Armazenamento do Docker"
+
+    if [[ "$OS_FAMILY" == "macos" ]]; then
+        # Os volumes vivem no disco virtual da VM do Docker; não há data-root
+        # para apontar para outro dispositivo.
+        info "no macOS os volumes ficam no disco da VM do Docker — nada a ajustar"
+        info "espaço da VM: $(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo '?')"
+        return 0
+    fi
+
     local root
     root="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)"
 
@@ -698,7 +819,7 @@ write_env_files() {
         postgres)
             read -r limit shm <<< "$(profile_resources "$PG_PROFILE")"
             {
-                printf '# Gerado por infra-setup.sh (%s) — perfil %s\n' "$(date -Is)" "$PG_PROFILE"
+                printf '# Gerado por infra-setup.sh (%s) — perfil %s\n' "$(now_iso)" "$PG_PROFILE"
                 printf '# Referência dos parâmetros: postgres/docs/perfis.md\n\n'
                 printf 'POSTGRES_DB=%s\n' "$POSTGRES_DB"
                 printf 'POSTGRES_PASSWORD=%s\n' "$POSTGRES_PASSWORD"
@@ -712,7 +833,7 @@ write_env_files() {
             ;;
         redis)
             {
-                printf '# Gerado por infra-setup.sh (%s)\n' "$(date -Is)"
+                printf '# Gerado por infra-setup.sh (%s)\n' "$(now_iso)"
                 printf '# Perfis de memória: redis/README.md\n\n'
                 printf 'REDIS_PASSWORD=%s\n' "$REDIS_PASSWORD"
                 printf 'REDIS_MAXMEMORY=%s\n' "512mb"
@@ -722,7 +843,7 @@ write_env_files() {
             ;;
         meilisearch)
             {
-                printf '# Gerado por infra-setup.sh (%s)\n' "$(date -Is)"
+                printf '# Gerado por infra-setup.sh (%s)\n' "$(now_iso)"
                 printf '# Perfis de memória: meilisearch/README.md\n\n'
                 printf 'MEILI_MASTER_KEY=%s\n' "$MEILI_MASTER_KEY"
                 printf 'MEILI_MAX_INDEXING_MEMORY=%s\n' "1GiB"
@@ -739,7 +860,7 @@ write_env_files() {
     if [[ "$DRY_RUN" != "true" ]]; then
         {
             printf '# Credenciais dos serviços de dados — BrasilDataHub\n'
-            printf '# Gerado por infra-setup.sh em %s. NÃO versione este arquivo.\n\n' "$(date -Is)"
+            printf '# Gerado por infra-setup.sh em %s. NÃO versione este arquivo.\n\n' "$(now_iso)"
             if service_selected postgres; then
                 printf 'POSTGRES_DB=%s\nPOSTGRES_USER=postgres\nPOSTGRES_PASSWORD=%s\nDADOS_READ_PASSWORD=%s\nPOSTGRES_PORT=%s\n\n' \
                     "$POSTGRES_DB" "$POSTGRES_PASSWORD" "$DADOS_READ_PASSWORD" "$POSTGRES_PORT"
@@ -753,7 +874,7 @@ write_env_files() {
         {
             printf 'SCRIPT_VERSION=%s\n' "$SCRIPT_VERSION"
             printf 'REF=%s\n' "$REF"
-            printf 'INSTALLED_AT=%s\n' "$(date -Is)"
+            printf 'INSTALLED_AT=%s\n' "$(now_iso)"
             printf 'SERVICES=%s\n' "$(IFS=,; printf '%s' "${SERVICES[*]}")"
             printf 'VOLUMES_MODE=%s\n' "$VOLUMES_MODE"
             service_selected postgres && printf 'PG_PROFILE=%s\n' "$PG_PROFILE"
@@ -797,6 +918,17 @@ start_services() {
 
 configure_firewall() {
     section "Firewall"
+
+    if [[ "$OS_FAMILY" == "macos" ]]; then
+        warn "no macOS o script não configura firewall."
+        if [[ -n "$ALLOW_FROM" ]]; then
+            warn "--allow-from NÃO foi aplicado: use o firewall do macOS/roteador,"
+            warn "ou publique numa interface específica com --bind-ip."
+        fi
+        info "as portas publicadas seguem as regras do firewall do sistema"
+        return 0
+    fi
+
     if [[ "$ENABLE_FIREWALL" != "true" ]]; then
         warn "ufw não configurado (--no-firewall)"
         return 0
@@ -809,6 +941,7 @@ configure_firewall() {
     ok "SSH liberado (porta $ssh_port)"
 
     local s port cidr
+    local -a cidrs=()
     for s in "${SERVICES[@]}"; do
         port="$(service_port "$s")"
         if [[ -n "$ALLOW_FROM" ]]; then
@@ -825,26 +958,86 @@ configure_firewall() {
 
     run ufw --force enable
     ok "ufw ativo"
+
+    # ------------------------------------------------------------------
+    # As regras acima NÃO bastam para portas publicadas pelo Docker.
+    # Pacote para container entra por FORWARD -> DOCKER-USER -> DOCKER, e o ufw
+    # filtra apenas INPUT: `ufw allow from <CIDR> to any port 5432` não impede
+    # ninguém de conectar. Verificado em Debian 12 + Docker 29.
+    # A restrição real vive na chain DOCKER-USER, persistida em
+    # /etc/ufw/after.rules (que o ufw reaplica no reload e no boot).
+    # ------------------------------------------------------------------
+    local rules_file=/etc/ufw/after.rules
+    local begin='# BEGIN BrasilDataHub (infra-setup.sh) — restrição das portas publicadas pelo Docker'
+    local end='# END BrasilDataHub'
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        _log "    ${C_DIM}[dry-run] ajustaria a chain DOCKER-USER em $rules_file${C_RESET}"
+        return 0
+    fi
+
+    # Remove o bloco de uma execução anterior (idempotência).
+    if grep -qF "$begin" "$rules_file" 2>/dev/null; then
+        sed -i "/$(printf '%s' "$begin" | sed 's/[][\.*^$/]/\\&/g')/,/$(printf '%s' "$end" | sed 's/[][\.*^$/]/\\&/g')/d" "$rules_file"
+    fi
+
+    # Tirar o bloco do arquivo não basta: `ufw reload` apenas reaplica o que
+    # está nele, e as regras já inseridas continuam na chain. O script gerencia
+    # a DOCKER-USER integralmente, então limpa antes de reaplicar.
+    iptables -F DOCKER-USER 2>/dev/null || true
+
+    if [[ -z "$ALLOW_FROM" ]]; then
+        run ufw reload
+        warn "portas publicadas acessíveis de qualquer origem (sem --allow-from)"
+        return 0
+    fi
+
+    IFS=',' read -r -a cidrs <<< "$ALLOW_FROM"
+    {
+        printf '%s\n' "$begin"
+        printf '*filter\n:DOCKER-USER - [0:0]\n'
+        printf -- '-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN\n'
+        printf -- '-A DOCKER-USER -s 172.16.0.0/12 -j RETURN\n'   # entre containers
+        printf -- '-A DOCKER-USER -s 127.0.0.0/8 -j RETURN\n'     # do próprio host
+        for s in "${SERVICES[@]}"; do
+            port="$(service_internal_port "$s")"
+            for cidr in "${cidrs[@]}"; do
+                printf -- '-A DOCKER-USER -p tcp --dport %s -s %s -j RETURN\n' "$port" "$cidr"
+            done
+            printf -- '-A DOCKER-USER -p tcp --dport %s -j DROP\n' "$port"
+        done
+        printf -- '-A DOCKER-USER -j RETURN\nCOMMIT\n'
+        printf '%s\n' "$end"
+    } >> "$rules_file"
+
+    run ufw reload
+    ok "chain DOCKER-USER restringe as portas dos containers a ${ALLOW_FROM}"
 }
 
 install_cli_and_motd() {
     section "Comando bdh e mensagem de login"
     if [[ "$DRY_RUN" == "true" ]]; then
-        _log "    ${C_DIM}[dry-run] instalaria /usr/local/bin/bdh e o MOTD${C_RESET}"
+        _log "    ${C_DIM}[dry-run] instalaria ${BIN_DIR}/bdh e a mensagem de login${C_RESET}"
         return 0
     fi
 
-    cat > /usr/local/bin/bdh <<'BDH'
+    mkdir -p "$BIN_DIR"
+    cat > "$BIN_DIR/bdh" <<'BDH'
 #!/usr/bin/env bash
 # bdh — atalhos de operação dos serviços de dados da BrasilDataHub.
-# Instalado por infra-setup.sh. Fonte da verdade dos caminhos: /etc/brasildatahub/setup.conf
+# Instalado por infra-setup.sh. Os caminhos vêm de setup.conf (em /etc ou ~/.config).
 set -euo pipefail
 
 if [[ -z "${BDH_ROOT:-}" ]]; then
     BDH_ROOT="/opt/brasildatahub"
-    [[ -f /etc/brasildatahub/setup.conf ]] && . /etc/brasildatahub/setup.conf
+    for _conf in /etc/brasildatahub/setup.conf "$HOME/.config/brasildatahub/setup.conf"; do
+        [[ -f "$_conf" ]] && . "$_conf" && break
+    done
 fi
 LABEL="org.brasildatahub.service"
+
+# macOS não tem `timeout`; sem ele, roda direto.
+_t() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; else shift; "$@"; fi; }
 
 usage() {
     cat <<'USAGE'
@@ -875,7 +1068,7 @@ compose() {
 cmd_status() {
     local brief="${1:-}"
     local rows
-    rows="$(timeout 3 docker ps --filter "label=$LABEL" \
+    rows="$(_t 3 docker ps --filter "label=$LABEL" \
         --format '{{.Label "org.brasildatahub.service"}}\t{{.State}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || true)"
     if [[ -z "$rows" ]]; then
         echo "nenhum serviço em execução (ou Docker indisponível)"
@@ -900,7 +1093,7 @@ cmd_status() {
     done
     echo
     echo "Volumes:"
-    timeout 3 docker volume ls --filter name=bdh_ --format '  {{.Name}}' 2>/dev/null || true
+    _t 3 docker volume ls --filter name=bdh_ --format '  {{.Name}}' 2>/dev/null || true
 }
 
 cmd_verify() {
@@ -938,8 +1131,9 @@ case "${1:-status}" in
     *) usage; exit 2 ;;
 esac
 BDH
-    chmod 755 /usr/local/bin/bdh
-    ok "/usr/local/bin/bdh instalado"
+    chmod 755 "$BIN_DIR/bdh"
+    ok "$BIN_DIR/bdh instalado"
+    case ":$PATH:" in *":$BIN_DIR:"*) ;; *) warn "$BIN_DIR não está no PATH — adicione-o ao seu shell" ;; esac
 
     [[ "$INSTALL_MOTD" != "true" ]] && { warn "mensagem de login não instalada (--no-motd)"; return 0; }
 
@@ -950,7 +1144,9 @@ BDH
 # Mensagem de login — serviços de dados da BrasilDataHub (infra-setup.sh).
 if [[ -z "${BDH_ROOT:-}" ]]; then
     BDH_ROOT="/opt/brasildatahub"
-    [[ -f /etc/brasildatahub/setup.conf ]] && . /etc/brasildatahub/setup.conf
+    for _conf in /etc/brasildatahub/setup.conf "$HOME/.config/brasildatahub/setup.conf"; do
+        [[ -f "$_conf" ]] && . "$_conf" && break
+    done
 fi
 printf "\n\033[1mBrasilDataHub — servidor de dados\033[0m\n"
 printf "  configuração ... %s/services/<serviço>/\n" "$BDH_ROOT"
@@ -960,6 +1156,17 @@ if command -v bdh >/dev/null 2>&1; then
     bdh status --brief 2>/dev/null || true
 fi
 printf "\n"'
+
+    if [[ "$OS_FAMILY" == "macos" ]]; then
+        # macOS não tem update-motd.d, e editar o dotfile do usuário sem pedir
+        # seria invasivo: instala o script e mostra a linha a adicionar.
+        printf '%s\n' "$motd_body" > "$WORKDIR/login-message.sh"
+        chmod 755 "$WORKDIR/login-message.sh"
+        ok "mensagem de login em $WORKDIR/login-message.sh"
+        info "para exibi-la a cada shell, acrescente ao ~/.zprofile:"
+        info "  [ -x $WORKDIR/login-message.sh ] && $WORKDIR/login-message.sh"
+        return 0
+    fi
 
     if [[ -d /etc/update-motd.d ]]; then
         printf '%s\n' "$motd_body" > /etc/update-motd.d/99-brasildatahub
@@ -991,10 +1198,16 @@ summary() {
         _log ""
         info "  perfil do Postgres: $PG_PROFILE — revise em postgres/docs/perfis.md"
     fi
-    if [[ -z "$ALLOW_FROM" && "$ENABLE_FIREWALL" == "true" ]]; then
+    if [[ "$OS_FAMILY" == "macos" ]]; then
+        _log ""
+        warn "firewall não configurado (macOS): as portas seguem as regras do sistema."
+        warn "para restringir, publique numa interface com BIND_IP no .env, ou use"
+        warn "o firewall do roteador/rede."
+    elif [[ -z "$ALLOW_FROM" && "$ENABLE_FIREWALL" == "true" ]]; then
         _log ""
         warn "as portas dos serviços estão abertas para QUALQUER origem."
-        warn "para restringir depois: ufw delete allow <porta>/tcp && ufw allow from <CIDR> to any port <porta> proto tcp"
+        warn "para restringir depois, rode de novo com --allow-from <CIDR> (o script"
+        warn "ajusta ufw E a chain DOCKER-USER, que é a que vale para containers),"
         warn "ou defina BIND_IP no .env do serviço e recrie o container."
     fi
     _log ""

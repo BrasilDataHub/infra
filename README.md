@@ -81,7 +81,14 @@ Docker, layout de diretórios, `.env` de cada serviço, containers no ar, firewa
 mensagem de login e o comando `bdh`. É **opcional** — o fluxo manual de
 [deploy.md](postgres/docs/deploy.md) continua valendo.
 
-**Pré-requisitos:** Ubuntu ou Debian com systemd, acesso root, NVMe local.
+**Plataformas.** Ubuntu/Debian com systemd (servidor, requer root) e **macOS**
+(estação de trabalho ou Mac mini como servidor). No macOS o script usa o Docker
+já instalado — Docker Desktop, OrbStack ou Colima —, roda sem `sudo`
+(configuração em `~/.config/brasildatahub`, `bdh` em `~/.local/bin`), não mexe em
+firewall nem em arquivos de login, e dimensiona o perfil pela **memória da VM do
+Docker**, não pela do host — que é o que de fato limita os containers. Ignoradas
+no macOS: `--docker-version`, `--docker-data-root`, `--skip-system-update` e
+`--allow-from`.
 
 ```bash
 # interativo (pergunta serviços, perfil, modo de volume, rede)
@@ -165,13 +172,19 @@ conectem sem VPN. Para reduzir exposição:
 
 | Flag | Efeito |
 |---|---|
-| `--allow-from 10.0.0.0/8` | firewall libera as portas só para esses CIDRs |
+| `--allow-from 10.0.0.0/8` | libera as portas só para esses CIDRs (ufw **e** chain `DOCKER-USER`) |
 | `--bind-ip 10.0.0.5` | publica apenas na interface privada |
 | `--no-firewall` | script não mexe no ufw (você configura) |
 
 O SSH é liberado **antes** de o firewall ser ativado, na porta detectada em
-`sshd_config`. Detalhes e alternativas (VPN, TLS):
-[host.md, Rede](postgres/docs/host.md#rede).
+`sshd_config`.
+
+> ⚠️ **`ufw allow from … to any port 5432` sozinho não restringe container
+> nenhum.** O tráfego para containers passa por `FORWARD → DOCKER-USER`, e o ufw
+> só filtra `INPUT` — a regra aparece no `ufw status` e não bloqueia nada.
+> Por isso o `--allow-from` também escreve regras na chain `DOCKER-USER`
+> (persistidas em `/etc/ufw/after.rules`). Se for configurar à mão, siga
+> [host.md, Rede](postgres/docs/host.md#ufw-não-filtra-portas-publicadas-pelo-docker).
 
 ## Publicação
 
