@@ -535,6 +535,23 @@ metrics_budget_gb() {
     printf '%d' "$base"
 }
 
+# A chave de métricas do Meilisearch é lida pelo PROCESSO do Prometheus, que na
+# imagem oficial roda como `nobody` (65534) — não como root. Um `chmod 600` com
+# dono root deixa o arquivo ilegível para ele, e o sintoma é silencioso: o
+# container sobe saudável e só o job do Meilisearch fica `down` para sempre, com
+# "permission denied" enterrado no /api/v1/targets.
+#
+# `chown` + `600` mantém o segredo fora do alcance dos outros usuários do host,
+# que é o ponto do 600. No macOS não há uid 65534 e o script roda sem root: lá o
+# bind mount não propaga dono, então o chown é dispensável.
+PROMETHEUS_UID=65534
+protect_metrics_key() {
+    local f="$1"
+    [[ -e "$f" ]] || return 0
+    [[ "$OS_FAMILY" == "linux" ]] && chown "$PROMETHEUS_UID:$PROMETHEUS_UID" "$f"
+    chmod 600 "$f"
+}
+
 # Baixa o .env do perfil do repositório (ou copia de --profiles-dir, útil para
 # fork/teste sem rede).
 fetch_profile() {
@@ -967,7 +984,7 @@ create_layout() {
                 # job do Meilisearch não existir. Sem este arquivo, um host sem
                 # Meilisearch ficaria sem monitoração nenhuma.
                 touch "$dir/secrets/meili-metrics.key"
-                chmod 600 "$dir/secrets/meili-metrics.key"
+                protect_metrics_key "$dir/secrets/meili-metrics.key"
             fi
             ok "monitoring: compose em $dir"
         fi
@@ -1303,7 +1320,7 @@ setup_metrics() {
         [[ "$METRICS_CONTAINERS" == "true" ]] \
             && printf '[{"targets":["cadvisor:8080"]}]\n' > "$mdir/targets/cadvisor.json"
     fi
-    chmod 600 "$mdir/secrets/meili-metrics.key"
+    protect_metrics_key "$mdir/secrets/meili-metrics.key"
     ok "alvos escritos em $mdir/targets/"
 
     # --- sobe a stack ---------------------------------------------------------
