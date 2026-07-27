@@ -48,6 +48,75 @@ check "125 GB → dedicada-128gb" "dedicada-128gb"  "$(detect_pg_profile 125)"
 check "2 GB → menor perfil"     "dedicada-8gb"    "$(detect_pg_profile 2)"
 check "13 GB não sobe de perfil" "dedicada-8gb"   "$(detect_pg_profile 13)"
 
+printf '\nDetecção de perfil dos vizinhos pela RAM\n'
+check "8 GB  → cache-256mb"   "cache-256mb"  "$(detect_redis_profile 8)"
+check "13 GB → cache-256mb"   "cache-256mb"  "$(detect_redis_profile 13)"
+check "14 GB → cache-512mb"   "cache-512mb"  "$(detect_redis_profile 14)"
+check "27 GB → cache-512mb"   "cache-512mb"  "$(detect_redis_profile 27)"
+check "28 GB → cache-1gb"     "cache-1gb"    "$(detect_redis_profile 28)"
+check "56 GB → cache-2gb"     "cache-2gb"    "$(detect_redis_profile 56)"
+check "128 GB → cache-2gb"    "cache-2gb"    "$(detect_redis_profile 128)"
+
+check "8 GB  → busca-512mb"   "busca-512mb"  "$(detect_meili_profile 8)"
+check "14 GB → busca-1gb"     "busca-1gb"    "$(detect_meili_profile 14)"
+check "28 GB → busca-4gb"     "busca-4gb"    "$(detect_meili_profile 28)"
+check "56 GB → busca-16gb"    "busca-16gb"   "$(detect_meili_profile 56)"
+
+# Métricas NÃO escalam com a RAM: a cardinalidade segue o número de alvos, não o
+# tamanho do host. Este teste é o que impede alguém de "consertar" isso depois.
+METRICS_CONTAINERS="false"
+check "métricas: 16 GB → metricas-512mb"  "metricas-512mb" "$(detect_metrics_profile)"
+check "métricas: 128 GB → metricas-512mb" "metricas-512mb" "$(detect_metrics_profile)"
+METRICS_CONTAINERS="true"
+check "métricas com cAdvisor → metricas-2gb" "metricas-2gb" "$(detect_metrics_profile)"
+METRICS_CONTAINERS="false"
+
+printf '\nOrçamento dos vizinhos (perfil → GB, arredondado para cima)\n'
+check "cache-256mb → 1"     "1"  "$(neighbor_budget_gb cache-256mb)"
+check "cache-512mb → 1"     "1"  "$(neighbor_budget_gb cache-512mb)"
+check "cache-1gb → 2"       "2"  "$(neighbor_budget_gb cache-1gb)"
+check "cache-2gb → 3"       "3"  "$(neighbor_budget_gb cache-2gb)"
+check "busca-512mb → 1"     "1"  "$(neighbor_budget_gb busca-512mb)"
+check "busca-1gb → 1"       "1"  "$(neighbor_budget_gb busca-1gb)"
+check "busca-4gb → 4"       "4"  "$(neighbor_budget_gb busca-4gb)"
+check "busca-16gb → 16"     "16" "$(neighbor_budget_gb busca-16gb)"
+check "metricas-512mb → 2"  "2"  "$(neighbor_budget_gb metricas-512mb)"
+check "metricas-2gb → 4"    "4"  "$(neighbor_budget_gb metricas-2gb)"
+check "metricas-8gb → 10"   "10" "$(neighbor_budget_gb metricas-8gb)"
+check "perfil desconhecido → 0" "0" "$(neighbor_budget_gb inexistente)"
+
+# metrics_budget_gb delega para neighbor_budget_gb — sem esta checagem, as duas
+# tabelas de números poderiam divergir em silêncio.
+METRICS_PROFILE="metricas-512mb"; METRICS_CONTAINERS="false"
+check "metrics_budget_gb = neighbor_budget_gb" "2" "$(metrics_budget_gb)"
+METRICS_CONTAINERS="true"
+check "metrics_budget_gb soma o cAdvisor" "3" "$(metrics_budget_gb)"
+METRICS_CONTAINERS="false"
+
+printf '\nDimensionamento coordenado cabe na máquina\n'
+# O teste que protege a decisão de projeto: para cada tamanho de host, a soma do
+# conjunto que o `auto` escolhe precisa caber. É o que impede uma faixa futura de
+# reintroduzir o superdimensionamento que existia quando o Postgres era
+# detectado pela RAM total, ignorando os vizinhos.
+for ram in 16 32 64 128; do
+    r="$(detect_redis_profile "$ram")"
+    m="$(detect_meili_profile "$ram")"
+    viz=$(( $(neighbor_budget_gb "$r") + $(neighbor_budget_gb "$m") \
+            + $(neighbor_budget_gb metricas-512mb) ))
+    pg="$(detect_pg_profile $(( ram - viz )))"
+    total=$(( $(profile_budget_gb "$pg") + viz ))
+    if (( total <= ram )); then
+        pass "${ram} GB: $pg + $r + $m + métricas = ${total} GB"
+    else
+        fail "${ram} GB: conjunto soma ${total} GB e NÃO cabe ($pg + $r + $m)"
+    fi
+done
+
+# Postgres sozinho continua recebendo a máquina inteira — o comportamento de
+# antes do dimensionamento coordenado.
+check "sem vizinhos, 32 GB → dedicada-32gb"   "dedicada-32gb"  "$(detect_pg_profile 32)"
+check "sem vizinhos, 128 GB → dedicada-128gb" "dedicada-128gb" "$(detect_pg_profile 128)"
+
 printf '\nOrçamento do perfil (nome → GB)\n'
 check "dedicada-8gb → 8"     "8"   "$(profile_budget_gb dedicada-8gb)"
 check "dedicada-16gb → 16"   "16"  "$(profile_budget_gb dedicada-16gb)"
@@ -265,6 +334,10 @@ printf '\nAjuda\n'
 check "usage() cita a recusa de perfil grande demais" "ok" "$(usage | grep -q -- '--allow-oversized-profile' && echo ok)"
 check "usage() cita --metrics" "ok" "$(usage | grep -q -- '--metrics ' && echo ok)"
 check "usage() cita --metrics-only" "ok" "$(usage | grep -q -- '--metrics-only' && echo ok)"
+check "usage() cita auto no Redis" "ok" "$(usage | grep -q 'auto | cache-256mb' && echo ok)"
+check "usage() cita auto no Meili" "ok" "$(usage | grep -q 'auto | busca-512mb' && echo ok)"
+check "usage() cita auto nas métricas" "ok" "$(usage | grep -q 'auto | metricas-512mb' && echo ok)"
+check "usage() explica o dimensionamento coordenado" "ok" "$(usage | grep -q 'COORDENADO' && echo ok)"
 usage >/dev/null 2>&1
 check "usage() não falha" "0" "$?"
 check "usage() cita o modo bind" "ok" "$(usage | grep -q -- '--volumes MODE' && echo ok)"

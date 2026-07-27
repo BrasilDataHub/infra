@@ -35,9 +35,11 @@ WORKDIR="/opt/brasildatahub"
 TIMEZONE="America/Sao_Paulo"
 SERVICES_INPUT="postgres,redis,meilisearch"
 POSTGRES_DB="dados"
+# Todos em 'auto': o dimensionamento é coordenado em validate_and_prompt() —
+# vizinhos primeiro, Postgres com a memória que sobra.
 PG_PROFILE="auto"
-REDIS_PROFILE="cache-512mb"
-MEILI_PROFILE="busca-1gb"
+REDIS_PROFILE="auto"
+MEILI_PROFILE="auto"
 PROFILES_DIR=""
 ALLOW_OVERSIZED="false"
 VOLUMES_MODE="named"
@@ -63,7 +65,7 @@ ENABLE_FIREWALL="true"
 METRICS_ENABLED="false"
 METRICS_ONLY="false"             # --metrics-only: acrescenta métricas SEM recriar os serviços
 MONITORING_ENABLED="true"        # --no-monitoring: só exporters, Prometheus alhures
-METRICS_PROFILE="metricas-512mb"
+METRICS_PROFILE="auto"
 METRICS_CONTAINERS="false"       # --metrics-containers liga o cAdvisor
 METRICS_NETWORK="bdh_metrics"
 MONITORING_BIND_IP="127.0.0.1"   # NUNCA reusar BIND_IP: o default dele é 0.0.0.0
@@ -175,11 +177,11 @@ OPTIONS (serviços):
       --services LIST        postgres,redis,meilisearch (default: todos)
       --postgres-db NOME     Database inicial do Postgres (default: dados)
       --pg-profile PERFIL    auto | dedicada-8gb | dedicada-16gb | dedicada-32gb
-                             | dedicada-64gb | dedicada-128gb   (default: auto, pela RAM)
-      --redis-profile PERFIL cache-256mb | cache-512mb | cache-1gb | cache-2gb
-                             (default: cache-512mb)
-      --meili-profile PERFIL busca-512mb | busca-1gb | busca-4gb | busca-16gb
-                             (default: busca-1gb)
+                             | dedicada-64gb | dedicada-128gb   (default: auto)
+      --redis-profile PERFIL auto | cache-256mb | cache-512mb | cache-1gb
+                             | cache-2gb                        (default: auto)
+      --meili-profile PERFIL auto | busca-512mb | busca-1gb | busca-4gb
+                             | busca-16gb                       (default: auto)
       --profiles-dir PATH    Lê os perfis de uma cópia local do repositório em
                              vez de baixá-los (ex.: um clone ou fork)
       --allow-oversized-profile
@@ -190,6 +192,11 @@ OPTIONS (serviços):
     Cada perfil é um arquivo .env versionado no repositório
     (postgres/profiles/, redis/profiles/, meilisearch/profiles/). O script baixa
     o arquivo e acrescenta senhas e rede — nenhum valor de tuning vive aqui.
+
+    Com 'auto' (o default de todos), o dimensionamento é COORDENADO: Redis,
+    Meilisearch e métricas são escolhidos pela RAM da máquina, e o Postgres fica
+    com o que sobra — a fórmula de reserva de postgres/docs/perfis.md. Com
+    --services postgres, ele recebe a máquina inteira.
 
 OPTIONS (volumes):
       --volumes MODE         named | bind (default: named)
@@ -214,8 +221,11 @@ OPTIONS (observabilidade — desligada por default):
                              para ligar métricas num banco em produção.
       --no-monitoring        Só os exporters (Prometheus vive em outra máquina)
       --metrics-profile PERFIL
-                             metricas-512mb | metricas-2gb | metricas-8gb
-                             (default: metricas-512mb)
+                             auto | metricas-512mb | metricas-2gb | metricas-8gb
+                             (default: auto). 'auto' NÃO escala com a RAM: a
+                             cardinalidade segue o número de alvos, não o
+                             tamanho do host. Dá metricas-512mb, ou metricas-2gb
+                             com --metrics-containers.
       --metrics-containers   Inclui o cAdvisor (memória usada vs limite por
                              container; custa 200-400 MB de RAM)
       --metrics-bind-ip IP   Interface do Grafana e do Prometheus
@@ -404,6 +414,10 @@ profile_budget_gb() {
     printf '%s' "${n%gb}"
 }
 
+# O Postgres é detectado pela memória que SOBRA depois dos vizinhos, não pela RAM
+# total — é a fórmula de retrofit de docs/perfis.md aplicada automaticamente.
+# Quem passa o argumento é validate_and_prompt(); sem argumento, assume a máquina
+# inteira (Postgres sozinho).
 detect_pg_profile() {
     local ram_gb="${1:-}"
     [[ -z "$ram_gb" ]] && ram_gb="$(available_mem_gb)"
@@ -412,6 +426,47 @@ detect_pg_profile() {
     elif (( ram_gb >= 28 ));  then printf 'dedicada-32gb'
     elif (( ram_gb >= 14 ));  then printf 'dedicada-16gb'
     else                            printf 'dedicada-8gb'
+    fi
+}
+
+# Redis e Meilisearch escalam pela RAM TOTAL do host: o porte da máquina é o
+# melhor indicador disponível do volume de cache/fila e do tamanho do índice.
+# As faixas são as mesmas do Postgres para que os conjuntos resultantes batam
+# com a tabela "Combinações prováveis" de docs/perfis.md.
+# shellcheck disable=SC2120  # o argumento é opcional: em produção lê a RAM real
+detect_redis_profile() {
+    local ram_gb="${1:-}"
+    [[ -z "$ram_gb" ]] && ram_gb="$(available_mem_gb)"
+    if   (( ram_gb >= 56 )); then printf 'cache-2gb'
+    elif (( ram_gb >= 28 )); then printf 'cache-1gb'
+    elif (( ram_gb >= 14 )); then printf 'cache-512mb'
+    else                          printf 'cache-256mb'
+    fi
+}
+
+# shellcheck disable=SC2120  # idem
+detect_meili_profile() {
+    local ram_gb="${1:-}"
+    [[ -z "$ram_gb" ]] && ram_gb="$(available_mem_gb)"
+    if   (( ram_gb >= 56 )); then printf 'busca-16gb'
+    elif (( ram_gb >= 28 )); then printf 'busca-4gb'
+    elif (( ram_gb >= 14 )); then printf 'busca-1gb'
+    else                          printf 'busca-512mb'
+    fi
+}
+
+# Métricas NÃO escalam com a RAM, e isso é deliberado: a cardinalidade do
+# Prometheus depende do NÚMERO DE ALVOS, não do tamanho do host. Um host com os
+# três serviços gera ~3 mil séries tanto em 16 quanto em 128 GB (medido: 3.470).
+# Escalar por RAM desperdiçaria memória que o Postgres usaria como page cache.
+#
+# metricas-8gb nunca é automático: é para 5–15 hosts, um cenário multi-host que
+# este script não conhece.
+detect_metrics_profile() {
+    if [[ "$METRICS_CONTAINERS" == "true" ]]; then
+        printf 'metricas-2gb'      # o cAdvisor sozinho dobra o volume de séries
+    else
+        printf 'metricas-512mb'
     fi
 }
 
@@ -442,17 +497,40 @@ service_profile() {
     esac
 }
 
-# Orçamento de RAM da stack de observabilidade, em GB, para o aviso de
-# coexistência: o detect_pg_profile() dimensiona o Postgres pela memória total e
-# não sabe que a monitoração também vai consumir.
+# Orçamento de RAM de um perfil de VIZINHO, em GB — o que entra na fórmula de
+# reserva de docs/perfis.md. São os limites de container dos arquivos .env
+# arredondados PARA CIMA: melhor sobrar page cache para o Postgres do que
+# descobrir o erro como OOM-kill.
+#
+# Fonte dos números: <serviço>/profiles/*.env (REDIS_MEMORY_LIMIT,
+# MEILI_MEMORY_LIMIT, e a soma dos limites de monitoring/profiles/*.env).
+neighbor_budget_gb() {
+    case "$1" in
+        # Redis — REDIS_MEMORY_LIMIT: 512M / 1G / 2G / 3G
+        cache-256mb)    printf '1' ;;
+        cache-512mb)    printf '1' ;;
+        cache-1gb)      printf '2' ;;
+        cache-2gb)      printf '3' ;;
+        # Meilisearch — MEILI_MEMORY_LIMIT (valor de PICO de indexação)
+        busca-512mb)    printf '1' ;;
+        busca-1gb)      printf '1' ;;
+        busca-4gb)      printf '4' ;;
+        busca-16gb)     printf '16' ;;
+        # Observabilidade — Prometheus + Grafana + node exporter + exporters.
+        # O cAdvisor entra à parte, em metrics_budget_gb().
+        metricas-512mb) printf '2' ;;
+        metricas-2gb)   printf '4' ;;
+        metricas-8gb)   printf '10' ;;
+        *)              printf '0' ;;
+    esac
+}
+
+# Orçamento da stack de observabilidade. Delega a neighbor_budget_gb para não
+# manter duas tabelas de números que precisariam ser atualizadas juntas.
 metrics_budget_gb() {
     local base
-    case "$METRICS_PROFILE" in
-        metricas-512mb) base=2 ;;
-        metricas-2gb)   base=3 ;;
-        metricas-8gb)   base=10 ;;
-        *)              base=2 ;;
-    esac
+    base="$(neighbor_budget_gb "$METRICS_PROFILE")"
+    [[ "$base" == "0" ]] && base=2      # perfil desconhecido: assume o menor
     [[ "$METRICS_CONTAINERS" == "true" ]] && base=$((base + 1))
     printf '%d' "$base"
 }
@@ -495,18 +573,61 @@ validate_and_prompt() {
     done
     [[ ${#SERVICES[@]} -eq 0 ]] && die "nenhum serviço selecionado"
 
-    if service_selected postgres; then
-        PG_PROFILE="$(ask "Perfil do Postgres (auto detecta pela RAM)" "$PG_PROFILE")"
+    # --- dimensionamento coordenado ------------------------------------------
+    # Os VIZINHOS são resolvidos primeiro e o Postgres fica com a memória que
+    # sobra — a fórmula de reserva de postgres/docs/perfis.md aplicada
+    # automaticamente. Antes o Postgres era dimensionado pela RAM total e
+    # ignorava os vizinhos: numa VPS de 32 GB o --auto entregava dedicada-32gb
+    # (limite 28G) + Redis 1G + Meili 1G, sem margem para o SO.
+    local mem_gb neighbors_gb=0
+    mem_gb="$(available_mem_gb)"
+
+    if [[ "$METRICS_ENABLED" == "true" ]]; then
+        [[ "$METRICS_PROFILE" == "auto" ]] && METRICS_PROFILE="$(detect_metrics_profile)"
+        profile_valid "$METRICS_PROFILE" "$METRICS_PROFILES" \
+            || die "perfil de métricas inválido: $METRICS_PROFILE (use: auto $METRICS_PROFILES)"
+        if [[ "$MONITORING_ENABLED" == "true" ]]; then
+            neighbors_gb=$(( neighbors_gb + $(metrics_budget_gb) ))
+        else
+            # --no-monitoring: só os exporters ficam neste host (~200 MB).
+            neighbors_gb=$(( neighbors_gb + 1 ))
+        fi
+    fi
+
+    if service_selected redis; then
+        REDIS_PROFILE="$(ask "Perfil do Redis (auto dimensiona pela RAM)" "$REDIS_PROFILE")"
         # shellcheck disable=SC2119  # sem argumento = detectar pela RAM do host
-        [[ "$PG_PROFILE" == "auto" ]] && PG_PROFILE="$(detect_pg_profile)"
+        [[ "$REDIS_PROFILE" == "auto" ]] && REDIS_PROFILE="$(detect_redis_profile)"
+        profile_valid "$REDIS_PROFILE" "$REDIS_PROFILES" \
+            || die "perfil de Redis inválido: $REDIS_PROFILE (use: auto $REDIS_PROFILES)"
+        neighbors_gb=$(( neighbors_gb + $(neighbor_budget_gb "$REDIS_PROFILE") ))
+    fi
+
+    if service_selected meilisearch; then
+        MEILI_PROFILE="$(ask "Perfil do Meilisearch (auto dimensiona pela RAM)" "$MEILI_PROFILE")"
+        # shellcheck disable=SC2119  # sem argumento = detectar pela RAM do host
+        [[ "$MEILI_PROFILE" == "auto" ]] && MEILI_PROFILE="$(detect_meili_profile)"
+        profile_valid "$MEILI_PROFILE" "$MEILI_PROFILES" \
+            || die "perfil de Meilisearch inválido: $MEILI_PROFILE (use: auto $MEILI_PROFILES)"
+        neighbors_gb=$(( neighbors_gb + $(neighbor_budget_gb "$MEILI_PROFILE") ))
+    fi
+
+    if service_selected postgres; then
+        PG_PROFILE="$(ask "Perfil do Postgres (auto usa a RAM livre após os vizinhos)" "$PG_PROFILE")"
+        if [[ "$PG_PROFILE" == "auto" ]]; then
+            # Sem vizinhos (--services postgres) isto é a máquina inteira, e o
+            # comportamento fica idêntico ao de antes.
+            local livre=$(( mem_gb - neighbors_gb ))
+            (( livre < 1 )) && livre=1
+            PG_PROFILE="$(detect_pg_profile "$livre")"
+        fi
         profile_valid "$PG_PROFILE" "$PG_PROFILES" \
             || die "perfil inválido: $PG_PROFILE (use: auto $PG_PROFILES)"
 
         # Um perfil maior do que a memória disponível não sobe: o Postgres falha
         # com "could not map anonymous shared memory" e fica em restart loop.
         # Melhor falhar aqui, com a razão explícita.
-        local mem_gb budget
-        mem_gb="$(available_mem_gb)"
+        local budget
         budget="$(profile_budget_gb "$PG_PROFILE")"
         if (( budget > mem_gb + 1 )) && [[ "$ALLOW_OVERSIZED" != "true" ]]; then
             die "perfil $PG_PROFILE pressupõe ${budget} GB, mas o Docker tem ${mem_gb} GB.
@@ -518,14 +639,21 @@ validate_and_prompt() {
         if (( budget > mem_gb + 1 )); then
             warn "perfil $PG_PROFILE acima da memória disponível (${mem_gb} GB) — seguindo por --allow-oversized-profile"
         fi
-    fi
-    if service_selected redis; then
-        profile_valid "$REDIS_PROFILE" "$REDIS_PROFILES" \
-            || die "perfil de Redis inválido: $REDIS_PROFILE (use: $REDIS_PROFILES)"
-    fi
-    if service_selected meilisearch; then
-        profile_valid "$MEILI_PROFILE" "$MEILI_PROFILES" \
-            || die "perfil de Meilisearch inválido: $MEILI_PROFILE (use: $MEILI_PROFILES)"
+
+        # A soma total ainda pode não caber: dedicada-8gb é o piso do catálogo,
+        # então numa máquina pequena com todos os serviços não há perfil menor
+        # para escolher.
+        if (( budget + neighbors_gb > mem_gb )); then
+            warn "orçamento apertado: $PG_PROFILE (~${budget} GB) + vizinhos (~${neighbors_gb} GB)"
+            warn "passam dos ${mem_gb} GB disponíveis ao Docker."
+            if [[ "$PG_PROFILE" == "dedicada-8gb" ]]; then
+                warn "Este já é o menor perfil de Postgres. As saídas são reduzir os"
+                warn "serviços deste host (--services, --no-monitoring) ou uma máquina maior."
+            else
+                warn "Reduza os serviços deste host ou aumente a máquina."
+            fi
+            warn "Ver a fórmula de coexistência em postgres/docs/perfis.md."
+        fi
     fi
 
     VOLUMES_MODE="$(ask "Modo de volume (named|bind)" "$VOLUMES_MODE")"
@@ -551,33 +679,8 @@ validate_and_prompt() {
     fi
 
     if [[ "$METRICS_ENABLED" == "true" ]]; then
-        profile_valid "$METRICS_PROFILE" "$METRICS_PROFILES" \
-            || die "perfil de métricas inválido: $METRICS_PROFILE (use: $METRICS_PROFILES)"
-
-        # A soma dos limites precisa caber na máquina. O perfil do Postgres foi
-        # escolhido (ou detectado) sem saber da monitoração, e um perfil
-        # dedicada-16gb (limite 14G) numa máquina de 16 GB não deixa espaço.
-        if service_selected postgres && [[ "$MONITORING_ENABLED" == "true" ]]; then
-            local mem_gb pg_budget mon_budget
-            mem_gb="$(available_mem_gb)"
-            pg_budget="$(profile_budget_gb "$PG_PROFILE")"
-            mon_budget="$(metrics_budget_gb)"
-            if (( pg_budget + mon_budget > mem_gb )); then
-                local menor
-                menor="$(detect_pg_profile $(( mem_gb - mon_budget > 0 ? mem_gb - mon_budget : 1 )))"
-                warn "orçamento apertado: perfil $PG_PROFILE (~${pg_budget} GB) + monitoração"
-                warn "(~${mon_budget} GB) passam dos ${mem_gb} GB disponíveis ao Docker."
-                if [[ "$menor" != "$PG_PROFILE" ]]; then
-                    warn "Considere --pg-profile $menor, --no-monitoring (Prometheus noutra"
-                    warn "máquina) ou uma máquina maior."
-                else
-                    # Já está no menor perfil: sugerir trocá-lo seria inútil.
-                    warn "Este já é o menor perfil de Postgres. As saídas são --no-monitoring"
-                    warn "(Prometheus noutra máquina) ou uma máquina maior."
-                fi
-                warn "Ver a fórmula de coexistência em postgres/docs/perfis.md."
-            fi
-        fi
+        # O perfil de métricas já foi resolvido e validado no bloco de
+        # dimensionamento acima, junto com os demais vizinhos.
 
         # No macOS o node exporter e o cAdvisor leem o /proc da VM do Docker, não
         # do Mac — e o kernel da VM nem traz CONFIG_PSI. Ver monitoring/README.md.
@@ -590,6 +693,13 @@ validate_and_prompt() {
     if service_selected postgres; then info "perfil PG ...... $PG_PROFILE"; fi
     if service_selected redis; then info "perfil Redis ... $REDIS_PROFILE"; fi
     if service_selected meilisearch; then info "perfil Meili ... $MEILI_PROFILE"; fi
+    if [[ "$METRICS_ENABLED" == "true" ]]; then info "perfil métricas  $METRICS_PROFILE"; fi
+    # O orçamento aparece explícito para que a decisão do 'auto' fique auditável
+    # no log de provisionamento, e não só no comportamento.
+    if service_selected postgres; then
+        local pg_gb; pg_gb="$(profile_budget_gb "$PG_PROFILE")"
+        info "memória ........ ${mem_gb} GB no Docker | Postgres ${pg_gb} + vizinhos ${neighbors_gb} = $(( pg_gb + neighbors_gb )) GB"
+    fi
     info "volumes ........ $VOLUMES_MODE"
     info "publicação ..... ${BIND_IP} (firewall: ${ALLOW_FROM:-qualquer origem})"
     info "workdir ........ $WORKDIR"

@@ -412,6 +412,13 @@ Some sempre o **limite de container** do vizinho, não o `maxmemory` nem o
 reserva do SO já está embutida no perfil — o limite do container do Postgres é
 ~87% do orçamento.
 
+> O [`infra-setup.sh`](../../README.md#como-o---auto-dimensiona-a-máquina) aplica
+> esta fórmula sozinho: com os perfis em `auto` (o default), ele escolhe os
+> vizinhos pela RAM, soma os limites e dimensiona o Postgres com o que sobra. Os
+> perfis de vizinho que ele escolhe são os desta tabela, e o resultado de cada
+> tamanho de máquina está no README da raiz. Esta seção continua valendo para
+> quem monta o deploy à mão ou quer conferir a decisão do script.
+
 | Vizinho | Perfil | Limite de container | Pico de CPU |
 |---|---|---|---|
 | Redis | `cache-256mb` / `cache-512mb` / `cache-1gb` / `cache-2gb` | 512M / 1G / 2G / 3G | 1 vCPU (single-thread; +1 breve no AOF rewrite) |

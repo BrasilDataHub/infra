@@ -65,6 +65,15 @@ e alvos suportados são derivados.
 Medido num host com os três serviços e o node exporter: **3.470 séries ativas** e
 **~67 amostras/s** — bem dentro do `metricas-512mb`.
 
+**O `auto` deste módulo não escala com a RAM**, ao contrário do Redis e do
+Meilisearch. A cardinalidade segue o **número de alvos**, não o tamanho do host:
+os mesmos três serviços geram ~3 mil séries tanto numa máquina de 16 GB quanto
+numa de 128 GB. Então `--metrics-profile auto` resolve para `metricas-512mb` em
+qualquer tamanho, e sobe para `metricas-2gb` apenas com `--metrics-containers`
+(o cAdvisor sozinho dobra o volume de séries). **`metricas-8gb` nunca é
+automático**: ele existe para 5–15 hosts, um cenário multi-host que o
+`infra-setup.sh` não conhece — escolha-o à mão se for federar máquinas.
+
 Cada perfil é um `.env` versionado em [`profiles/`](profiles/), o mesmo arquivo
 que o [`infra-setup.sh`](../README.md#setup-automatizado-de-vps) baixa.
 

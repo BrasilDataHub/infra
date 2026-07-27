@@ -88,19 +88,57 @@ Docker**, não pela do host — que é o que de fato limita os containers. Ignor
 no macOS: `--docker-version`, `--docker-data-root`, `--skip-system-update` e
 `--allow-from`.
 
+### Receitas prontas
+
+**Máquina nova, tudo no ar com observabilidade.** Um comando; o script dimensiona
+todos os serviços pela RAM da máquina:
+
 ```bash
-# interativo (pergunta serviços, perfil, modo de volume, rede)
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh \
+  | sudo bash -s -- --auto --metrics
+```
+
+**O mesmo, mas restrito à rede privada** — é o que se roda num servidor de
+verdade, exposto à internet:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh \
+  | sudo bash -s -- --auto --metrics \
+      --bind-ip 10.0.0.5 \
+      --allow-from 10.0.0.0/8 \
+      --postgres-db dados_cnpj
+```
+
+`--bind-ip` publica os bancos só na interface privada e `--allow-from` restringe
+a origem no `ufw` **e** na chain `DOCKER-USER`. Grafana e Prometheus não são
+afetados: ficam em `127.0.0.1` de qualquer forma (veja
+[Observabilidade](#observabilidade)).
+
+**Acrescentar métricas a uma máquina que já está rodando**, sem recriar os
+containers de dados:
+
+```bash
+sudo bash infra-setup.sh --metrics-only
+```
+
+**Outras variações** que aparecem com frequência:
+
+```bash
+# interativo (pergunta serviços, perfis, modo de volume, rede)
 curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh -o infra-setup.sh
 sudo bash infra-setup.sh
 
-# não supervisionado: tudo, com senhas geradas e perfil detectado pela RAM
-curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh | sudo bash -s -- --auto
-
-# só Postgres e Redis, com acesso restrito à rede privada da aplicação
-... | sudo bash -s -- --auto --services postgres,redis --allow-from 10.0.0.0/8
+# só Postgres e Redis — o Postgres recebe a máquina inteira
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh \
+  | sudo bash -s -- --auto --services postgres,redis --allow-from 10.0.0.0/8
 
 # dados fora do disco do Docker (NVMe montado em outro ponto)
-... | sudo bash -s -- --auto --volumes bind --data-dir /mnt/nvme
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh \
+  | sudo bash -s -- --auto --volumes bind --data-dir /mnt/nvme
+
+# métricas por container (cAdvisor) e Grafana numa interface privada
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh \
+  | sudo bash -s -- --auto --metrics --metrics-containers --metrics-bind-ip 10.0.0.5
 
 sudo bash infra-setup.sh --help      # todas as opções
 ```
@@ -108,11 +146,41 @@ sudo bash infra-setup.sh --help      # todas as opções
 Baixar e revisar antes de executar é a forma recomendada: o script roda como
 root e altera o sistema.
 
+### Como o `--auto` dimensiona a máquina
+
+Todos os perfis vêm em `auto`, e o dimensionamento é **coordenado**: Redis,
+Meilisearch e métricas são escolhidos pela RAM, e o **Postgres fica com o que
+sobra** — a [fórmula de reserva](postgres/docs/perfis.md#fórmula-de-reserva)
+aplicada sozinha. Com `--services postgres`, ele recebe a máquina inteira.
+
+| RAM do host | Postgres | Redis | Meilisearch | Métricas | Soma dos limites |
+|---|---|---|---|---|---|
+| 16 GB | `dedicada-8gb` | `cache-512mb` | `busca-1gb` | `metricas-512mb` | ~12 GB |
+| 32 GB | `dedicada-16gb` | `cache-1gb` | `busca-4gb` | `metricas-512mb` | ~24 GB |
+| 64 GB | `dedicada-32gb` | `cache-2gb` | `busca-16gb` | `metricas-512mb` | ~53 GB |
+| 128 GB | `dedicada-64gb` | `cache-2gb` | `busca-16gb` | `metricas-512mb` | ~85 GB |
+
+O que sobra não é desperdício: vira page cache, que é exatamente o ativo pelo
+qual se paga uma máquina grande para banco de dados.
+
+Duas observações que costumam pegar de surpresa:
+
+- **8 GB não comporta os três serviços mais observabilidade.** `dedicada-8gb` é o
+  piso do catálogo, então a soma estoura e o script avisa. As saídas são
+  `--services` menor, `--no-monitoring` ou uma máquina maior.
+- **O perfil de métricas não cresce com a RAM.** A cardinalidade do Prometheus
+  segue o **número de alvos**, não o tamanho do host: os três serviços geram
+  ~3 mil séries tanto em 16 quanto em 128 GB. `metricas-2gb` entra só com
+  `--metrics-containers`, e `metricas-8gb` nunca é automático (é para 5–15 hosts).
+
+Qualquer perfil pode ser fixado à mão — `--pg-profile dedicada-32gb`,
+`--redis-profile cache-1gb`, `--meili-profile busca-4gb`,
+`--metrics-profile metricas-2gb` —, e `--profiles-dir` lê de um clone local.
+
 Os valores de cada perfil ficam **só** nos arquivos `.env` versionados
-(`postgres/profiles/`, `redis/profiles/`, `meilisearch/profiles/`): o script os
-baixa em vez de embutir cópias, então doc, script e deploy manual usam
-exatamente os mesmos números. `--pg-profile`, `--redis-profile` e
-`--meili-profile` escolhem qual; `--profiles-dir` lê de um clone local.
+(`postgres/profiles/`, `redis/profiles/`, `meilisearch/profiles/`,
+`monitoring/profiles/`): o script os baixa em vez de embutir cópias, então doc,
+script e deploy manual usam exatamente os mesmos números.
 
 ### O que fica onde
 
