@@ -1307,11 +1307,19 @@ setup_metrics() {
     ok "alvos escritos em $mdir/targets/"
 
     # --- sobe a stack ---------------------------------------------------------
+    # O `if !` é o que mantém a promessa do comentário no topo desta função: sob
+    # `set -e`, um `run docker compose` solto aborta o SCRIPT INTEIRO quando o
+    # pull falha (registry fora do ar, imagem não publicada), e o provisionamento
+    # morre antes de `configure_firewall` — deixando os bancos publicados em
+    # 0.0.0.0 com o ufw ainda inativo. Aconteceu em 2026-07-27.
     local compose_args=(--project-directory "$mdir" -f "$mdir/docker-compose.yml")
-    if [[ "$FORCE" == "true" ]]; then
-        run docker compose -p monitoring "${compose_args[@]}" up -d --force-recreate
-    else
-        run docker compose -p monitoring "${compose_args[@]}" up -d
+    local up_args=(up -d)
+    [[ "$FORCE" == "true" ]] && up_args+=(--force-recreate)
+    if ! run docker compose -p monitoring "${compose_args[@]}" "${up_args[@]}"; then
+        warn "monitoring não subiu — o provisionamento segue sem observabilidade."
+        warn "Veja 'bdh logs monitoring' e depois rode: bash infra-setup.sh --metrics-only"
+        notify "progress" "observabilidade falhou; provisionamento continua"
+        return 0
     fi
     ok "monitoring no ar"
 

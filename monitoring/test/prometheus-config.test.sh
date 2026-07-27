@@ -37,6 +37,11 @@ mkdir -p "$TMP/secrets" "$TMP/targets"
 touch "$TMP/secrets/meili-metrics.key"
 # O caminho reescrito é o de DENTRO do container (/t/secrets), não o do host.
 sed 's#/etc/prometheus/secrets/#/t/secrets/#' "$RAIZ/prometheus/prometheus.yml" > "$TMP/prometheus.yml"
+# `mktemp -d` cria 0700, e a imagem do Prometheus roda como `nobody`: no Linux o
+# container nem atravessa o diretório, e o promtool devolve "permission denied"
+# — que este teste reportava como "prometheus.yml inválido". No macOS o bind
+# mount ignora as permissões do host, então o erro só aparecia na CI.
+chmod -R a+rX "$TMP"
 
 if docker run --rm -v "$TMP:/t" -v "$RAIZ:/w:ro" --entrypoint promtool "$PROM_IMAGE" \
      check config /t/prometheus.yml >/dev/null 2>&1; then
