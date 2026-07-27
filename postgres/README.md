@@ -183,6 +183,35 @@ Todos os perfis são de máquina dedicada com NVMe local.
 6. Ativar backups: snapshot do provedor + pgBackRest com `PG_ARCHIVE_MODE=on` e
    `PG_ARCHIVE_COMMAND` (ver [`backup/`](backup/)).
 
+## Métricas
+
+[`docker-compose.metrics.yml`](docker-compose.metrics.yml) é um overlay
+**opcional** que acrescenta o `postgres_exporter` ao mesmo projeto Compose:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.metrics.yml up -d
+```
+
+O serviço `postgres` **não é tocado** — há um teste na CI que compara a definição
+com e sem o overlay e falha se algo mudar. Ligar métricas não pode recriar um
+container de banco de centenas de GB.
+
+Dois pré-requisitos, ambos automatizados por `infra-setup.sh --metrics-only`:
+
+1. a role `metrics_read` (`pg_monitor`, sem acesso a dados) —
+   [`initdb/03-role-metrics.sh`](initdb/03-role-metrics.sh) roda no `initdb` numa
+   instalação nova, e via `docker exec` num cluster que já existe;
+2. a senha em `.env.metrics` (e **não** no `.env`: qualquer variável a mais no
+   `.env` recria o container do banco).
+
+Vários coletores estão desligados de propósito — `stat_user_tables` e
+`stat_statements` são bombas de cardinalidade neste perfil de carga —, e outros
+que vêm desligados por default estão ligados, como o `stat_checkpointer`, sem o
+qual o efeito do `checkpoint_timeout` dos perfis é invisível no PG17.
+
+O detalhe de cada decisão, o custo medido e o troubleshooting estão em
+[docs/metricas.md](docs/metricas.md).
+
 ## Validação local
 
 ```bash

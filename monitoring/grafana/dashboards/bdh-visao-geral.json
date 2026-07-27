@@ -1,0 +1,421 @@
+{
+  "uid": "bdh-visao-geral",
+  "id": null,
+  "version": 1,
+  "title": "Visão geral — BrasilDataHub",
+  "description": "Uma tela com o que esta operação precisa responder: os serviços estão no ar, o ETL está saudável, e o disco aguenta. Escrito para esta infraestrutura — os dashboards de comunidade (Node/PostgreSQL/Redis) cobrem o detalhe.",
+  "tags": ["brasildatahub", "visao-geral"],
+  "timezone": "browser",
+  "editable": false,
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Estado geral",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Alvos no ar",
+      "description": "Quantos alvos o Prometheus está conseguindo coletar. Qualquer número abaixo do total significa monitoração cega em algum ponto.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "targets": [
+        { "refId": "A", "expr": "sum(up)", "legendFormat": "no ar" },
+        { "refId": "B", "expr": "count(up)", "legendFormat": "total" }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "unit": "short" },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Uptime do PostgreSQL",
+      "description": "Distingue 'o banco está lento' de 'o banco reiniciou agora'. Um valor baixo e inesperado costuma ser OOMKill.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 4, "w": 5, "x": 4, "y": 1 },
+      "targets": [
+        { "refId": "A", "expr": "time() - pg_postmaster_start_time_seconds", "legendFormat": "uptime" }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 3600 },
+              { "color": "green", "value": 86400 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "gauge",
+      "title": "Conexões / max_connections",
+      "description": "Os perfis fixam max_connections entre 100 e 300. Estourar não degrada: rejeita conexão. Antes de aumentar o teto, confirme que a aplicação usa pool — mais conexões multiplicam o work_mem alocável.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 4, "w": 5, "x": 9, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(pg_stat_database_numbackends) / max(pg_settings_max_connections)",
+          "legendFormat": "uso"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.7 },
+              { "color": "red", "value": 0.85 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "gauge",
+      "title": "Disco livre (data-root)",
+      "description": "O volume do Prometheus e o do Postgres dividem o mesmo NVMe. Uma explosão de cardinalidade nas métricas enche o disco e derruba o BANCO — este é o pior modo de falha da stack.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 4, "w": 5, "x": 14, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min(node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\"})",
+          "legendFormat": "livre"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.15 },
+              { "color": "green", "value": 0.30 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Alertas disparando",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 1 },
+      "targets": [
+        { "refId": "A", "expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)", "legendFormat": "ativos" }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "PostgreSQL — saúde sob ETL",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Transação aberta mais antiga",
+      "description": "A causa nº1 de bloat que o autovacuum não resolve: enquanto uma transação vive, tuplas mortas de TODAS as tabelas ficam impossíveis de limpar. Se um job de ETL aparecer aqui por horas, ele não está fazendo commit em lotes.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - pg_long_running_transactions_oldest_timestamp_seconds",
+          "legendFormat": "idade da mais antiga"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 3600 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Arquivos temporários",
+      "description": "Parente próximo do incidente de /dev/shm: quando work_mem não cabe, o Postgres derrama em disco e uma query de minutos passa a levar horas. log_temp_files já está em 10MB — os candidatos estão no log do container.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(pg_stat_database_temp_bytes[10m])",
+          "legendFormat": "{{datname}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Checkpoints: agendados vs forçados",
+      "description": "checkpoint_timeout dos perfis é 15min. Se os forçados (requested) passarem os agendados (timed), max_wal_size está pequeno para a carga de escrita — e cada checkpoint forçado é um pico de IO no meio do ETL. Sem o collector.stat_checkpointer este painel não existiria: o PG17 tirou estes campos do pg_stat_bgwriter.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(pg_stat_checkpointer_num_timed_total[30m]) * 3600",
+          "legendFormat": "agendados/h"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(pg_stat_checkpointer_num_requested_total[30m]) * 3600",
+          "legendFormat": "forçados/h"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Idade do datfrozenxid (wraparound)",
+      "description": "Com carga em massa de dezenas de milhões de linhas por rodada, wraparound é risco real. Em 2 bilhões o Postgres PARA de aceitar escrita; acima de 1 bilhão o autovacuum já não está dando conta.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "pg_database_wraparound_age_datfrozenxid_seconds",
+          "legendFormat": "{{datname}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1000000000 },
+              { "color": "red", "value": 1500000000 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "row",
+      "title": "Redis — cache e fila do Horizon",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Memória usada vs maxmemory",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 23 },
+      "targets": [
+        { "refId": "A", "expr": "redis_memory_used_bytes", "legendFormat": "usada" },
+        { "refId": "B", "expr": "redis_memory_max_bytes", "legendFormat": "maxmemory" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Chaves despejadas",
+      "description": "Com volatile-lru só chaves COM TTL são despejadas. As filas do Horizon não têm TTL, então despejo significa cache perdido — e, se alguma chave de fila ganhou TTL por engano, trabalho perdido. Nos dois casos: subir de perfil.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 23 },
+      "targets": [
+        { "refId": "A", "expr": "rate(redis_evicted_keys_total[10m])", "legendFormat": "despejadas/s" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Profundidade das filas",
+      "description": "Só aparece se REDIS_METRICS_KEYS estiver definido no .env do Redis. Fila que só cresce por 30 minutos indica worker parado ou job que falha e volta para a fila.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 23 },
+      "targets": [
+        { "refId": "A", "expr": "redis_key_size", "legendFormat": "{{key}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "row",
+      "title": "Meilisearch e host",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Meilisearch — fila de tarefas e indexação",
+      "description": "meilisearch_is_indexing em 1 durante horas é normal numa carga grande; o que importa é a fila drenar depois.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 31 },
+      "targets": [
+        { "refId": "A", "expr": "meilisearch_task_queue_used_size", "legendFormat": "tarefas na fila" },
+        { "refId": "B", "expr": "meilisearch_is_indexing", "legendFormat": "indexando" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Meilisearch — latência p95",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 31 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, path) (rate(meilisearch_http_response_time_seconds_bucket[5m])))",
+          "legendFormat": "{{path}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Pressão de IO (PSI)",
+      "description": "O que distingue 'o ETL está pesado' de 'o disco saturou'. Em NVMe o %util satura em 100% sem o disco estar no limite; o tempo de stall não mente. Depende de CONFIG_PSI no kernel: presente em Ubuntu 22.04+/Debian 12, ausente na VM do Docker Desktop no macOS — ali este painel fica vazio.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 31 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(node_pressure_io_stalled_seconds_total[5m])",
+          "legendFormat": "parado por IO"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(node_pressure_io_waiting_seconds_total[5m])",
+          "legendFormat": "esperando IO"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.3 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    }
+  ]
+}

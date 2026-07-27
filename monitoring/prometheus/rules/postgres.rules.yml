@@ -1,0 +1,121 @@
+# Alertas do PostgreSQL — BrasilDataHub.
+#
+# Escolhidos pelo perfil de carga real desta operação (ETL de centenas de milhões
+# de linhas, base de centenas de GB, consultas pesadas), não por uma lista
+# genérica. Cada um responde a um modo de falha que já custou caro ou que a
+# documentação do repositório identifica como risco.
+#
+# Todos usam janelas >= 2m em rate(): o job do Postgres é coletado a 30s, e o
+# mínimo saudável é 4x o intervalo de scrape.
+
+groups:
+  - name: postgres
+    rules:
+      - alert: PostgresConexoesPertoDoLimite
+        # Os perfis fixam max_connections entre 100 e 300. Estourar não degrada:
+        # rejeita conexão, e a aplicação cai.
+        expr: |
+          sum by (instance) (pg_stat_database_numbackends)
+            / max by (instance) (pg_settings_max_connections) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Conexões acima de 85% do max_connections"
+          description: >-
+            Antes de aumentar max_connections, verifique se a aplicação está
+            usando pool — subir o teto multiplica o work_mem alocável e é a via
+            rápida para OOM (postgres/docs/perfis.md).
+
+      - alert: TransacaoLongaSegurandoXmin
+        # A causa nº1 de bloat que o autovacuum não resolve. O sintoma aparece
+        # horas depois, como disco cheio — daí alertar cedo.
+        expr: |
+          time() - pg_long_running_transactions_oldest_timestamp_seconds > 3600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Transação aberta há mais de 1 hora"
+          description: >-
+            Enquanto ela viver, o autovacuum não consegue limpar tuplas mortas de
+            NENHUMA tabela. Se for um job de ETL, confirme que ele faz commit em
+            lotes. Consulte com:
+            SELECT pid, state, xact_start, query FROM pg_stat_activity
+            WHERE xact_start < now() - interval '1 hour';
+
+      - alert: WraparoundSeAproximando
+        # 200M é o autovacuum_freeze_max_age default; 1B ainda dá muita folga
+        # antes do shutdown forçado em 2B, mas já é sinal de que o autovacuum não
+        # está dando conta do volume de escrita.
+        expr: pg_database_wraparound_age_datfrozenxid_seconds > 1e9
+        for: 30m
+        labels:
+          severity: critical
+          runbook: postgres/docs/troubleshooting.md
+        annotations:
+          summary: "datfrozenxid de {{ $labels.datname }} acima de 1 bilhão"
+          description: >-
+            Com carga em massa de dezenas de milhões de linhas por rodada isto é
+            risco real. Se chegar a 2 bilhões o Postgres PARA de aceitar escrita.
+
+      - alert: MuitosArquivosTemporarios
+        # Parente próximo do incidente de /dev/shm: quando work_mem não cabe, o
+        # Postgres derrama em disco e a query que levava minutos passa a levar
+        # horas.
+        expr: rate(pg_stat_database_temp_bytes[10m]) > 50 * 1024 * 1024
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mais de 50 MB/s de arquivos temporários em {{ $labels.datname }}"
+          description: >-
+            Queries estão derramando em disco. Verifique work_mem do perfil e o
+            plano das consultas pesadas — log_temp_files já está em 10MB, então
+            os candidatos estão no log.
+
+      - alert: CheckpointsForcadosDemais
+        # checkpoint_timeout dos perfis é 15min. Se a maioria dos checkpoints é
+        # "requested" e não "timed", o max_wal_size está pequeno para a carga de
+        # escrita — e cada checkpoint forçado é um pico de IO no meio do ETL.
+        expr: |
+          rate(pg_stat_checkpointer_num_requested_total[30m])
+            > rate(pg_stat_checkpointer_num_timed_total[30m])
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mais checkpoints forçados que agendados"
+          description: >-
+            Aumente max_wal_size no perfil. Sem o collector.stat_checkpointer
+            este alerta não existiria: o PG17 moveu estes campos para fora do
+            pg_stat_bgwriter.
+
+      - alert: DeadlocksFrequentes
+        expr: rate(pg_stat_database_deadlocks[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Deadlocks em {{ $labels.datname }}"
+          description: >-
+            log_lock_waits já está ligado — os detalhes estão no log do container.
+
+      - alert: CacheHitBaixo
+        # Abaixo de 95% numa base bem dimensionada indica shared_buffers pequeno
+        # para o working set, ou uma varredura sequencial nova e inesperada.
+        # 30m de janela para não disparar durante um ETL, onde a leitura fria é
+        # legítima.
+        expr: |
+          sum by (instance) (rate(pg_stat_database_blks_hit[30m]))
+            / clamp_min(
+                sum by (instance) (
+                  rate(pg_stat_database_blks_hit[30m])
+                  + rate(pg_stat_database_blks_read[30m])
+                ), 1
+              ) < 0.95
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "Cache hit ratio abaixo de 95% na última hora"

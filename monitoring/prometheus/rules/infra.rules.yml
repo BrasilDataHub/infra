@@ -1,0 +1,116 @@
+# Alertas de infraestrutura (host e coleta) — BrasilDataHub.
+#
+# Regra de ouro deste arquivo: monitoração que falha em silêncio é pior que
+# nenhuma. Por isso o primeiro grupo cobre a própria coleta, e usa `absent()`
+# além de `up == 0` — os dois pegam falhas diferentes:
+#
+#   up == 0        o alvo existe na configuração e não respondeu
+#   absent(up{…})  o alvo SUMIU da configuração (arquivo de target apagado,
+#                  serviço removido do host) — o `up == 0` nunca dispararia,
+#                  porque não há série nenhuma para avaliar.
+
+groups:
+  - name: coleta
+    rules:
+      - alert: AlvoForaDoAr
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alvo {{ $labels.job }} não responde há 5 minutos"
+          description: >-
+            O Prometheus não consegue coletar de {{ $labels.instance }}
+            (job {{ $labels.job }}). Verifique com `bdh logs <serviço>` e
+            `bdh metrics`.
+      # 5m e não 1m: sob ETL com IO saturado, um scrape pode estourar o
+      # scrape_timeout de 10s isoladamente. Alertar em cima disso geraria ruído
+      # constante e treinaria a operação a ignorar o alerta.
+
+      - alert: JobSemAlvo
+        # Vale para os jobs que o deploy declarou. Se o arquivo de target sumir,
+        # o job continua na config mas fica sem série — e nada mais avisaria.
+        expr: absent(up{job="postgres"}) or absent(up{job="node"})
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Job {{ $labels.job }} não tem nenhum alvo configurado"
+          description: >-
+            O arquivo em /etc/prometheus/targets/ correspondente sumiu ou está
+            vazio. A monitoração deste serviço está desligada sem ninguém ter
+            pedido.
+
+  - name: host
+    rules:
+      - alert: DiscoQuaseCheio
+        expr: |
+          node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"} < 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Menos de 15% livres em {{ $labels.mountpoint }}"
+          description: >-
+            Este é o modo de falha mais perigoso da stack: o volume do Prometheus
+            e o do Postgres dividem o mesmo NVMe, então uma explosão de
+            cardinalidade enche o disco e derruba o BANCO, não o Prometheus.
+            Confira PROM_RETENTION_SIZE antes de culpar os dados.
+
+      - alert: DiscoEncheEm24h
+        # predict_linear pega o crescimento antes de virar incidente. Janela de
+        # 6h para não reagir a um pico pontual de ETL.
+        expr: |
+          predict_linear(
+            node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}[6h], 24 * 3600
+          ) < 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.mountpoint }} deve encher em menos de 24h"
+
+      - alert: MemoriaDoHostCritica
+        expr: |
+          node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Menos de 10% de memória disponível no host"
+          description: >-
+            Verifique a soma dos limites dos containers contra a RAM real —
+            a fórmula de coexistência está em postgres/docs/perfis.md, e a stack
+            de métricas também consome (monitoring/README.md).
+
+      - alert: IOSaturado
+        # PSI, e não %util: em NVMe o %util satura em 100% sem que o disco esteja
+        # realmente no limite. O stall time é o que distingue "ETL pesado" de
+        # "disco no teto".
+        expr: rate(node_pressure_io_stalled_seconds_total[5m]) > 0.30
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Processos parados esperando IO mais de 30% do tempo"
+
+  - name: containers
+    rules:
+      - alert: ContainerPertoDoLimiteDeMemoria
+        # Só existe com o cAdvisor ligado (COMPOSE_PROFILES=containers). É o par
+        # de métricas que teria detectado o incidente de Memory=0 documentado em
+        # postgres/docs/troubleshooting.md.
+        expr: |
+          container_memory_working_set_bytes{name!=""}
+            / container_spec_memory_limit_bytes{name!=""} > 0.90
+            and container_spec_memory_limit_bytes{name!=""} > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.name }} acima de 90% do limite de memória"
+          description: >-
+            O próximo passo é OOMKill. Se for o Postgres, revise o perfil —
+            um perfil aplicado pela metade (envs sem o limite de container)
+            também produz este sintoma.

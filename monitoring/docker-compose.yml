@@ -1,0 +1,253 @@
+# Compose de PRODUÇÃO da observabilidade — mesma forma de deploy dos demais
+# serviços (por quê: ../postgres/docs/estrategia-deploy.md).
+#
+# Este módulo é o único que observa os outros: Prometheus, Grafana e os coletores
+# de escopo de máquina. Os exporters de Postgres e Redis NÃO estão aqui — vivem
+# no módulo do serviço que observam (../postgres/docker-compose.metrics.yml), e
+# são alcançados pela rede bdh_metrics.
+#
+# .env ao lado deste arquivo:
+#   GRAFANA_ADMIN_PASSWORD=...        # obrigatória
+#   PROM_RETENTION_TIME=30d           # bloco do perfil (README)
+#   PROM_RETENTION_SIZE=2GB
+#   PROM_MEMORY_LIMIT=512M
+#   GRAFANA_MEMORY_LIMIT=512M
+#   MON_HOSTNAME=vps-bdh-01           # rótulo `host` nas séries
+#   # opcionais:
+#   # MONITORING_BIND_IP=10.0.0.5     # default 127.0.0.1 — leia a nota abaixo
+#   # PROMETHEUS_PORT=9090
+#   # GRAFANA_PORT=3000
+#   # COMPOSE_PROFILES=node           # +containers para ligar o cAdvisor
+#
+# ANTES do primeiro `up`, dois caminhos precisam existir no host:
+#   mkdir -p targets secrets && touch secrets/meili-metrics.key
+# O `infra-setup.sh --metrics` faz isso. Sem eles o Prometheus não sobe — e o
+# erro é explícito, de propósito (ver a nota no mount de secrets).
+
+services:
+  prometheus:
+    image: ghcr.io/brasildatahub/prometheus:3
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Expandida dentro do prometheus.yml (external_labels). O Prometheus 3
+      # expande variáveis de ambiente na config nativamente.
+      MON_HOSTNAME: ${MON_HOSTNAME:-desconhecido}
+    # Só o Prometheus leva o nome curto: `infra-setup.sh` espera o healthcheck
+    # com `docker ps --filter label=org.brasildatahub.service=monitoring | head -1`,
+    # e com labels iguais nos cinco containers ele observaria um ao acaso.
+    labels:
+      org.brasildatahub.service: monitoring
+    command:
+      # A imagem tem ENTRYPOINT /bin/prometheus; este command SUBSTITUI o CMD
+      # default, então as duas primeiras flags precisam ser repetidas.
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # As DUAS retenções, sempre. A de tempo sozinha não protege o disco: uma
+      # explosão de cardinalidade enche o volume — que divide o NVMe com o
+      # Postgres — muito antes de os 30 dias passarem.
+      - --storage.tsdb.retention.time=${PROM_RETENTION_TIME:-30d}
+      - --storage.tsdb.retention.size=${PROM_RETENTION_SIZE:-2GB}
+      - --web.listen-address=0.0.0.0:9090
+      # Permite `curl -X POST /-/reload` para recarregar alvos sem restart.
+      - --web.enable-lifecycle
+    volumes:
+      - prom_data:/prometheus
+      # Alvos por host, escritos pelo infra-setup.sh. Diretório vazio = nenhum
+      # alvo, e é assim que um host sem Meilisearch não fica com um job órfão
+      # eternamente em `up == 0`.
+      - ./targets:/etc/prometheus/targets:ro
+      # Bind de ARQUIVO, com create_host_path desligado de propósito: se o
+      # arquivo não existir, o Docker criaria um DIRETÓRIO com esse nome e o
+      # Prometheus falharia com um erro obscuro. Assim ele falha no `up`,
+      # dizendo exatamente qual caminho falta.
+      - type: bind
+        source: ./secrets/meili-metrics.key
+        target: /etc/prometheus/secrets/meili-metrics.key
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      # 127.0.0.1 por DEFAULT — o OPOSTO dos serviços de dados, e de propósito.
+      # Postgres/Redis/Meili abrem em 0.0.0.0 porque a aplicação vive em outra
+      # máquina e a senha é a barreira. O Prometheus NÃO TEM AUTENTICAÇÃO
+      # NENHUMA: quem alcança a porta lê tudo e chama /api/v1/admin/tsdb/*.
+      #
+      # Variável PRÓPRIA, nunca BIND_IP: o default do infra-setup.sh é
+      # --bind-ip 0.0.0.0, e reusá-la publicaria isto na internet.
+      #
+      #   ssh -L 9090:127.0.0.1:9090 -L 3000:127.0.0.1:3000 usuario@host
+      - "${MONITORING_BIND_IP:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
+    networks:
+      - default
+      - bdh_metrics
+    deploy:
+      resources:
+        limits:
+          # Folgado de propósito: o Prometheus não tem teto interno de memória, e
+          # um OOMKill no meio da compactação obriga replay do WAL no restart.
+          memory: ${PROM_MEMORY_LIMIT:-512M}
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --spider http://127.0.0.1:9090/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  grafana:
+    image: ghcr.io/brasildatahub/grafana:13
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?defina GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Vazio de propósito: qualquer plugin aqui vira download no boot, e um VPS
+      # com egress bloqueado ficaria preso no start sem explicação.
+      GF_INSTALL_PLUGINS: ""
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000}
+    labels:
+      org.brasildatahub.service: monitoring-grafana
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      # Mesma inversão do Prometheus: consumido por gente, e gente tem SSH.
+      - "${MONITORING_BIND_IP:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+    networks:
+      - default
+    deploy:
+      resources:
+        limits:
+          memory: ${GRAFANA_MEMORY_LIMIT:-512M}
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --spider http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.12.1
+    restart: unless-stopped
+    # Profile do COMPOSE (COMPOSE_PROFILES), não confundir com os perfis de
+    # dimensionamento do repositório. Desligado no macOS pelo infra-setup.sh por
+    # duas razões medidas, não teóricas:
+    #   1. o container lê o /proc da VM do Docker, não do Mac — "disco cheio" no
+    #      painel significaria o disco virtual;
+    #   2. o kernel da VM não traz CONFIG_PSI, então /proc/pressure não existe e
+    #      o coletor `pressure` falha (node_scrape_collector_success{
+    #      collector="pressure"} = 0). Em Ubuntu 22.04+/Debian 12 o PSI vem
+    #      habilitado e funciona normalmente.
+    profiles: [node]
+    # Para enxergar os PIDs reais do host. Enfraquece o isolamento — é por isso
+    # que este container não publica porta nenhuma.
+    pid: host
+    volumes:
+      # rslave, e não apenas ro: sem a propagação, um disco montado no host
+      # DEPOIS do start fica invisível, e o coletor passa a medir um filesystem
+      # que não é mais o que interessa.
+      - /:/host:ro,rslave
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host
+      # $$ escapa a interpolação do Compose. Com um único $, a regex chega VAZIA
+      # ao exporter e o filtro silenciosamente não filtra nada.
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+)($$|/)
+      - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|procfs|pstore|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$
+      # veth/br-* nascem e morrem a cada container: sem o filtro, cada um deixa
+      # uma série órfã que nunca mais recebe amostra.
+      - --collector.netdev.device-exclude=^(veth.*|br-.*|docker[0-9]+)$$
+      - --collector.netclass.ignored-devices=^(veth.*|br-.*|docker[0-9]+)$$
+      - --collector.diskstats.device-exclude=^(ram|loop|fd|dm-|sr|nbd)\d+$$
+      # Hardware e filesystems que não existem nestas máquinas.
+      - --no-collector.wifi
+      - --no-collector.hwmon
+      - --no-collector.thermal_zone
+      - --no-collector.infiniband
+      - --no-collector.nfs
+      - --no-collector.nfsd
+      - --no-collector.mdadm
+      - --no-collector.zfs
+      - --no-collector.btrfs
+      - --no-collector.bonding
+      - --no-collector.ipvs
+      - --no-collector.fibrechannel
+      - --no-collector.tapestats
+      - --no-collector.selinux
+      - --no-collector.dmi
+      - --no-collector.rapl
+      - --no-collector.edac
+      - --no-collector.powersupplyclass
+      # `pressure` (PSI) fica LIGADO apesar de tentador cortar: é a métrica que
+      # distingue "o ETL está pesado" de "o disco saturou". Em NVMe o %util
+      # satura em 100% sem o disco estar no limite; o stall time não mente.
+    labels:
+      org.brasildatahub.service: node-exporter
+    networks:
+      - bdh_metrics
+    deploy:
+      resources:
+        limits:
+          memory: ${NODE_EXPORTER_MEMORY_LIMIT:-128M}
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.60.5
+    restart: unless-stopped
+    # DESLIGADO por default (COMPOSE_PROFILES=containers para ligar). É a única
+    # forma de ver memória usada vs limite POR CONTAINER — o par que teria
+    # detectado o incidente de Memory=0 de ../postgres/docs/troubleshooting.md.
+    # Custa 200-400 MB de RSS e é notoriamente cardinálico, daí os filtros.
+    profiles: [containers]
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=30s
+      - --store_container_labels=false
+      # Só a nossa label vira série; as demais (incluindo as do Compose, que
+      # mudam a cada deploy) ficam de fora.
+      - --whitelisted_container_labels=org.brasildatahub.service
+      - --disable_metrics=percpu,sched,tcp,udp,advtcp,process,hugetlb,referenced_memory,cpu_topology,resctrl
+    labels:
+      org.brasildatahub.service: cadvisor
+    networks:
+      - bdh_metrics
+    deploy:
+      resources:
+        limits:
+          memory: ${CADVISOR_MEMORY_LIMIT:-512M}
+
+volumes:
+  # Volumes nomeados com driver local e `name` fixo — padrão do repositório
+  # (justificativa no README da raiz). O prefixo bdh_ é o que o `bdh status`
+  # filtra.
+  prom_data:
+    driver: local
+    name: ${PROM_VOLUME:-bdh_prom_data}
+  grafana_data:
+    driver: local
+    name: ${GRAFANA_VOLUME:-bdh_grafana_data}
+
+networks:
+  # Sem `external: true` — ver a justificativa completa em
+  # ../postgres/docker-compose.metrics.yml. Resumo: com external, um
+  # `docker network prune` faria o `up` dos serviços de DADOS falhar.
+  bdh_metrics:
+    name: ${METRICS_NETWORK:-bdh_metrics}

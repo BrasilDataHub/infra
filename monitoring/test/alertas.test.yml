@@ -1,0 +1,123 @@
+# Testes unitários das regras de alerta — rodados por `promtool test rules`.
+#
+# Servem para provar que a regra dispara QUANDO deve e, principalmente, que NÃO
+# dispara quando não deve: um alerta ruidoso é desligado pela operação em duas
+# semanas, e aí a monitoração vira enfeite.
+
+rule_files:
+  - ../prometheus/rules/infra.rules.yml
+  - ../prometheus/rules/postgres.rules.yml
+  - ../prometheus/rules/redis.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # --- coleta ---------------------------------------------------------------
+  - interval: 1m
+    name: "alvo fora do ar dispara depois de 5m, não antes"
+    input_series:
+      - series: 'up{job="postgres", instance="postgres-exporter:9187"}'
+        values: "1 1 0 0 0 0 0 0 0 0"
+    alert_rule_test:
+      # 4 minutos fora: ainda não alerta (evita ruído de scrape que estoura o
+      # timeout isoladamente durante o ETL)
+      - eval_time: 6m
+        alertname: AlvoForaDoAr
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: AlvoForaDoAr
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: postgres
+              instance: postgres-exporter:9187
+            exp_annotations:
+              summary: "Alvo postgres não responde há 5 minutos"
+              description: "O Prometheus não consegue coletar de postgres-exporter:9187 (job postgres). Verifique com `bdh logs <serviço>` e `bdh metrics`."
+
+  - interval: 1m
+    name: "scrape instável por 2 minutos não gera alerta"
+    input_series:
+      - series: 'up{job="postgres", instance="postgres-exporter:9187"}'
+        values: "1 1 0 0 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: AlvoForaDoAr
+        exp_alerts: []
+
+  # --- postgres -------------------------------------------------------------
+  - interval: 1m
+    name: "conexões acima de 85% do max_connections"
+    input_series:
+      - series: 'pg_stat_database_numbackends{datname="dados", instance="pg:9187"}'
+        values: "90+0x10"
+      - series: 'pg_settings_max_connections{instance="pg:9187"}'
+        values: "100+0x10"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: PostgresConexoesPertoDoLimite
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: pg:9187
+            exp_annotations:
+              summary: "Conexões acima de 85% do max_connections"
+              description: "Antes de aumentar max_connections, verifique se a aplicação está usando pool — subir o teto multiplica o work_mem alocável e é a via rápida para OOM (postgres/docs/perfis.md)."
+
+  - interval: 1m
+    name: "conexões em 50% não alertam"
+    input_series:
+      - series: 'pg_stat_database_numbackends{datname="dados", instance="pg:9187"}'
+        values: "50+0x10"
+      - series: 'pg_settings_max_connections{instance="pg:9187"}'
+        values: "100+0x10"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: PostgresConexoesPertoDoLimite
+        exp_alerts: []
+
+  - interval: 1m
+    name: "wraparound acima de 1 bilhão"
+    input_series:
+      - series: 'pg_database_wraparound_age_datfrozenxid_seconds{datname="dados", instance="pg:9187"}'
+        values: "1200000000+0x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: WraparoundSeAproximando
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              runbook: postgres/docs/troubleshooting.md
+              datname: dados
+              instance: pg:9187
+            exp_annotations:
+              summary: "datfrozenxid de dados acima de 1 bilhão"
+              description: "Com carga em massa de dezenas de milhões de linhas por rodada isto é risco real. Se chegar a 2 bilhões o Postgres PARA de aceitar escrita."
+
+  # --- redis ----------------------------------------------------------------
+  - interval: 1m
+    name: "despejo de chaves com volatile-lru significa cache (ou fila) perdido"
+    input_series:
+      # contador crescendo: 10 chaves despejadas por minuto
+      - series: 'redis_evicted_keys_total{instance="redis-exporter:9121"}'
+        values: "0+10x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: RedisDespejandoChaves
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: redis-exporter:9121
+            exp_annotations:
+              summary: "Redis despejando chaves por falta de memória"
+              description: "maxmemory foi atingido. Suba o perfil (redis/README.md) — lembrando que o limite do container deve ficar em ~2x maxmemory por causa do fork copy-on-write do rewrite do AOF."
+
+  - interval: 1m
+    name: "sem despejo nenhum, sem alerta"
+    input_series:
+      - series: 'redis_evicted_keys_total{instance="redis-exporter:9121"}'
+        values: "0+0x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: RedisDespejandoChaves
+        exp_alerts: []

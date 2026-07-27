@@ -55,6 +55,23 @@ REDIS_PORT="6379"
 MEILI_PORT="7700"
 ALLOW_FROM=""
 ENABLE_FIREWALL="true"
+
+# --- observabilidade (opt-in por --metrics) ----------------------------------
+# Fora do default de propósito: incluir monitoração no --auto mudaria o
+# comportamento de todo provisionamento existente e somaria ~1,5 GB de RAM ao
+# orçamento que detect_pg_profile() não sabe descontar.
+METRICS_ENABLED="false"
+METRICS_ONLY="false"             # --metrics-only: acrescenta métricas SEM recriar os serviços
+MONITORING_ENABLED="true"        # --no-monitoring: só exporters, Prometheus alhures
+METRICS_PROFILE="metricas-512mb"
+METRICS_CONTAINERS="false"       # --metrics-containers liga o cAdvisor
+METRICS_NETWORK="bdh_metrics"
+MONITORING_BIND_IP="127.0.0.1"   # NUNCA reusar BIND_IP: o default dele é 0.0.0.0
+PROMETHEUS_PORT="9090"
+GRAFANA_PORT="3000"
+GRAFANA_ADMIN_PASSWORD=""
+PG_METRICS_PASSWORD=""
+MEILI_METRICS_KEY=""
 DOCKER_VERSION=""            # vazio = última do repositório oficial
 DOCKER_DATA_ROOT=""
 SKIP_SYSTEM_UPDATE="false"
@@ -188,6 +205,29 @@ OPTIONS (credenciais — se omitidas, são geradas com 32 bytes aleatórios):
       --redis-password SENHA
       --meilisearch-key CHAVE       (mínimo 16 bytes)
 
+OPTIONS (observabilidade — desligada por default):
+      --metrics              Sobe a stack de métricas: exporters junto de cada
+                             serviço + Prometheus, Grafana e node exporter
+      --metrics-only         Acrescenta observabilidade a uma instalação que já
+                             existe SEM recriar os containers de dados (implica
+                             --force, mas não --force-recreate). É este o modo
+                             para ligar métricas num banco em produção.
+      --no-monitoring        Só os exporters (Prometheus vive em outra máquina)
+      --metrics-profile PERFIL
+                             metricas-512mb | metricas-2gb | metricas-8gb
+                             (default: metricas-512mb)
+      --metrics-containers   Inclui o cAdvisor (memória usada vs limite por
+                             container; custa 200-400 MB de RAM)
+      --metrics-bind-ip IP   Interface do Grafana e do Prometheus
+                             (default: 127.0.0.1 — use um túnel SSH)
+      --prometheus-port N    (default: 9090)
+      --grafana-port N       (default: 3000)
+      --grafana-password SENHA  (se omitida, é gerada)
+
+    Grafana e Prometheus ficam em 127.0.0.1 de propósito, ao contrário dos
+    serviços de dados: o Prometheus não tem autenticação nenhuma. Acesse com
+    ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 usuario@host
+
 OPTIONS (rede e firewall):
       --bind-ip IP           Interface de publicação (default: 0.0.0.0 — todas)
       --postgres-port N      (default: 5432)
@@ -246,6 +286,19 @@ while [[ $# -gt 0 ]]; do
         --allow-from) ALLOW_FROM="$2"; shift 2 ;;
         --enable-firewall) ENABLE_FIREWALL="true"; shift ;;
         --no-firewall) ENABLE_FIREWALL="false"; shift ;;
+        --metrics) METRICS_ENABLED="true"; shift ;;
+        # Acrescenta observabilidade a uma instalação existente sem recriar os
+        # containers de dados: implica --force (para reconfigurar) mas suprime o
+        # --force-recreate, que num banco de centenas de GB significa downtime e
+        # page cache frio só para ligar um gráfico.
+        --metrics-only) METRICS_ENABLED="true"; METRICS_ONLY="true"; FORCE="true"; shift ;;
+        --no-monitoring) MONITORING_ENABLED="false"; shift ;;
+        --metrics-profile) METRICS_PROFILE="$2"; METRICS_ENABLED="true"; shift 2 ;;
+        --metrics-containers) METRICS_CONTAINERS="true"; METRICS_ENABLED="true"; shift ;;
+        --metrics-bind-ip) MONITORING_BIND_IP="$2"; shift 2 ;;
+        --prometheus-port) PROMETHEUS_PORT="$2"; shift 2 ;;
+        --grafana-port) GRAFANA_PORT="$2"; shift 2 ;;
+        --grafana-password) GRAFANA_ADMIN_PASSWORD="$2"; shift 2 ;;
         --webhook-url) WEBHOOK_URL="$2"; shift 2 ;;
         *) printf 'Opção desconhecida: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
     esac
@@ -369,6 +422,7 @@ detect_pg_profile() {
 PG_PROFILES="dedicada-8gb dedicada-16gb dedicada-32gb dedicada-64gb dedicada-128gb"
 REDIS_PROFILES="cache-256mb cache-512mb cache-1gb cache-2gb"
 MEILI_PROFILES="busca-512mb busca-1gb busca-4gb busca-16gb"
+METRICS_PROFILES="metricas-512mb metricas-2gb metricas-8gb"
 
 profile_valid() {
     local wanted="$1" list="$2" p
@@ -382,7 +436,25 @@ service_profile() {
         postgres) printf '%s' "$PG_PROFILE" ;;
         redis) printf '%s' "$REDIS_PROFILE" ;;
         meilisearch) printf '%s' "$MEILI_PROFILE" ;;
+        # monitoring NÃO entra no array SERVICES (ver create_layout), mas usa o
+        # mesmo fetch_profile para baixar monitoring/profiles/<perfil>.env.
+        monitoring) printf '%s' "$METRICS_PROFILE" ;;
     esac
+}
+
+# Orçamento de RAM da stack de observabilidade, em GB, para o aviso de
+# coexistência: o detect_pg_profile() dimensiona o Postgres pela memória total e
+# não sabe que a monitoração também vai consumir.
+metrics_budget_gb() {
+    local base
+    case "$METRICS_PROFILE" in
+        metricas-512mb) base=2 ;;
+        metricas-2gb)   base=3 ;;
+        metricas-8gb)   base=10 ;;
+        *)              base=2 ;;
+    esac
+    [[ "$METRICS_CONTAINERS" == "true" ]] && base=$((base + 1))
+    printf '%d' "$base"
 }
 
 # Baixa o .env do perfil do repositório (ou copia de --profiles-dir, útil para
@@ -476,6 +548,42 @@ validate_and_prompt() {
 
     if service_selected meilisearch && [[ -n "$MEILI_MASTER_KEY" && ${#MEILI_MASTER_KEY} -lt 16 ]]; then
         die "--meilisearch-key precisa de no mínimo 16 bytes (MEILI_ENV=production)"
+    fi
+
+    if [[ "$METRICS_ENABLED" == "true" ]]; then
+        profile_valid "$METRICS_PROFILE" "$METRICS_PROFILES" \
+            || die "perfil de métricas inválido: $METRICS_PROFILE (use: $METRICS_PROFILES)"
+
+        # A soma dos limites precisa caber na máquina. O perfil do Postgres foi
+        # escolhido (ou detectado) sem saber da monitoração, e um perfil
+        # dedicada-16gb (limite 14G) numa máquina de 16 GB não deixa espaço.
+        if service_selected postgres && [[ "$MONITORING_ENABLED" == "true" ]]; then
+            local mem_gb pg_budget mon_budget
+            mem_gb="$(available_mem_gb)"
+            pg_budget="$(profile_budget_gb "$PG_PROFILE")"
+            mon_budget="$(metrics_budget_gb)"
+            if (( pg_budget + mon_budget > mem_gb )); then
+                local menor
+                menor="$(detect_pg_profile $(( mem_gb - mon_budget > 0 ? mem_gb - mon_budget : 1 )))"
+                warn "orçamento apertado: perfil $PG_PROFILE (~${pg_budget} GB) + monitoração"
+                warn "(~${mon_budget} GB) passam dos ${mem_gb} GB disponíveis ao Docker."
+                if [[ "$menor" != "$PG_PROFILE" ]]; then
+                    warn "Considere --pg-profile $menor, --no-monitoring (Prometheus noutra"
+                    warn "máquina) ou uma máquina maior."
+                else
+                    # Já está no menor perfil: sugerir trocá-lo seria inútil.
+                    warn "Este já é o menor perfil de Postgres. As saídas são --no-monitoring"
+                    warn "(Prometheus noutra máquina) ou uma máquina maior."
+                fi
+                warn "Ver a fórmula de coexistência em postgres/docs/perfis.md."
+            fi
+        fi
+
+        # No macOS o node exporter e o cAdvisor leem o /proc da VM do Docker, não
+        # do Mac — e o kernel da VM nem traz CONFIG_PSI. Ver monitoring/README.md.
+        if [[ "$OS_FAMILY" == "macos" ]]; then
+            info "macOS: node exporter e cAdvisor ficam desligados (medem a VM, não o host)"
+        fi
     fi
 
     info "serviços ....... ${SERVICES[*]}"
@@ -704,6 +812,57 @@ create_layout() {
         ok "$s: compose em $dir"
     done
 
+    # --- observabilidade ------------------------------------------------------
+    # Os overlays de métricas ficam NO diretório do serviço que observam, e são
+    # carregados com um -f extra (ver start_services). O compose de produção de
+    # cada serviço não é tocado.
+    if [[ "$METRICS_ENABLED" == "true" ]]; then
+        for s in "${SERVICES[@]}"; do
+            dir="$(service_dir "$s")"
+            if [[ "$DRY_RUN" != "true" ]]; then
+                curl -fsSL "${RAW_BASE}/${s}/docker-compose.metrics.yml" \
+                    -o "$dir/docker-compose.metrics.yml" \
+                    || die "falha ao baixar ${RAW_BASE}/${s}/docker-compose.metrics.yml"
+            fi
+            ok "$s: overlay de métricas"
+        done
+
+        # O 03-role-metrics.sh vem para o host porque num cluster JÁ inicializado
+        # o initdb não roda de novo — e a imagem em uso pode ser anterior a este
+        # arquivo. O setup o alimenta por stdin (ver ensure_metrics_role).
+        if service_selected postgres && [[ "$DRY_RUN" != "true" ]]; then
+            curl -fsSL "${RAW_BASE}/postgres/initdb/03-role-metrics.sh" \
+                -o "$(service_dir postgres)/03-role-metrics.sh" \
+                || die "falha ao baixar 03-role-metrics.sh"
+        fi
+        if service_selected meilisearch && [[ "$DRY_RUN" != "true" ]]; then
+            curl -fsSL "${RAW_BASE}/meilisearch/metrics-key.sh" \
+                -o "$(service_dir meilisearch)/metrics-key.sh" \
+                || die "falha ao baixar metrics-key.sh"
+        fi
+
+        # `monitoring` fica FORA do array SERVICES de propósito: ele tem DOIS
+        # volumes, e o laço do modo bind abaixo (que chama service_volume_key)
+        # geraria um override com YAML quebrado. Por isso é tratado à parte aqui.
+        if [[ "$MONITORING_ENABLED" == "true" ]]; then
+            dir="$(service_dir monitoring)"
+            run mkdir -p "$dir/targets" "$dir/secrets"
+            if [[ "$DRY_RUN" != "true" ]]; then
+                curl -fsSL "${RAW_BASE}/monitoring/docker-compose.yml" \
+                    -o "$dir/docker-compose.yml" \
+                    || die "falha ao baixar ${RAW_BASE}/monitoring/docker-compose.yml"
+                grep -q 'ghcr.io/brasildatahub' "$dir/docker-compose.yml" \
+                    || die "conteúdo inesperado em $dir/docker-compose.yml (ref '$REF' existe?)"
+                # O Prometheus recusa a config INTEIRA se o credentials_file do
+                # job do Meilisearch não existir. Sem este arquivo, um host sem
+                # Meilisearch ficaria sem monitoração nenhuma.
+                touch "$dir/secrets/meili-metrics.key"
+                chmod 600 "$dir/secrets/meili-metrics.key"
+            fi
+            ok "monitoring: compose em $dir"
+        fi
+    fi
+
     if [[ "$VOLUMES_MODE" == "bind" ]]; then
         for s in "${SERVICES[@]}"; do
             dir="$(service_data_dir "$s")"
@@ -748,6 +907,19 @@ write_env_files() {
     [[ -z "$DADOS_READ_PASSWORD" ]] && DADOS_READ_PASSWORD="$(gen_secret)"
     [[ -z "$REDIS_PASSWORD" ]] && REDIS_PASSWORD="$(gen_secret)"
     [[ -z "$MEILI_MASTER_KEY" ]] && MEILI_MASTER_KEY="$(gen_secret)"
+    # Credenciais próprias da monitoração, de menor privilégio: a senha do
+    # metrics_read não é a do postgres, e a chave do Meili não é a master key.
+    [[ -z "$PG_METRICS_PASSWORD" ]] && PG_METRICS_PASSWORD="$(gen_secret)"
+    [[ -z "$GRAFANA_ADMIN_PASSWORD" ]] && GRAFANA_ADMIN_PASSWORD="$(gen_secret)"
+
+    # O perfil de métricas é baixado uma vez e reusado: os limites dos exporters
+    # vivem nele, e vão para o .env de cada serviço. Fonte única, como nos demais
+    # perfis do repositório.
+    local profile_metrics=""
+    if [[ "$METRICS_ENABLED" == "true" && "$DRY_RUN" != "true" ]]; then
+        profile_metrics="$WORKDIR/services/.metrics-profile.env"
+        fetch_profile monitoring > "$profile_metrics"
+    fi
 
     for s in "${SERVICES[@]}"; do
         dir="$(service_dir "$s")"
@@ -776,10 +948,59 @@ write_env_files() {
                 printf 'BIND_IP=%s\nMEILI_PORT=%s\n' "$BIND_IP" "$MEILI_PORT"
                 ;;
             esac
+
         } > "$env_file"
         chmod 600 "$env_file"
         ok "$s: .env gerado do perfil $(service_profile "$s")"
+
+        # A senha do exporter do Postgres vai num arquivo SEPARADO, e isso é
+        # deliberado: `env_file` faz parte da definição do serviço, então
+        # acrescentar qualquer variável ao .env mudaria o hash de configuração e
+        # o Compose RECRIARIA o container do banco. Medido, não suposto.
+        # Só o postgres precisa disso — o redis_exporter reusa a REDIS_PASSWORD
+        # que já está no .env, sem acrescentar nada.
+        if [[ "$METRICS_ENABLED" == "true" && "$s" == "postgres" ]]; then
+            {
+                printf '# Credencial do postgres_exporter — gerado por infra-setup.sh em %s.\n' "$(now_iso)"
+                printf '# Separado do .env de propósito: acrescentar variáveis ao .env do\n'
+                printf '# serviço faria o Compose recriar o container do banco.\n'
+                printf 'DATA_SOURCE_PASS=%s\n' "$PG_METRICS_PASSWORD"
+            } > "$dir/.env.metrics"
+            chmod 600 "$dir/.env.metrics"
+            ok "postgres: credencial do exporter em .env.metrics"
+        fi
     done
+
+    if [[ "$METRICS_ENABLED" == "true" && "$MONITORING_ENABLED" == "true" && "$DRY_RUN" != "true" ]]; then
+        # COMPOSE_PROFILES é do Compose e NÃO é "perfil" no sentido deste
+        # repositório: define quais coletores existem, não o dimensionamento.
+        # node/cadvisor só em Linux — no macOS mediriam a VM do Docker, e o
+        # kernel dela nem traz CONFIG_PSI (ver monitoring/README.md).
+        local compose_profiles=""
+        if [[ "$OS_FAMILY" == "linux" ]]; then
+            compose_profiles="node"
+            [[ "$METRICS_CONTAINERS" == "true" ]] && compose_profiles="node,containers"
+        fi
+
+        dir="$(service_dir monitoring)"
+        {
+            cat "$profile_metrics"
+            printf '\n# --- deploy (gerado por infra-setup.sh em %s) ---\n' "$(now_iso)"
+            printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$GRAFANA_ADMIN_PASSWORD"
+            printf 'MON_HOSTNAME=%s\n' "$(hostname)"
+            printf 'MONITORING_BIND_IP=%s\n' "$MONITORING_BIND_IP"
+            printf 'PROMETHEUS_PORT=%s\nGRAFANA_PORT=%s\n' "$PROMETHEUS_PORT" "$GRAFANA_PORT"
+            printf 'METRICS_NETWORK=%s\n' "$METRICS_NETWORK"
+            printf 'GRAFANA_ROOT_URL=http://localhost:%s\n' "$GRAFANA_PORT"
+            printf 'COMPOSE_PROFILES=%s\n' "$compose_profiles"
+        } > "$dir/.env"
+        chmod 600 "$dir/.env"
+        ok "monitoring: .env gerado do perfil $METRICS_PROFILE"
+    fi
+
+    # O perfil de métricas já foi distribuído para os .env; não precisa ficar no
+    # disco (e não deve, para não virar uma segunda fonte de verdade).
+    [[ -n "$profile_metrics" && -f "$profile_metrics" ]] && rm -f "$profile_metrics"
 
     if [[ "$DRY_RUN" != "true" ]]; then
         {
@@ -794,6 +1015,17 @@ write_env_files() {
             fi
             if service_selected meilisearch; then
                 printf 'MEILI_MASTER_KEY=%s\nMEILI_PORT=%s\n' "$MEILI_MASTER_KEY" "$MEILI_PORT"
+            fi
+            if [[ "$METRICS_ENABLED" == "true" ]]; then
+                printf '\n# --- observabilidade ---\n'
+                # Credenciais de MENOR privilégio, não cópias das de cima:
+                # metrics_read só lê estatísticas (pg_monitor), e a chave do
+                # Meilisearch só serve para /metrics.
+                printf 'PG_METRICS_PASSWORD=%s\n' "$PG_METRICS_PASSWORD"
+                if [[ "$MONITORING_ENABLED" == "true" ]]; then
+                    printf 'GRAFANA_ADMIN_PASSWORD=%s\nGRAFANA_PORT=%s\nPROMETHEUS_PORT=%s\n' \
+                        "$GRAFANA_ADMIN_PASSWORD" "$GRAFANA_PORT" "$PROMETHEUS_PORT"
+                fi
             fi
         } > "$WORKDIR/secrets/credentials.env"
         chmod 600 "$WORKDIR/secrets/credentials.env"
@@ -811,6 +1043,11 @@ write_env_files() {
             if service_selected postgres; then printf 'PG_PROFILE=%s\n' "$PG_PROFILE"; fi
             if service_selected redis; then printf 'REDIS_PROFILE=%s\n' "$REDIS_PROFILE"; fi
             if service_selected meilisearch; then printf 'MEILI_PROFILE=%s\n' "$MEILI_PROFILE"; fi
+            printf 'METRICS_ENABLED=%s\n' "$METRICS_ENABLED"
+            if [[ "$METRICS_ENABLED" == "true" ]]; then
+                printf 'METRICS_PROFILE=%s\n' "$METRICS_PROFILE"
+                printf 'MONITORING_ENABLED=%s\n' "$MONITORING_ENABLED"
+            fi
         } > "$WORKDIR/.setup-state"
     fi
 }
@@ -821,8 +1058,14 @@ start_services() {
     for s in "${SERVICES[@]}"; do
         dir="$(service_dir "$s")"
         compose_args=(--project-directory "$dir" -f "$dir/docker-compose.yml")
+        # Ordem: base → metrics → override. O override do modo bind é o último a
+        # falar sobre volumes, exatamente como antes de existir o overlay.
+        [[ -f "$dir/docker-compose.metrics.yml" ]] && compose_args+=(-f "$dir/docker-compose.metrics.yml")
         [[ -f "$dir/docker-compose.override.yml" ]] && compose_args+=(-f "$dir/docker-compose.override.yml")
-        if [[ "$FORCE" == "true" ]]; then
+        # --metrics-only acrescenta o exporter sem --force-recreate: o Compose
+        # compara a definição desejada com a atual e recria apenas o que mudou,
+        # ou seja, só o container novo. O banco não é tocado.
+        if [[ "$FORCE" == "true" && "$METRICS_ONLY" != "true" ]]; then
             run docker compose -p "$s" "${compose_args[@]}" up -d --force-recreate
         else
             run docker compose -p "$s" "${compose_args[@]}" up -d
@@ -873,6 +1116,111 @@ start_services() {
     notify "progress" "serviços no ar"
 }
 
+setup_metrics() {
+    [[ "$METRICS_ENABLED" != "true" ]] && return 0
+    section "Observabilidade"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        _log "    ${C_DIM}[dry-run] criaria a role de métricas, a chave do Meilisearch e subiria o monitoring${C_RESET}"
+        return 0
+    fi
+
+    # Esta etapa é a primeira do script que depende do ESTADO DOS DADOS, e não
+    # só da máquina. Por isso nada aqui usa `die`: uma falha aqui não pode
+    # derrubar um provisionamento que já subiu os bancos com sucesso.
+
+    # --- role de leitura de estatísticas do Postgres --------------------------
+    if service_selected postgres; then
+        local cid role_script
+        cid="$(docker ps -q --filter "label=org.brasildatahub.service=postgres" | head -1)"
+        role_script="$(service_dir postgres)/03-role-metrics.sh"
+        if [[ -z "$cid" ]]; then
+            warn "postgres não está em execução — role de métricas não criada"
+        elif docker exec -i \
+                -e POSTGRES_DB="$POSTGRES_DB" \
+                -e PG_METRICS_PASSWORD="$PG_METRICS_PASSWORD" \
+                "$cid" bash -s < "$role_script" >/dev/null 2>&1; then
+            ok "role metrics_read pronta (pg_monitor, sem acesso a dados)"
+        else
+            warn "não foi possível criar a role metrics_read. O postgres-exporter"
+            warn "vai ficar em erro de autenticação até isto ser resolvido. À mão:"
+            warn "  docker exec -i -e POSTGRES_DB=$POSTGRES_DB -e PG_METRICS_PASSWORD=... \\"
+            warn "      \$(docker ps -q --filter label=org.brasildatahub.service=postgres) \\"
+            warn "      bash -s < $role_script"
+        fi
+    fi
+
+    # --- chave escopada do Meilisearch ---------------------------------------
+    if service_selected meilisearch; then
+        local key_script
+        key_script="$(service_dir meilisearch)/metrics-key.sh"
+        MEILI_METRICS_KEY="$(MEILI_MASTER_KEY="$MEILI_MASTER_KEY" \
+            bash "$key_script" "http://127.0.0.1:${MEILI_PORT}" 2>/dev/null || true)"
+        if [[ -n "$MEILI_METRICS_KEY" ]]; then
+            ok "chave de métricas do Meilisearch pronta (ação metrics.get apenas)"
+        else
+            warn "não foi possível criar a chave de métricas do Meilisearch."
+            warn "O job vai ficar em 401. À mão, com a master key:"
+            warn "  MEILI_MASTER_KEY=... bash $key_script http://127.0.0.1:${MEILI_PORT}"
+        fi
+    fi
+
+    [[ "$MONITORING_ENABLED" != "true" ]] && {
+        info "--no-monitoring: exporters no ar, Prometheus deve ser apontado de fora"
+        info "  os exporters escutam na rede Docker '${METRICS_NETWORK}', sem porta publicada"
+        return 0
+    }
+
+    # --- alvos e segredo do Prometheus ---------------------------------------
+    local mdir; mdir="$(service_dir monitoring)"
+    run mkdir -p "$mdir/targets" "$mdir/secrets"
+
+    # Os alvos são nomes de SERVIÇO Compose: na rede compartilhada o Docker
+    # registra o nome do serviço como alias, então o endereço não depende do
+    # nome do projeto. Um arquivo por serviço instalado — serviço ausente não
+    # deixa arquivo, o glob do prometheus.yml não casa nada, e o job fica sem
+    # alvo em vez de ficar `up == 0` para sempre.
+    service_selected postgres \
+        && printf '[{"targets":["postgres-exporter:9187"]}]\n' > "$mdir/targets/postgres.json"
+    service_selected redis \
+        && printf '[{"targets":["redis-exporter:9121"]}]\n' > "$mdir/targets/redis.json"
+    if service_selected meilisearch && [[ -n "$MEILI_METRICS_KEY" ]]; then
+        printf '[{"targets":["meilisearch:7700"]}]\n' > "$mdir/targets/meilisearch.json"
+        printf '%s' "$MEILI_METRICS_KEY" > "$mdir/secrets/meili-metrics.key"
+    fi
+    if [[ "$OS_FAMILY" == "linux" ]]; then
+        printf '[{"targets":["node-exporter:9100"]}]\n' > "$mdir/targets/node.json"
+        [[ "$METRICS_CONTAINERS" == "true" ]] \
+            && printf '[{"targets":["cadvisor:8080"]}]\n' > "$mdir/targets/cadvisor.json"
+    fi
+    chmod 600 "$mdir/secrets/meili-metrics.key"
+    ok "alvos escritos em $mdir/targets/"
+
+    # --- sobe a stack ---------------------------------------------------------
+    local compose_args=(--project-directory "$mdir" -f "$mdir/docker-compose.yml")
+    if [[ "$FORCE" == "true" ]]; then
+        run docker compose -p monitoring "${compose_args[@]}" up -d --force-recreate
+    else
+        run docker compose -p monitoring "${compose_args[@]}" up -d
+    fi
+    ok "monitoring no ar"
+
+    local waited=0 health
+    while (( waited < 60 )); do
+        health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+            "$(docker ps -q --filter "label=org.brasildatahub.service=monitoring" | head -1)" 2>/dev/null || echo starting)"
+        [[ "$health" == "healthy" || "$health" == "none" ]] && break
+        sleep 5; waited=$((waited + 5))
+    done
+    if [[ "$health" == "healthy" ]]; then
+        ok "Prometheus saudável"
+    else
+        warn "Prometheus ainda não saudável — veja 'bdh logs monitoring'"
+    fi
+
+    notify "progress" "observabilidade no ar"
+}
+
 configure_firewall() {
     section "Firewall"
 
@@ -912,6 +1260,27 @@ configure_firewall() {
             warn "$s: porta $port aberta para QUALQUER origem"
         fi
     done
+
+    # Grafana e Prometheus só entram no firewall quando NÃO estão em loopback:
+    # com -p 127.0.0.1:3000:3000 o Docker cria a regra de DNAT apenas para
+    # destino loopback, e nada externo casa. É o único caso nesta infraestrutura
+    # em que a armadilha do DOCKER-USER não morde — por isso o default.
+    if [[ "$METRICS_ENABLED" == "true" && "$MONITORING_ENABLED" == "true" \
+          && "$MONITORING_BIND_IP" != "127.0.0.1" ]]; then
+        local mport
+        for mport in "$GRAFANA_PORT" "$PROMETHEUS_PORT"; do
+            if [[ -n "$ALLOW_FROM" ]]; then
+                IFS=',' read -r -a cidrs <<< "$ALLOW_FROM"
+                for cidr in "${cidrs[@]}"; do
+                    run ufw allow from "$cidr" to any port "$mport" proto tcp
+                done
+            else
+                run ufw allow "${mport}/tcp"
+                warn "monitoração: porta $mport aberta para QUALQUER origem"
+                warn "  o Prometheus NÃO TEM AUTENTICAÇÃO — prefira --metrics-bind-ip 127.0.0.1"
+            fi
+        done
+    fi
 
     run ufw --force enable
     ok "ufw ativo"
@@ -1004,10 +1373,11 @@ bdh — serviços de dados da BrasilDataHub
   bdh logs <serviço> [-f]  logs do serviço
   bdh up|down|restart <serviço>
   bdh verify [serviço]     verificação pós-deploy (/dev/shm, memória, conf)
+  bdh metrics              estado dos alvos do Prometheus
   bdh creds [--show]       caminho (ou conteúdo) das credenciais
   bdh path <serviço>       diretório do serviço
 
-Serviços: postgres, redis, meilisearch
+Serviços: postgres, redis, meilisearch, monitoring
 USAGE
 }
 
@@ -1018,8 +1388,59 @@ compose() {
     local dir; dir="$(svc_dir "$svc")"
     [[ -d "$dir" ]] || { echo "serviço '$svc' não provisionado em $dir" >&2; exit 1; }
     local args=(--project-directory "$dir" -f "$dir/docker-compose.yml")
+    # Mesma ordem do infra-setup.sh: base → metrics → override.
+    [[ -f "$dir/docker-compose.metrics.yml" ]] && args+=(-f "$dir/docker-compose.metrics.yml")
     [[ -f "$dir/docker-compose.override.yml" ]] && args+=(-f "$dir/docker-compose.override.yml")
     docker compose -p "$svc" "${args[@]}" "$@"
+}
+
+cmd_metrics() {
+    local dir; dir="$(svc_dir monitoring)"
+    [[ -d "$dir" ]] || { echo "monitoração não provisionada (rode com --metrics)" >&2; exit 1; }
+
+    local porta
+    porta="$(grep -h '^PROMETHEUS_PORT=' "$dir/.env" 2>/dev/null | cut -d= -f2-)"
+    porta="${porta:-9090}"
+
+    echo "== alvos do Prometheus"
+    # Sem jq no host: python3 está em qualquer Debian/Ubuntu e no macOS.
+    if ! _t 5 curl -fsS "http://127.0.0.1:${porta}/api/v1/targets" 2>/dev/null | python3 -c '
+import json, sys
+alvos = json.load(sys.stdin)["data"]["activeTargets"]
+if not alvos:
+    print("  nenhum alvo configurado — veja os arquivos em targets/")
+for t in sorted(alvos, key=lambda x: x["labels"]["job"]):
+    erro = t.get("lastError", "")
+    print("  %-14s %-34s %s%s" % (t["labels"]["job"], t["scrapeUrl"], t["health"],
+                                  "  " + erro[:60] if erro else ""))
+' 2>/dev/null; then
+        echo "  Prometheus não respondeu em 127.0.0.1:${porta}"
+        echo "  (ele publica só em loopback por default — rode isto no próprio host)"
+        exit 1
+    fi
+
+    echo
+    echo "== alertas disparando"
+    _t 5 curl -fsS "http://127.0.0.1:${porta}/api/v1/alerts" 2>/dev/null | python3 -c '
+import json, sys
+a = [x for x in json.load(sys.stdin)["data"]["alerts"] if x["state"] == "firing"]
+print("  nenhum") if not a else [
+    print("  %-34s %s" % (x["labels"]["alertname"], x["annotations"].get("summary", "")))
+    for x in a]
+' 2>/dev/null || echo "  (não foi possível consultar)"
+
+    echo
+    echo "== séries ativas (vigie a cardinalidade: o TSDB divide o disco com o banco)"
+    _t 5 curl -fsS --get "http://127.0.0.1:${porta}/api/v1/query" \
+        --data-urlencode 'query=count by (job) ({__name__=~".+"})' 2>/dev/null | python3 -c '
+import json, sys
+r = json.load(sys.stdin)["data"]["result"]
+total = 0
+for x in sorted(r, key=lambda y: -int(y["value"][1])):
+    total += int(x["value"][1])
+    print("  %-14s %7s" % (x["metric"].get("job", "?"), x["value"][1]))
+print("  %-14s %7d" % ("TOTAL", total))
+' 2>/dev/null || echo "  (não foi possível consultar)"
 }
 
 cmd_status() {
@@ -1080,6 +1501,7 @@ case "${1:-status}" in
     down) compose "${2:?serviço}" down ;;      # sem -v: nunca apaga volume
     restart) compose "${2:?serviço}" restart ;;
     verify) cmd_verify "${2:-postgres}" ;;
+    metrics) cmd_metrics ;;
     creds)
         if [[ "${2:-}" == "--show" ]]; then cat "$BDH_ROOT/secrets/credentials.env"
         else echo "$BDH_ROOT/secrets/credentials.env  (use 'bdh creds --show' para exibir)"; fi ;;
@@ -1148,9 +1570,25 @@ summary() {
     _log ""
     _log "    ${C_BOLD}credenciais${C_RESET}"
     info "  $WORKDIR/secrets/credentials.env   (chmod 600 — 'bdh creds --show')"
+    if [[ "$METRICS_ENABLED" == "true" && "$MONITORING_ENABLED" == "true" ]]; then
+        _log ""
+        _log "    ${C_BOLD}observabilidade${C_RESET}"
+        if [[ "$MONITORING_BIND_IP" == "127.0.0.1" ]]; then
+            info "  Grafana e Prometheus escutam só em loopback (o Prometheus não tem"
+            info "  autenticação). Para acessar da sua máquina:"
+            info "    ssh -L ${GRAFANA_PORT}:127.0.0.1:${GRAFANA_PORT} -L ${PROMETHEUS_PORT}:127.0.0.1:${PROMETHEUS_PORT} $(whoami)@$(hostname)"
+            info "    e abra http://127.0.0.1:${GRAFANA_PORT}  (usuário admin)"
+        else
+            info "  Grafana ....... http://${MONITORING_BIND_IP}:${GRAFANA_PORT}  (usuário admin)"
+            info "  Prometheus .... http://${MONITORING_BIND_IP}:${PROMETHEUS_PORT}"
+        fi
+        info "  senha do admin em secrets/credentials.env ('bdh creds --show')"
+        info "  perfil de métricas: $METRICS_PROFILE"
+    fi
     _log ""
     _log "    ${C_BOLD}operação${C_RESET}"
     info "  bdh status | bdh logs <serviço> | bdh verify [serviço]"
+    [[ "$METRICS_ENABLED" == "true" ]] && info "  bdh metrics — estado dos alvos e alertas"
     if service_selected postgres; then
         _log ""
         info "  perfil do Postgres: $PG_PROFILE — revise em postgres/docs/perfis.md"
@@ -1183,6 +1621,7 @@ main() {
     create_layout
     write_env_files
     start_services
+    setup_metrics
     configure_firewall
     install_cli_and_motd
     summary

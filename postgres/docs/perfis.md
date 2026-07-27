@@ -416,8 +416,21 @@ reserva do SO já está embutida no perfil — o limite do container do Postgres
 |---|---|---|---|
 | Redis | `cache-256mb` / `cache-512mb` / `cache-1gb` / `cache-2gb` | 512M / 1G / 2G / 3G | 1 vCPU (single-thread; +1 breve no AOF rewrite) |
 | Meilisearch | `busca-512mb` / `busca-1gb` / `busca-4gb` / `busca-16gb` | 512M / 1G / 4G¹ / 16G¹ | `MEILI_MAX_INDEXING_THREADS` (1/1/2/4) |
+| Observabilidade² | `metricas-512mb` / `metricas-2gb` / `metricas-8gb` | ~1,3G / ~3,2G / ~9,7G | picos curtos de 1 vCPU na compactação do TSDB |
 
 ¹ valor **de pico de indexação**; em regime cai para ~1,5× o índice quente.
+
+² soma de todos os containers de [`monitoring/`](../../monitoring/) mais os
+exporters: Prometheus + Grafana + node exporter (+128M) + exporters de Postgres
+(+128M) e Redis (+64M). Com o cAdvisor ligado (`COMPOSE_PROFILES=containers`),
+some mais ~512M. A monitoração é **opcional** e só existe com `--metrics`.
+
+> ⚠️ O volume do Prometheus fica no mesmo NVMe do `PGDATA`. Uma explosão de
+> cardinalidade nas métricas enche o disco e derruba o **banco**, não o
+> Prometheus — é o pior modo de falha dessa combinação. Por isso os perfis de
+> métricas sempre declaram `PROM_RETENTION_SIZE` além de `PROM_RETENTION_TIME`,
+> e o `bdh metrics` mostra as séries por job. Acima de `metricas-2gb`, considere
+> disco ou máquina dedicada para o TSDB.
 
 ### Combinações prováveis
 
@@ -425,7 +438,9 @@ reserva do SO já está embutida no perfil — o limite do container do Postgres
 |---|---|---|---|---|
 | Postgres sozinho *(caso base)* | qualquer | — | = orçamento | — |
 | Base Escolar consolidada | `dedicada-8gb` | redis `cache-256mb` + meili `busca-512mb` | 9 GB | 16 GB |
+| Base Escolar + observabilidade | `dedicada-8gb` | os acima + `metricas-512mb` | 10,3 GB | 16 GB |
 | Projeto médio consolidado | `dedicada-16gb` | redis `cache-512mb` + meili `busca-4gb` | 21 GB | 32 GB |
+| Projeto médio + observabilidade | `dedicada-16gb` | os acima + `metricas-512mb` | 22,3 GB | 32 GB |
 | Multi-projeto | `dedicada-32gb` | redis `cache-1gb` + meili `busca-4gb` | 38 GB | 48–64 GB |
 | Base Empresarial — host único | `dedicada-64gb` | redis `cache-512mb` + meili `busca-16gb` | 81 GB | 96 GB |
 | **Base Empresarial — Postgres isolado** ✅ | `dedicada-64gb` | Redis/Meili em outra máquina | 64 GB | 64 GB + host pequeno |

@@ -5,6 +5,8 @@ name: Build e publica imagens
 #   ghcr.io/brasildatahub/postgres:17     (imagem única; tuning via envs PG_*)
 #   ghcr.io/brasildatahub/redis:7
 #   ghcr.io/brasildatahub/meilisearch:1.34
+#   ghcr.io/brasildatahub/prometheus:3    (config e regras de alerta embutidas)
+#   ghcr.io/brasildatahub/grafana:13      (provisioning e dashboards embutidos)
 # Imagens genéricas — consumidas por qualquer projeto da org (baseempresarial,
 # baseescolar, basehospitalar, ...). Nada aqui é específico de um projeto.
 
@@ -12,9 +14,21 @@ on:
   push:
     branches: [main]
     paths:
-      - "postgres/**"
-      - "redis/**"
-      - "meilisearch/**"
+      # Filtros estreitos, por ARQUIVO QUE ENTRA NA IMAGEM. Antes eram
+      # `postgres/**` e afins, o que republicava as três imagens a cada commit
+      # de documentação — e agora também a cada mudança nos overlays de
+      # métricas, que não entram em imagem nenhuma.
+      - "postgres/Dockerfile"
+      - "postgres/*.sh"
+      - "postgres/initdb/**"
+      - "postgres/.dockerignore"
+      - "postgres/test/**"
+      - "redis/Dockerfile"
+      - "redis/redis.conf"
+      - "meilisearch/Dockerfile"
+      - "monitoring/prometheus/**"
+      - "monitoring/grafana/**"
+      - "monitoring/test/**"
       - ".github/workflows/build-publish.yml"
   workflow_dispatch:
 
@@ -93,3 +107,39 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/meilisearch:1.34
+
+  monitoring:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          # 3.13 é a LTS atual do Prometheus (suporte até 2027-07-31); a 3.5,
+          # LTS anterior, sai de suporte em 2026-07-31.
+          - { dir: prometheus, image: prometheus, major: "3", full: "3.13.1" }
+          - { dir: grafana, image: grafana, major: "13", full: "13.1.1" }
+    steps:
+      - uses: actions/checkout@v4
+
+      # Roda ANTES do push, no mesmo espírito dos testes do shm-guard: uma
+      # config ou regra inválida só se manifestaria como container em restart
+      # loop no servidor, e um dashboard com o datasource errado abre VAZIO,
+      # sem erro nenhum — ninguém percebe até precisar dele.
+      - name: Config, alertas e dashboards
+        run: bash monitoring/test/prometheus-config.test.sh
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: monitoring/${{ matrix.dir }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image }}:${{ matrix.major }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image }}:${{ matrix.full }}

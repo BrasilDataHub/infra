@@ -1,0 +1,48 @@
+# Overlay OPCIONAL de métricas do Meilisearch. Usado JUNTO do compose de
+# produção, nesta ordem:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.metrics.yml up -d
+#
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │ ATENÇÃO — este é o ÚNICO overlay de métricas que altera o serviço base.   │
+# │ Aplicá-lo RECRIA o container do Meilisearch.                             │
+# │                                                                          │
+# │ Não há exporter para o Meilisearch: ele expõe /metrics nativamente, e o   │
+# │ que liga isso é uma variável de ambiente — logo, recriação obrigatória.   │
+# │ O índice vive no volume e a recriação é segura, MAS tarefas de indexação  │
+# │ em andamento são interrompidas. Aplique numa janela sem ETL.             │
+# └──────────────────────────────────────────────────────────────────────────┘
+#
+# Por que o endpoint nativo e não um exporter de terceiros: os da comunidade não
+# são mantidos pela Meili, derivam dos mesmos dados de /stats e entregam menos —
+# o nativo inclui histograma de latência de busca, que é o que importa aqui.
+#
+# RESSALVA: MEILI_EXPERIMENTAL_ENABLE_METRICS é uma feature EXPERIMENTAL. Nomes
+# de métrica podem mudar entre versões menores. O compose fixa a v1.34, então o
+# risco está contido — mas subir a versão do Meilisearch passa a ter raio de
+# alcance sobre os dashboards e os alertas.
+#
+# AUTENTICAÇÃO: /metrics exige uma chave com a ação `metrics.get` e responde 401
+# sem ela. A master key NUNCA é usada para scrape — o `infra-setup.sh --metrics`
+# cria uma chave escopada (uid fixo, idempotente) e a grava em
+# services/monitoring/secrets/meili-metrics.key. O passo manual equivalente está
+# no README deste diretório.
+
+services:
+  meilisearch:
+    environment:
+      MEILI_EXPERIMENTAL_ENABLE_METRICS: "true"
+    networks:
+      # `default` precisa ser repetida: ao declarar `networks` aqui, o serviço
+      # deixa de herdar a rede default implícita, e sem ela a porta publicada e
+      # o healthcheck continuariam funcionando mas o serviço sairia da bridge do
+      # próprio projeto.
+      - default
+      - bdh_metrics
+
+networks:
+  # Sem `external: true` — ver a justificativa completa em
+  # ../postgres/docker-compose.metrics.yml. Resumo: com external, um
+  # `docker network prune` faria o `up` do próprio Meilisearch falhar.
+  bdh_metrics:
+    name: ${METRICS_NETWORK:-bdh_metrics}

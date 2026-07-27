@@ -62,6 +62,40 @@ memória) e recriar o container — nenhum rebuild.
 permitia `MEILI_MAX_INDEXING_MEMORY` de **6 GiB** num host de 8 GB dividido
 com Postgres e Redis — sentença de OOM. Todo perfil limita explicitamente.
 
+## Métricas
+
+O Meilisearch expõe `/metrics` no formato Prometheus **nativamente** — não há
+exporter. [`docker-compose.metrics.yml`](docker-compose.metrics.yml) liga a
+feature:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.metrics.yml up -d
+```
+
+> ⚠️ Este é o **único** overlay de métricas do repositório que altera o serviço
+> base, porque o que liga o endpoint é uma variável de ambiente — e mudar env
+> **recria o container**. O índice vive no volume e a recriação é segura, mas
+> tarefas de indexação em andamento são interrompidas. Aplique numa janela sem
+> ETL.
+
+`MEILI_EXPERIMENTAL_ENABLE_METRICS` é uma feature **experimental**: nomes de
+métrica podem mudar entre versões menores. O pin em `v1.34` contém o risco, mas
+subir a versão passa a ter raio de alcance sobre dashboards e alertas.
+
+**Autenticação.** `/metrics` responde `401` sem chave e exige a ação
+`metrics.get`. A master key nunca é usada para scrape —
+[`metrics-key.sh`](metrics-key.sh) cria uma chave escopada, idempotente (uid
+fixo: o `POST` cria na primeira vez, devolve `409` depois, e um `GET` lê a
+existente):
+
+```bash
+MEILI_MASTER_KEY=... bash metrics-key.sh http://127.0.0.1:7700
+```
+
+A chave resultante só abre `/metrics`: `/indexes`, `/stats` e `/keys` respondem
+`403`. O `infra-setup.sh --metrics` roda isso sozinho e grava o valor em
+`services/monitoring/secrets/meili-metrics.key`.
+
 ## Implantação
 
 Use o [`docker-compose.yml`](docker-compose.yml) desta pasta com um `.env` ao

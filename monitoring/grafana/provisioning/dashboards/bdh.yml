@@ -1,0 +1,22 @@
+# Provider de dashboards — embutido na imagem ghcr.io/brasildatahub/grafana.
+apiVersion: 1
+
+providers:
+  - name: brasildatahub
+    orgId: 1
+    folder: BrasilDataHub
+    type: file
+    disableDeletion: true
+    # O git é a fonte da verdade, como acontece com os composes e os perfis.
+    # Editar pela UI e perder a alteração no próximo deploy seria pior que não
+    # poder editar.
+    allowUiUpdates: false
+    updateIntervalSeconds: 60
+    options:
+      # /etc/grafana/dashboards e NÃO /var/lib/grafana/dashboards — a diferença
+      # é a armadilha mais comum deste setup. /var/lib/grafana é volume nomeado,
+      # e o Docker só copia o conteúdo da imagem para dentro do volume na
+      # PRIMEIRA subida. Dashboards ali congelariam na versão do primeiro deploy
+      # e nenhum upgrade de imagem os atualizaria.
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

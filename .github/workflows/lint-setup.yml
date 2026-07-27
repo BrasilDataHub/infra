@@ -12,6 +12,10 @@ on:
       - "postgres/docs/perfis.md"
       - "*/profiles/*.env"
       - "*/docker-compose.yml"
+      - "*/docker-compose.metrics.yml"
+      - "monitoring/**"
+      - "postgres/initdb/*.sh"
+      - "meilisearch/metrics-key.sh"
       - ".github/workflows/lint-setup.yml"
   pull_request:
     paths:
@@ -20,6 +24,10 @@ on:
       - "postgres/docs/perfis.md"
       - "*/profiles/*.env"
       - "*/docker-compose.yml"
+      - "*/docker-compose.metrics.yml"
+      - "monitoring/**"
+      - "postgres/initdb/*.sh"
+      - "meilisearch/metrics-key.sh"
   workflow_dispatch:
 
 jobs:
@@ -32,7 +40,12 @@ jobs:
         run: bash -n infra-setup.sh
 
       - name: ShellCheck
-        run: shellcheck -x infra-setup.sh test/infra-setup.test.sh
+        run: |
+          shellcheck -x infra-setup.sh test/infra-setup.test.sh
+          shellcheck postgres/initdb/03-role-metrics.sh \
+                     meilisearch/metrics-key.sh \
+                     monitoring/grafana/vendorizar.sh \
+                     monitoring/test/prometheus-config.test.sh
 
       # Cobre, entre outras coisas, se os blocos PG_* do script continuam
       # idênticos aos de postgres/docs/perfis.md e se as envs existem na imagem.
@@ -47,3 +60,41 @@ jobs:
           POSTGRES_DB=d POSTGRES_PASSWORD=p docker compose -f postgres/docker-compose.yml config -q
           REDIS_PASSWORD=x docker compose -f redis/docker-compose.yml config -q
           MEILI_MASTER_KEY=chave-de-teste-com-32-bytes-abc docker compose -f meilisearch/docker-compose.yml config -q
+
+      - name: Composes válidos com o overlay de métricas
+        run: |
+          POSTGRES_DB=d POSTGRES_PASSWORD=p \
+            docker compose -f postgres/docker-compose.yml -f postgres/docker-compose.metrics.yml config -q
+          REDIS_PASSWORD=x \
+            docker compose -f redis/docker-compose.yml -f redis/docker-compose.metrics.yml config -q
+          MEILI_MASTER_KEY=chave-de-teste-com-32-bytes-abc \
+            docker compose -f meilisearch/docker-compose.yml -f meilisearch/docker-compose.metrics.yml config -q
+          GRAFANA_ADMIN_PASSWORD=x \
+            docker compose -f monitoring/docker-compose.yml config -q
+          # Com COMPOSE_PROFILES vazio o `config` não enxerga node-exporter nem
+          # cAdvisor: sem esta segunda passagem, os dois ficariam sem validação.
+          COMPOSE_PROFILES=node,containers GRAFANA_ADMIN_PASSWORD=x \
+            docker compose -f monitoring/docker-compose.yml config -q
+
+      # O princípio central desta entrega: ligar métricas não pode recriar um
+      # container de banco de centenas de GB. Se alguém acrescentar uma chave ao
+      # serviço `postgres` dentro do overlay, ou puser uma variável de métricas
+      # no .env do serviço, este passo falha.
+      - name: Overlay de métricas não altera o serviço postgres
+        run: |
+          base=$(POSTGRES_DB=d POSTGRES_PASSWORD=p \
+                 docker compose -f postgres/docker-compose.yml config)
+          comb=$(POSTGRES_DB=d POSTGRES_PASSWORD=p \
+                 docker compose -f postgres/docker-compose.yml -f postgres/docker-compose.metrics.yml config)
+          diff <(printf '%s' "$base" | yq '.services.postgres') \
+               <(printf '%s' "$comb" | yq '.services.postgres')
+          # Idem para o Redis. O Meilisearch é a exceção conhecida: ligar
+          # /metrics é uma env do próprio serviço, e recriar é inerente.
+          rbase=$(REDIS_PASSWORD=x docker compose -f redis/docker-compose.yml config)
+          rcomb=$(REDIS_PASSWORD=x \
+                  docker compose -f redis/docker-compose.yml -f redis/docker-compose.metrics.yml config)
+          diff <(printf '%s' "$rbase" | yq '.services.redis') \
+               <(printf '%s' "$rcomb" | yq '.services.redis')
+
+      - name: Config, alertas e dashboards
+        run: bash monitoring/test/prometheus-config.test.sh

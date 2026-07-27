@@ -9,6 +9,7 @@ Este repositório centraliza a configuração da stack Docker utilizada por algu
 | PostgreSQL | `ghcr.io/brasildatahub/postgres:17` — imagem única, tuning por envs `PG_*`, perfis **dedicados** de 8 a 128 GB, todos com NVMe local ([perfis](postgres/docs/perfis.md), [deploy](postgres/docs/deploy.md), [troubleshooting](postgres/docs/troubleshooting.md), [preparação do host](postgres/docs/host.md)) | [`postgres/`](postgres/) |
 | Redis | `ghcr.io/brasildatahub/redis:7` — volatile-lru, AOF, perfis `cache-256mb`–`cache-2gb` | [`redis/`](redis/) |
 | Meilisearch | `ghcr.io/brasildatahub/meilisearch:1.34` — wrapper pinado, perfis `busca-512mb`–`busca-16gb` | [`meilisearch/`](meilisearch/) |
+| Observabilidade | `ghcr.io/brasildatahub/prometheus:3` e `ghcr.io/brasildatahub/grafana:13` — **opcional**, perfis `metricas-512mb`–`metricas-8gb` | [`monitoring/`](monitoring/) |
 
 Cada pasta tem seu README com as variáveis de configuração, os perfis por
 máquina e o passo a passo de implantação.
@@ -188,6 +189,45 @@ O SSH é liberado **antes** de o firewall ser ativado, na porta detectada em
 > Por isso o `--allow-from` também escreve regras na chain `DOCKER-USER`
 > (persistidas em `/etc/ufw/after.rules`). Se for configurar à mão, siga
 > [host.md, Rede](postgres/docs/host.md#ufw-não-filtra-portas-publicadas-pelo-docker).
+
+## Observabilidade
+
+Desligada por default. `--metrics` acrescenta Prometheus, Grafana, node exporter
+e um exporter por serviço; nada disso muda os composes de produção dos três
+serviços de dados.
+
+```bash
+# instalação nova, já com observabilidade
+... | sudo bash -s -- --auto --metrics
+
+# acrescentar a uma instalação que JÁ existe, sem recriar os containers de dados
+sudo bash infra-setup.sh --metrics-only
+
+bdh metrics        # alvos, alertas disparando e séries por job
+```
+
+O exporter de cada serviço mora no **diretório daquele serviço**
+(`postgres/docker-compose.metrics.yml`), num overlay opcional: a DSN, os
+coletores desligados e os timeouts são fatos sobre o Postgres, não sobre o
+Prometheus. Eles conversam por uma rede Docker `bdh_metrics` e **nenhum exporter
+publica porta no host** — `/metrics` não tem autenticação.
+
+`--metrics-only` é o modo para ligar métricas num banco em produção: implica
+`--force` mas suprime o `--force-recreate`, então só o container do exporter é
+criado. A exceção é o Meilisearch, onde a feature é uma variável de ambiente e a
+recriação é inerente — aplique numa janela sem indexação.
+
+> ⚠️ **Grafana e Prometheus publicam em `127.0.0.1`, ao contrário dos serviços de
+> dados.** O Prometheus não tem autenticação nenhuma: quem alcança a porta lê
+> tudo e chama `/api/v1/admin/tsdb/*`. Use um túnel SSH
+> (`ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 usuario@host`). A variável
+> é `MONITORING_BIND_IP`, separada de `BIND_IP` justamente para que o default
+> `--bind-ip 0.0.0.0` não os exponha.
+
+A monitoração consome ~2 GB de RAM (~3 GB com o cAdvisor), que entram na
+[fórmula de coexistência](postgres/docs/perfis.md#fórmula-de-reserva) — o script
+avisa quando o orçamento não fecha com o perfil do Postgres escolhido. Detalhes,
+perfis e alertas em [`monitoring/`](monitoring/).
 
 ## Publicação
 

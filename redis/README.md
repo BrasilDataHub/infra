@@ -113,6 +113,39 @@ fora de rede confiável a senha trafega em claro. Use uma senha longa e, se quis
 restringir, `BIND_IP` numa interface privada ou firewall por origem
 ([Rede](../postgres/docs/host.md#rede)).
 
+## Métricas
+
+[`docker-compose.metrics.yml`](docker-compose.metrics.yml) é um overlay
+**opcional** que acrescenta o `redis_exporter` ao mesmo projeto Compose, sem
+tocar no serviço `redis`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.metrics.yml up -d
+```
+
+Nenhuma credencial nova: o exporter lê `REDIS_PASSWORD`, que já está no `.env`.
+Como nada é acrescentado ao `.env`, o container do Redis **não é recriado** ao
+ligar métricas.
+
+O exporter não publica porta — é alcançado pelo Prometheus na rede
+`bdh_metrics` ([como isso funciona](../monitoring/README.md#como-os-pedaços-se-enxergam)).
+
+**Profundidade das filas do Horizon** é a métrica mais útil daqui, e é opt-in.
+Defina no `.env` as chaves exatas a medir:
+
+```bash
+REDIS_METRICS_KEYS=0=queues:default,0=queues:default:reserved
+```
+
+Isso usa `-check-single-keys`, que faz `LLEN` — O(1), seguro em produção. **Nunca
+use** `--check-keys` nem `--count-keys`: elas fazem `SCAN` do keyspace a cada
+scrape e param um Redis single-thread com fila.
+
+Endurecimento em aberto: o `redis.conf` usa `requirepass`, não ACL, então o
+exporter conecta com a mesma senha de todo mundo. Um usuário ACL dedicado
+(`+info +config|get +client|info +slowlog +latency -@all`) exigiria mexer no
+`redis.conf` embutido e rebuildar a imagem.
+
 ## Validação local
 
 ```bash

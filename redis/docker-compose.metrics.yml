@@ -1,0 +1,67 @@
+# Overlay OPCIONAL de métricas do Redis — acrescenta o redis_exporter ao projeto
+# Compose do Redis. Usado JUNTO do compose de produção, nesta ordem:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.metrics.yml up -d
+#
+# O `infra-setup.sh --metrics` e o `bdh` passam os dois -f sozinhos. Num
+# `docker compose` à mão, PASSE OS DOIS: com apenas o compose base, o exporter
+# fica fora do conjunto gerenciado e um `--remove-orphans` o removeria.
+#
+# O serviço `redis` NÃO é tocado, e nenhuma credencial nova é criada: o
+# redis_exporter lê REDIS_PASSWORD nativamente, que é o nome que já está no .env.
+# Por isso este overlay não precisa do .env.metrics que o do Postgres usa —
+# nada é acrescentado ao .env, e o container do Redis não é recriado.
+#
+# Limitação assumida: o redis.conf da imagem usa `requirepass`, não ACL, então o
+# exporter conecta com a mesma senha de todo mundo. Um usuário ACL dedicado
+# (+info +config|get +client|info +slowlog +latency -@all) exigiria mexer no
+# redis.conf embutido e rebuildar a imagem — está registrado no README como
+# endurecimento futuro, não como pendência desta entrega.
+
+services:
+  redis-exporter:
+    image: ghcr.io/oliver006/redis_exporter:v1.87.0-alpine
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?defina REDIS_PASSWORD}
+      # Profundidade das filas do Horizon. `-check-single-keys` faz LLEN/SCARD em
+      # chaves EXATAS — O(1), seguro em produção.
+      #
+      # NUNCA usar as variantes com padrão: REDIS_EXPORTER_CHECK_KEYS e
+      # REDIS_EXPORTER_COUNT_KEYS fazem SCAN do keyspace a cada scrape, e num
+      # Redis single-thread com fila do Horizon isso é uma parada do mundo.
+      # REDIS_EXPORTER_EXPORT_CLIENT_LIST também não: gera uma série por cliente
+      # conectado, e o Horizon abre uma conexão por worker.
+      #
+      # Formato: 0=queues:default,0=queues:default:reserved  (db=chave)
+      REDIS_EXPORTER_CHECK_SINGLE_KEYS: ${REDIS_METRICS_KEYS:-}
+      # Abaixo do scrape_timeout de 10s do Prometheus: melhor o exporter desistir
+      # e reportar erro do que segurar o scrape até o fim.
+      REDIS_EXPORTER_CONNECTION_TIMEOUT: 5s
+    # Valor PRÓPRIO, nunca `redis` — ver a justificativa no overlay do Postgres:
+    # o `bdh` e o wait de healthcheck filtram containers por esta label.
+    labels:
+      org.brasildatahub.service: redis-exporter
+    # Sem `ports:`: alcançado por DNS dentro da rede bdh_metrics. O /metrics não
+    # tem autenticação e expõe a configuração inteira do Redis.
+    networks:
+      - default        # fala com o `redis` pelo DNS do projeto
+      - bdh_metrics    # é scrapeado pelo Prometheus, que vive em outro projeto
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_EXPORTER_MEMORY_LIMIT:-64M}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+networks:
+  # Sem `external: true` — ver a justificativa completa em
+  # ../postgres/docker-compose.metrics.yml. Resumo: com external, um
+  # `docker network prune` faria o `up` do próprio Redis falhar.
+  bdh_metrics:
+    name: ${METRICS_NETWORK:-bdh_metrics}

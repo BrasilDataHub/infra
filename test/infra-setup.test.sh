@@ -71,7 +71,10 @@ done
 
 printf '\nArquivos de perfil: nenhuma linha malformada\n'
 for f in "$REPO_ROOT"/{postgres,redis,meilisearch}/profiles/*.env; do
-    bad="$(grep -vE '^([A-Z][A-Z0-9_]*=[^[:space:]]+|#.*|)$' "$f" || true)"
+    # `(...)?$` e não `(...|)$`: a alternativa vazia é rejeitada por alguns greps
+    # (o ugrep, comum no macOS via brew, sai com rc=2) — e aí `bad` ficava vazio
+    # e o teste passava sem verificar nada. Semântica idêntica, portável.
+    bad="$(grep -vE '^([A-Z][A-Z0-9_]*=[^[:space:]]+|#.*)?$' "$f" || true)"
     check "$(basename "$(dirname "$(dirname "$f")")")/$(basename "$f")" "" "$bad"
 done
 
@@ -174,8 +177,94 @@ for svc in postgres redis meilisearch; do
     fi
 done
 
+printf '\nObservabilidade: perfis\n'
+profile_valid metricas-512mb "$METRICS_PROFILES"; check "perfil de métricas válido" "0" "$?"
+profile_valid metricas-999gb "$METRICS_PROFILES"; check "perfil de métricas inválido" "1" "$?"
+check "service_profile monitoring" "metricas-512mb" "$(METRICS_PROFILE=metricas-512mb; service_profile monitoring)"
+
+for prof in $METRICS_PROFILES; do
+    f="$REPO_ROOT/monitoring/profiles/$prof.env"
+    if [[ -f "$f" ]]; then pass "monitoring/profiles/$prof.env"; else fail "FALTA monitoring/profiles/$prof.env"; fi
+done
+
+for f in "$REPO_ROOT"/monitoring/profiles/*.env; do
+    # `(...)?$` e não `(...|)$`: a alternativa vazia é rejeitada por alguns greps
+    # (o ugrep, comum no macOS via brew, sai com rc=2) — e aí `bad` ficava vazio
+    # e o teste passava sem verificar nada. Semântica idêntica, portável.
+    bad="$(grep -vE '^([A-Z][A-Z0-9_]*=[^[:space:]]+|#.*)?$' "$f" || true)"
+    check "monitoring/$(basename "$f"): nenhuma linha malformada" "" "$bad"
+    # Retenção por tempo SEM retenção por tamanho é o furo clássico: um pico de
+    # cardinalidade enche o disco que o Prometheus divide com o Postgres.
+    faltando=""
+    for chave in PROM_RETENTION_TIME PROM_RETENTION_SIZE PROM_MEMORY_LIMIT GRAFANA_MEMORY_LIMIT; do
+        grep -qE "^${chave}=" "$f" || faltando+="$chave "
+    done
+    check "monitoring/$(basename "$f"): chaves obrigatórias" "" "${faltando% }"
+done
+
+printf '\nObservabilidade: guardas dos overlays de métricas\n'
+for svc in postgres redis meilisearch; do
+    f="$REPO_ROOT/$svc/docker-compose.metrics.yml"
+    if [[ ! -f "$f" ]]; then fail "FALTA $svc/docker-compose.metrics.yml"; continue; fi
+
+    # O exporter NUNCA pode publicar porta: /metrics não tem autenticação e o do
+    # Postgres entrega pg_settings_* inteiro. Ele é alcançado só pela rede
+    # bdh_metrics. É o tipo de linha que alguém acrescenta "para debugar".
+    if grep -qE '^\s+ports:' "$f"; then
+        fail "$svc/docker-compose.metrics.yml declara ports: (exporter não pode publicar porta)"
+    else
+        pass "$svc: overlay não publica porta"
+    fi
+
+    # Label PRÓPRIA: infra-setup.sh e `bdh verify` filtram containers por
+    # `label=org.brasildatahub.service=<svc> | head -1`. Com a label colidindo, o
+    # `bdh verify postgres` inspecionaria o exporter.
+    if grep -qE "org\.brasildatahub\.service: $svc\$" "$f"; then
+        fail "$svc/docker-compose.metrics.yml usa a label do serviço base"
+    else
+        pass "$svc: overlay usa label própria"
+    fi
+
+    # Sem `external: true`: com ele, um `docker network prune` faria o `up` do
+    # próprio serviço de DADOS falhar por rede inexistente. Os comentários do
+    # arquivo explicam justamente isso e citam o termo, daí ignorá-los.
+    if grep -vE '^\s*#' "$f" | grep -q 'external: true'; then
+        fail "$svc/docker-compose.metrics.yml declara a rede como external"
+    elif grep -qE '^\s+bdh_metrics:' "$f"; then
+        pass "$svc: rede bdh_metrics sem external"
+    else
+        fail "$svc/docker-compose.metrics.yml não declara a rede bdh_metrics"
+    fi
+done
+
+# A senha do exporter do Postgres vive em .env.metrics, e não no .env: qualquer
+# variável a mais no .env muda o hash do serviço e o Compose RECRIA o banco.
+if grep -q 'PG_METRICS_PASSWORD' "$REPO_ROOT/postgres/docker-compose.metrics.yml"; then
+    fail "overlay do Postgres interpola PG_METRICS_PASSWORD do .env (recriaria o banco)"
+else
+    pass "overlay do Postgres lê a senha de .env.metrics, não do .env"
+fi
+
+printf '\nObservabilidade: compose do monitoring\n'
+mon="$REPO_ROOT/monitoring/docker-compose.yml"
+# O Prometheus não tem autenticação NENHUMA: publicá-lo em 0.0.0.0 expõe
+# /api/v1/admin/tsdb/* a quem alcançar a porta.
+check "Grafana/Prometheus em loopback por default" "2" \
+    "$(grep -cE '\$\{MONITORING_BIND_IP:-127\.0\.0\.1\}' "$mon")"
+if grep -q 'BIND_IP:-0.0.0.0' "$mon"; then
+    fail "monitoring usa BIND_IP dos serviços de dados (default 0.0.0.0)"
+else
+    pass "monitoring usa MONITORING_BIND_IP, separada de BIND_IP"
+fi
+# Só o Prometheus leva o nome curto: o wait de healthcheck faz `head -1` sobre
+# os containers com esta label.
+check "label 'monitoring' aparece uma única vez" "1" \
+    "$(grep -cE 'org\.brasildatahub\.service: monitoring$' "$mon")"
+
 printf '\nAjuda\n'
 check "usage() cita a recusa de perfil grande demais" "ok" "$(usage | grep -q -- '--allow-oversized-profile' && echo ok)"
+check "usage() cita --metrics" "ok" "$(usage | grep -q -- '--metrics ' && echo ok)"
+check "usage() cita --metrics-only" "ok" "$(usage | grep -q -- '--metrics-only' && echo ok)"
 usage >/dev/null 2>&1
 check "usage() não falha" "0" "$?"
 check "usage() cita o modo bind" "ok" "$(usage | grep -q -- '--volumes MODE' && echo ok)"

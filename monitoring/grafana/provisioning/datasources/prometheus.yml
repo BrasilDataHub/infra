@@ -1,0 +1,22 @@
+# Datasource provisionado — embutido na imagem ghcr.io/brasildatahub/grafana.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    # uid FIXO, e é o detalhe que faz o provisioning funcionar: é este valor que
+    # os dashboards versionados referenciam. Sem ele o Grafana gera um uid
+    # aleatório por instalação, e todo painel abre com "Datasource not found".
+    uid: bdh-prometheus
+    # Nome de serviço Compose: o Grafana e o Prometheus vivem no mesmo projeto.
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      # Casa com o scrape_interval do prometheus.yml e define o passo mínimo de
+      # $__interval / $__rate_interval. Menor que o scrape real produziria
+      # gráficos com buracos.
+      timeInterval: 15s
+      # POST em vez de GET: as queries do Node Exporter Full estouram o limite de
+      # tamanho de URL de alguns proxies.
+      httpMethod: POST

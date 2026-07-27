@@ -1,0 +1,78 @@
+# Configuração do Prometheus da BrasilDataHub — embutida na imagem
+# ghcr.io/brasildatahub/prometheus.
+#
+# Por que ESTÁTICA, e não gerada no start como o postgresql.conf: o que varia
+# entre hosts aqui não é valor, são os ALVOS — e `file_sd_configs` é o mecanismo
+# nativo do Prometheus para isso, com recarga a quente e sem restart. Os alvos
+# vivem em /etc/prometheus/targets/*.json, escritos pelo infra-setup.sh no host.
+#
+# O glob de cada job é intencional: se o serviço não foi instalado, o arquivo não
+# existe, o glob não casa nada e o job fica SEM ALVO — em vez de ficar `up == 0`
+# para sempre, envenenando justamente o alerta que mais importa.
+#
+# Os alvos são nomes de SERVIÇO Compose (postgres-exporter, redis-exporter, ...),
+# não nomes de container: na rede bdh_metrics o Docker registra o nome do serviço
+# como alias, então o endereço não depende do nome do projeto Compose.
+# Verificado no Docker 29.4 / Compose v5.1.2.
+#
+# Retenção e limites de recurso NÃO estão aqui: são flags de CLI e limites de
+# container, definidos pelos perfis em monitoring/profiles/*.env.
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 30s
+  external_labels:
+    # Expandido do ambiente no start (MON_HOSTNAME vem do .env do deploy).
+    # Sem isto, métricas de hosts diferentes ficam indistinguíveis se um dia
+    # forem federadas.
+    host: ${MON_HOSTNAME}
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # O Prometheus sobre si mesmo. 127.0.0.1 e não o nome do serviço: não depende
+  # de DNS nem da rede estar sã, então continua respondendo quando tudo mais cai.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+
+  - job_name: node
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/node*.json"]
+
+  - job_name: postgres
+    # 30s, não os 15s do global: cada scrape dispara ~12 queries de catálogo, e
+    # durante o ETL elas competem com a carga real. Consequência para os
+    # dashboards: janelas de rate() do Postgres precisam ser >= 2m.
+    scrape_interval: 30s
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/postgres*.json"]
+
+  - job_name: redis
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/redis*.json"]
+
+  - job_name: meilisearch
+    scrape_interval: 30s
+    # Chave escopada com a ação metrics.get — NUNCA a master key. O arquivo é
+    # criado pelo infra-setup.sh com chmod 600 e montado read-only. Fica fora da
+    # imagem de propósito: segredo não se versiona.
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/meili-metrics.key
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/meilisearch*.json"]
+
+  - job_name: cadvisor
+    scrape_interval: 30s
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/cadvisor*.json"]
+    metric_relabel_configs:
+      # O cAdvisor é notoriamente cardinálico. Mesmo com os filtros do lado dele,
+      # descartar séries por imagem/id aqui evita que uma troca de tag de imagem
+      # multiplique o conjunto de séries a cada deploy.
+      - source_labels: [__name__]
+        regex: 'container_(tasks_state|memory_failures_total|blkio_device_usage_total)'
+        action: drop

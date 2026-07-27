@@ -155,8 +155,12 @@ host com o Postgres, movem-se junto com ele, sob a
    painel fazia por baixo: reboot do host com `restart: unless-stopped`, driver
    e rotação de log, healthcheck refletindo o estado real.
 3. **Fechar as lacunas antes de migrar:** backup (pgBackRest + snapshot),
-   acesso SSH e runbook curto, destino dos logs, `postgres_exporter` se houver
-   Prometheus na org, segredos em `.env` restrito ou Docker secret.
+   acesso SSH e runbook curto, destino dos logs, segredos em `.env` restrito ou
+   Docker secret. ✅ *Observabilidade: resolvida —* `postgres_exporter`,
+   Prometheus e Grafana estão em [`../../monitoring/`](../../monitoring/), com a
+   role de leitura e os coletores documentados em [metricas.md](metricas.md).
+   Ligue numa instalação existente com `infra-setup.sh --metrics-only`, que não
+   recria o container do banco.
 4. **Migrar produção com janela:** backup verificado por restauração → parar o
    serviço no painel **sem remover o volume** → subir o compose apontando para o
    mesmo diretório de dados → verificação pós-deploy → rodar a etapa de ETL que
