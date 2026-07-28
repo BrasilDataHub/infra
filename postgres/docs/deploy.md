@@ -174,6 +174,21 @@ docker run -d --name postgres \
 Rode **depois de todo deploy e de todo redeploy**. Não confie na configuração
 declarada — confira a efetiva.
 
+**O caminho curto:** `bdh verify postgres` roda os cinco comandos abaixo e, para
+o `/dev/shm`, **compara** o valor efetivo com o `PG_SHM_BYTES` do `.env` —
+saindo com código != 0 quando divergem. É essa comparação que faz dele um gate
+utilizável num checklist ou num `set -e`, e não só uma tela para alguém olhar.
+
+Em 25/07/2026 perderam-se **6h43 de ETL** porque o mount havia voltado ao
+default de 64 MB depois de um redeploy. O número estava na tela; o que faltou
+foi comparar. Por isso a primeira linha do runbook mensal é:
+
+```bash
+bdh verify postgres || { echo "NÃO inicie a carga"; exit 1; }
+```
+
+Os comandos, quando quiser rodá-los à mão:
+
 ```bash
 C=<container>
 
@@ -222,7 +237,8 @@ Valores efetivos do perfil, quando quiser conferir mais a fundo:
 - [ ] Senha longa e aleatória — a porta é publicada em `0.0.0.0` por default;
       se quiser restringir, `BIND_IP`/firewall/VPN ([host.md](host.md#rede))
 - [ ] Senhas em `.env` fora do git (ou secret), nunca no YAML
-- [ ] [Verificação pós-deploy](#verificação-pós-deploy) — os 5 comandos
+- [ ] [Verificação pós-deploy](#verificação-pós-deploy) — `bdh verify postgres`
+      (sai != 0 se o `/dev/shm` divergir do perfil)
 - [ ] Backups ativos: snapshot do provedor + pgBackRest ([backup/](../backup/))
 
 ---
