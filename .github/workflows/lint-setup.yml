@@ -96,6 +96,7 @@ jobs:
             docker compose -f redis/docker-compose.yml \
                            -f redis/docker-compose.metrics.yml \
                            -f redis/docker-compose.metrics-remote.yml config -q
+          docker compose -f opensearch/docker-compose.yml config -q
 
       - name: Composes válidos com o overlay de backup
         run: |

@@ -81,7 +81,7 @@ fi
 
 # A verificação acima é de contagem e envelheceria mal sozinha. Esta é a que
 # realmente importa: nenhum job de serviço pode ter alvo estático.
-for job in node postgres redis meilisearch cadvisor blackbox; do
+for job in node postgres redis meilisearch cadvisor blackbox opensearch; do
     trecho="$(awk -v j="$job" '
         $0 ~ "^  - job_name: "j"$" {dentro=1; next}
         /^  - job_name:/ {dentro=0}

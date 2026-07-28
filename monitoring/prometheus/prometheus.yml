@@ -113,6 +113,15 @@ scrape_configs:
       - target_label: __address__
         replacement: blackbox-exporter:9115
 
+  # O motor de busca. `/_prometheus/metrics` vem do plugin de exporter que a
+  # imagem instala; sem ele, opensearch.rules.yml não teria série nenhuma para
+  # avaliar. 30s como o Postgres: cada scrape agrega estatísticas de 6 shards.
+  - job_name: opensearch
+    scrape_interval: 30s
+    metrics_path: /_prometheus/metrics
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/opensearch*.json"]
+
   - job_name: cadvisor
     scrape_interval: 30s
     file_sd_configs:

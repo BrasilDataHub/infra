@@ -1,0 +1,187 @@
+# Alertas do motor de busca — BrasilDataHub.
+#
+# Até este roadmap, o componente que respondia por **93% do IO de leitura** e
+# **76% da CPU** do servidor de dados tinha **zero** regras de alerta. Este
+# arquivo sai de 0 para 10.
+#
+# NOMES DAS MÉTRICAS. Vêm do `prometheus-exporter-plugin-for-opensearch`, que a
+# imagem instala, e foram verificados num nó 3.3.0 real — não copiados de
+# documentação. Duas divergências em relação ao que o roadmap 20 (05 §9.3-B)
+# antecipava:
+#
+#   1. Não existe `opensearch_indices_search_query_time_seconds_bucket`. O
+#      plugin expõe COUNTERS (`_time_seconds` e `_count`), não histograma —
+#      então `histogram_quantile` não tem em cima de que trabalhar. O que dá
+#      para calcular aqui é a latência MÉDIA. O p95 por classe de SLO vem do
+#      `blackbox_exporter` (`blackbox.rules.yml`), que mede de fora e é onde
+#      p95 faz sentido de qualquer forma.
+#   2. `opensearch_threadpool_*` não expõe contador de rejeição por tipo; o que
+#      há é `tasks_number` por `name` e `type`. A fila crescendo no pool de
+#      escrita é o sinal equivalente, e é o que a regra usa.
+
+groups:
+  - name: opensearch-saude
+    rules:
+      - alert: ClusterDeBuscaDegradado
+        # 0 = green, 1 = yellow, 2 = red. `auto_expand_replicas: "0-1"` existe
+        # justamente para que YELLOW volte a significar alguma coisa: com
+        # réplicas fixas em 0 e um nó só, o cluster ficaria yellow para sempre e
+        # este alerta seria ruído permanente.
+        expr: opensearch_cluster_status > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Cluster de busca em {{ if eq $value 1.0 }}YELLOW{{ else }}RED{{ end }}"
+          description: >-
+            RED significa shard primário indisponível — a busca responde
+            parcialmente, sem erro. É por isso que a degradação graciosa é
+            obrigatória na aplicação: com o motor doente, o autocomplete volta
+            ao Postgres (1,207 ms) e a busca avançada mostra erro NA ÁREA DA
+            BUSCA, nunca uma página de erro no site inteiro.
+
+      - alert: MotorDeBuscaForaDoAr
+        expr: absent(opensearch_cluster_status)
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Nenhuma métrica do motor de busca chega ao Prometheus"
+          description: >-
+            Nó parado, plugin de métricas ausente, ou o alvo sumiu de
+            targets/. Com nó único, restart é downtime — o SLO de busca é 99,0%
+            na Fase 2 por isso.
+
+  - name: opensearch-memoria
+    rules:
+      - alert: HeapDoMotorAlto
+        expr: opensearch_jvm_mem_heap_used_percent > 85
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Heap do motor de busca em {{ $value | printf \"%.0f\" }}%"
+          description: >-
+            O heap é de 4 GiB e o on-heap projetado em regime é de menos de
+            700 MiB (03 §3.1) — dominado pelo FST de razao_social. Passar de
+            85% significa que algo saiu do projetado: fielddata ligado por
+            engano, agregação em campo de alta cardinalidade (cep tem 67.918
+            valores, bairro 13.152), ou `terms` sem `size`.
+
+      - alert: GcVelhoConstante
+        # O sinal de pré-OOM da JVM. GC de geração velha rodando continuamente
+        # significa que o heap não está sendo liberado — o nó ainda responde, e
+        # cada vez pior, até parar.
+        expr: rate(opensearch_jvm_gc_collection_time_seconds{gc="old"}[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "GC de geração velha consumindo mais de 10% do tempo"
+          description: >-
+            Pré-OOM. Antes de subir o heap, confira o breaker de fielddata: ele
+            está em 0% de propósito, porque o mapping usa doc_values em tudo que
+            é agregado, e qualquer uso de fielddata é erro de consulta.
+
+      - alert: BreakerDisparando
+        # O breaker fazendo seu trabalho é bom; fazendo o tempo todo é uma
+        # consulta que ninguém corrigiu.
+        expr: |
+          opensearch_circuitbreaker_tripped_count > 0
+            and increase(opensearch_circuitbreaker_tripped_count[30m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Circuit breaker {{ $labels.name }} disparando"
+          description: >-
+            Com `name=fielddata`, é consulta agregando campo sem doc_values —
+            corrija a consulta, não o limite. Com `name=parent`, é volume de
+            requisição concorrente acima do que o heap suporta.
+
+  - name: opensearch-carga
+    rules:
+      - alert: LatenciaMediaDeBuscaAlta
+        # Latência MÉDIA, e não p95: o plugin expõe counters, não histograma
+        # (ver o cabeçalho). O p95 por classe de SLO está em blackbox.rules.yml.
+        # 100 ms de média é folgado contra um SLO de 200 ms no p95 — média alta
+        # aqui significa que o p95 já estourou há tempo.
+        expr: |
+          rate(opensearch_indices_search_query_time_seconds[5m])
+            / clamp_min(rate(opensearch_indices_search_query_count[5m]), 1) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latência média de busca em {{ $value | printf \"%.3f\" }}s"
+
+      - alert: FilaDeEscritaCrescendo
+        # O análogo do backpressure que hoje passa invisível: o indexer empurra
+        # `_bulk` mais rápido que o motor consegue absorver, e o sintoma sem
+        # este alerta é uma reindexação que "está demorando".
+        expr: opensearch_threadpool_tasks_number{name="write", type="queue"} > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fila do thread pool de escrita com {{ $value }} tarefas"
+          description: >-
+            Na janela de carga é esperado por alguns minutos; sustentado, o
+            indexer precisa reduzir escritores (03 §4.3 dimensiona em 8).
+
+  - name: opensearch-disco-e-conteudo
+    rules:
+      - alert: DiscoDoMotorPertoDoFloodStage
+        # O `flood_stage` a 90% põe TODOS os índices em READ-ONLY, e o índice
+        # não volta sozinho quando o disco esvazia — precisa de um PUT em
+        # `index.blocks.read_only_allow_delete`. É a interrupção autoinfligida
+        # nº 1 desta classe de serviço, e o alarme é em 70% de propósito: dá
+        # tempo de agir antes do watermark low, que é 75%.
+        expr: |
+          1 - (opensearch_fs_total_available_bytes / opensearch_fs_total_total_bytes) > 0.70
+        for: 30m
+        labels:
+          severity: warning
+          runbook: opensearch/README.md
+        annotations:
+          summary: "Disco do motor de busca em {{ $value | humanizePercentage }} de uso"
+          description: >-
+            O NVMe é compartilhado com um PGDATA de 134 GB que cresce a cada
+            carga. Em 90% o flood_stage põe os índices em read-only, e sair
+            desse estado exige intervenção manual mesmo depois de liberar
+            espaço.
+
+      - alert: IndiceDesatualizado
+        # Freshness: o índice não pode ficar mais que 48 h atrás da carga
+        # (05 §9.2), e 72 h é o limiar de alerta. A métrica vem do textfile
+        # collector escrito pelo indexer, não do OpenSearch: só o indexer sabe
+        # quando a carga terminou.
+        expr: time() - bdh_indexer_last_success_timestamp_seconds > 259200
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Índice de busca sem carga bem-sucedida há mais de 72 h"
+
+      - alert: DivergenciaDeContagemComOPostgres
+        # A regra que pegaria uma reindexação PARCIAL antes do flip de alias —
+        # o caso em que tudo parece saudável, o cluster está green, a busca
+        # responde rápido, e faltam 8 milhões de documentos.
+        #
+        # As duas séries vêm de fontes independentes de propósito: a contagem do
+        # motor, do próprio motor; a do Postgres, do textfile collector do
+        # indexer. Uma indexação parcial move uma e não a outra.
+        expr: |
+          abs(
+            bdh_indexer_docs_no_motor - bdh_indexer_docs_no_postgres
+          ) / clamp_min(bdh_indexer_docs_no_postgres, 1) > 0.01
+        for: 15m
+        labels:
+          severity: critical
+          runbook: opensearch/README.md
+        annotations:
+          summary: "Motor e Postgres divergem em {{ $value | humanizePercentage }} dos documentos"
+          description: >-
+            Acima de 1% é reindexação incompleta, não arredondamento. NÃO mova o
+            alias: o índice N-1 continua servindo e é a razão de ele ser
+            mantido por 7 dias.

@@ -9,6 +9,7 @@ rule_files:
   - ../prometheus/rules/postgres.rules.yml
   - ../prometheus/rules/redis.rules.yml
   - ../prometheus/rules/backup.rules.yml
+  - ../prometheus/rules/opensearch.rules.yml
 
 evaluation_interval: 1m
 
@@ -272,3 +273,67 @@ tests:
             exp_annotations:
               summary: "A última execução 'diff' do backup de dados-cnpj falhou"
               description: "Difere de BackupCompletoAtrasado de propósito: aqui o agendamento RODOU e deu erro, o que costuma ser credencial, cota do bucket ou disco. `docker logs` do sidecar tem a mensagem."
+
+  # --- motor de busca -------------------------------------------------------
+  - interval: 1m
+    name: "cluster amarelo com um nó só NÃO é normal (auto_expand_replicas cuida disso)"
+    input_series:
+      - series: 'opensearch_cluster_status{cluster="bdh"}'
+        values: "0+0x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ClusterDeBuscaDegradado
+        exp_alerts: []
+
+  - interval: 1m
+    name: "cluster vermelho dispara"
+    input_series:
+      - series: 'opensearch_cluster_status{cluster="bdh"}'
+        values: "0 0 2 2 2 2 2 2 2 2 2 2 2 2 2"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ClusterDeBuscaDegradado
+        exp_alerts: []
+      - eval_time: 9m
+        alertname: ClusterDeBuscaDegradado
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              cluster: bdh
+            exp_annotations:
+              summary: "Cluster de busca em RED"
+              description: "RED significa shard primário indisponível — a busca responde parcialmente, sem erro. É por isso que a degradação graciosa é obrigatória na aplicação: com o motor doente, o autocomplete volta ao Postgres (1,207 ms) e a busca avançada mostra erro NA ÁREA DA BUSCA, nunca uma página de erro no site inteiro."
+
+  - interval: 1m
+    name: "divergencia de 0,5% entre motor e Postgres nao dispara"
+    input_series:
+      - series: 'bdh_indexer_docs_no_motor{instance="node:9100"}'
+        values: "71958000+0x30"
+      - series: 'bdh_indexer_docs_no_postgres{instance="node:9100"}'
+        values: "72318968+0x30"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DivergenciaDeContagemComOPostgres
+        exp_alerts: []
+
+  - interval: 1m
+    name: "reindexacao parcial (8 M docs a menos) dispara antes do flip"
+    input_series:
+      - series: 'bdh_indexer_docs_no_motor{instance="node:9100"}'
+        values: "64000000+0x30"
+      - series: 'bdh_indexer_docs_no_postgres{instance="node:9100"}'
+        values: "72318968+0x30"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DivergenciaDeContagemComOPostgres
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: DivergenciaDeContagemComOPostgres
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              runbook: opensearch/README.md
+              instance: node:9100
+            exp_annotations:
+              summary: "Motor e Postgres divergem em 11.5% dos documentos"
+              description: "Acima de 1% é reindexação incompleta, não arredondamento. NÃO mova o alias: o índice N-1 continua servindo e é a razão de ele ser mantido por 7 dias."
