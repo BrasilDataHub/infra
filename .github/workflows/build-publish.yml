@@ -10,6 +10,7 @@ name: Build e publica imagens
 #   ghcr.io/brasildatahub/grafana:13      (provisioning e dashboards embutidos)
 #   ghcr.io/brasildatahub/alertmanager:0  (roteamento, inibição e janela de ETL)
 #   ghcr.io/brasildatahub/blackbox-exporter:0 (módulos das classes de SLO)
+#   ghcr.io/brasildatahub/pgbouncer:1     (transaction pooling; par do work_mem)
 # Imagens genéricas — consumidas por qualquer projeto da org (baseempresarial,
 # baseescolar, basehospitalar, ...). Nada aqui é específico de um projeto.
 
@@ -30,6 +31,9 @@ on:
       - "postgres/test/**"
       - "redis/Dockerfile"
       - "redis/redis.conf"
+      - "pgbouncer/Dockerfile"
+      - "pgbouncer/*.sh"
+      - "pgbouncer/test/**"
       - "meilisearch/Dockerfile"
       - "monitoring/prometheus/**"
       - "monitoring/grafana/**"
@@ -123,6 +127,36 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/redis:7
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/redis:7.4
+
+  # O PgBouncer é o par indivisível do work_mem de 96 MB (item 18): 100 × 96 MB
+  # não cabe num limite de 14 GiB, 20 × 96 MB cabe. O teste roda antes do push
+  # porque transaction pooling funciona perfeitamente até a aplicação usar um
+  # SET de sessão ou um prepared statement — e aí quebra de formas que não
+  # mencionam o PgBouncer no erro.
+  pgbouncer:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pooling, SET LOCAL e prepared statements
+        run: bash pgbouncer/test/pgbouncer.test.sh
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: pgbouncer
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/pgbouncer:1
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/pgbouncer:1.24.1
 
   meilisearch:
     runs-on: ubuntu-latest

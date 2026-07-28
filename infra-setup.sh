@@ -474,8 +474,15 @@ detect_metrics_profile() {
 # arquivo .env no repositório (postgres/profiles/, redis/profiles/,
 # meilisearch/profiles/), baixado no momento do provisionamento. É o mesmo
 # arquivo que a documentação manda copiar num deploy manual.
-PG_PROFILES="dedicada-8gb dedicada-16gb dedicada-32gb dedicada-64gb dedicada-128gb"
-REDIS_PROFILES="cache-256mb cache-512mb cache-1gb cache-2gb"
+# `compartilhada-14gb` é o perfil do host que divide CPU e page cache com o
+# motor de busca. O nome é parte da correção: o perfil em uso até 07/2026
+# chamava-se `dedicada-16gb` num host que nunca foi dedicado, e é o nome
+# errado que faz alguém somar os limites e concluir que cabe.
+PG_PROFILES="dedicada-8gb dedicada-16gb dedicada-32gb dedicada-64gb dedicada-128gb compartilhada-14gb"
+# cache-768mb e fila-256mb são o PAR do desenho de duas instâncias
+# (redis/docker-compose.par.yml): separar cache de fila+sessões é o que
+# permite `allkeys-lru` num lado sem arriscar despejar job no outro.
+REDIS_PROFILES="cache-256mb cache-512mb cache-768mb cache-1gb cache-2gb fila-256mb"
 MEILI_PROFILES="busca-512mb busca-1gb busca-4gb busca-16gb"
 METRICS_PROFILES="metricas-512mb metricas-2gb metricas-8gb"
 
@@ -1442,16 +1449,33 @@ configure_firewall() {
         sed -i "/$(printf '%s' "$begin" | sed 's/[][\.*^$/]/\\&/g')/,/$(printf '%s' "$end" | sed 's/[][\.*^$/]/\\&/g')/d" "$rules_file"
     fi
 
-    # Tirar o bloco do arquivo não basta: `ufw reload` apenas reaplica o que
-    # está nele, e as regras já inseridas continuam na chain. O script gerencia
-    # a DOCKER-USER integralmente, então limpa antes de reaplicar.
-    iptables -F DOCKER-USER 2>/dev/null || true
-
+    # A ORDEM AQUI JÁ FOI UM DEFEITO. A versão anterior esvaziava a chain e só
+    # depois checava `ALLOW_FROM`: numa execução sem a flag — que é o caso de
+    # `--metrics-only` sem repetir todas as flags da instalação original — o
+    # firewall dos containers era APAGADO e não reconstruído. As três portas de
+    # dados voltavam a aceitar conexão de qualquer origem, em silêncio, e o
+    # `ufw status` continuava mostrando `active`, porque a DOCKER-USER não
+    # aparece ali.
+    #
+    # Regra: nunca esvaziar sem repovoar. Sem `ALLOW_FROM`, a chain existente é
+    # deixada exatamente como está.
     if [[ -z "$ALLOW_FROM" ]]; then
         run ufw reload
-        warn "portas publicadas acessíveis de qualquer origem (sem --allow-from)"
+        if iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j DROP'; then
+            warn "sem --allow-from: a chain DOCKER-USER existente foi PRESERVADA."
+            warn "para alterá-la, repita --allow-from com a lista completa de origens."
+        else
+            warn "portas publicadas acessíveis de qualquer origem (sem --allow-from)"
+            warn "as três portas de dados aceitam conexão da internet inteira."
+        fi
         return 0
     fi
+
+    # Daqui para baixo há `ALLOW_FROM`, então esvaziar é seguro: a chain é
+    # reconstruída logo abaixo, no mesmo bloco. `ufw reload` sozinho não
+    # bastaria — ele reaplica o arquivo, e as regras já inseridas continuariam
+    # na chain.
+    iptables -F DOCKER-USER 2>/dev/null || true
 
     IFS=',' read -r -a cidrs <<< "$ALLOW_FROM"
     {

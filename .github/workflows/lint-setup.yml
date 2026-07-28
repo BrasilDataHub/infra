@@ -76,6 +76,27 @@ jobs:
           COMPOSE_PROFILES=node,containers GRAFANA_ADMIN_PASSWORD=x \
             docker compose -f monitoring/docker-compose.yml config -q
 
+      - name: Composes válidos dos módulos novos
+        run: |
+          # O compose do par exige os DOIS arquivos de perfil (required: true),
+          # e a exigência é o ponto: sem eles, o deploy subiria com os defaults
+          # de instância única — volatile-lru e 512mb — que é exatamente o
+          # estado que o item 7 corrige. Aqui eles são só stubs.
+          cp redis/profiles/cache-768mb.env redis/.env.cache
+          cp redis/profiles/fila-256mb.env  redis/.env.fila
+          REDIS_PASSWORD=x docker compose -f redis/docker-compose.par.yml config -q
+          rm -f redis/.env.cache redis/.env.fila
+          PGB_DB_HOST=10.0.0.1 PGB_DB_NAME=d PGB_USER=u PGB_PASSWORD=p \
+            docker compose -f pgbouncer/docker-compose.yml config -q
+          POSTGRES_DB=d POSTGRES_PASSWORD=p METRICS_BIND_IP=10.0.0.1 \
+            docker compose -f postgres/docker-compose.yml \
+                           -f postgres/docker-compose.metrics.yml \
+                           -f postgres/docker-compose.metrics-remote.yml config -q
+          REDIS_PASSWORD=x METRICS_BIND_IP=10.0.0.1 \
+            docker compose -f redis/docker-compose.yml \
+                           -f redis/docker-compose.metrics.yml \
+                           -f redis/docker-compose.metrics-remote.yml config -q
+
       - name: Composes válidos com o overlay de backup
         run: |
           POSTGRES_DB=d POSTGRES_PASSWORD=p PGBACKREST_STANZA=dados-cnpj \

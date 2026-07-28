@@ -1,0 +1,116 @@
+# Compose do PAR de instâncias de Redis — cache e fila separados.
+#
+#   docker compose -f docker-compose.par.yml up -d
+#
+# Substitui o `docker-compose.yml` de instância única; não é overlay dele.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# POR QUE DUAS INSTÂNCIAS, E NÃO DOIS DATABASES DA MESMA
+#
+# Porque `maxmemory` e `maxmemory-policy` são da INSTÂNCIA, não do database.
+# Com cache e fila juntos, a política tem de servir aos dois — e a única que
+# serve, `volatile-lru`, foi exatamente o que produziu o defeito medido:
+#
+#   34.007 evicções · hit rate de 59,7% · 512 MB
+#
+# `volatile-lru` despeja só chaves COM TTL. As chaves de fila não têm TTL, mas
+# **as de sessão têm** — então, quando o cache encheu, o Redis descartou
+# sessões. Parte daqueles 34 mil despejos eram **usuários sendo deslogados**,
+# num sistema onde ninguém tinha reclamado do "logout aleatório" ainda.
+#
+# Separadas, cada lado ganha a política que faz sentido:
+#
+#   cache (768 MB) → allkeys-lru, sem AOF. Despejar é o comportamento correto,
+#                    e o cache se refaz sozinho.
+#   fila  (256 MB) → noeviction, com AOF. Perder um job NÃO é comportamento
+#                    correto: melhor um erro visível no enfileiramento.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Dois arquivos de env, um por instância — a alternativa seria prefixar todas as
+# variáveis, e aí o mesmo perfil não serviria para os dois modos de deploy:
+#
+#   .env.cache   ← redis/profiles/cache-768mb.env + REDIS_PASSWORD
+#   .env.fila    ← redis/profiles/fila-256mb.env  + REDIS_PASSWORD
+#
+# A aplicação aponta CACHE_STORE/REDIS_HOST para a instância de cache e
+# QUEUE_CONNECTION/SESSION para a de fila. As duas portas são distintas de
+# propósito: apontar as duas para a mesma porta por engano recria o problema
+# sem nenhum sintoma.
+
+services:
+  redis-cache:
+    image: ghcr.io/brasildatahub/redis:7
+    restart: unless-stopped
+    env_file:
+      - path: .env.cache
+        required: true
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?defina REDIS_PASSWORD}
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-768mb}
+      REDIS_MAXMEMORY_POLICY: ${REDIS_MAXMEMORY_POLICY:-allkeys-lru}
+      REDIS_APPENDONLY: ${REDIS_APPENDONLY:-no}
+    labels:
+      org.brasildatahub.service: redis-cache
+    # SEM volume. É a consequência coerente de `appendonly no`: um volume aqui
+    # guardaria um dump.rdb que ninguém pretende restaurar, e daria a impressão
+    # de durabilidade onde ela não existe.
+    ports:
+      - "${BIND_IP:-0.0.0.0}:${REDIS_CACHE_PORT:-6379}:6379"
+    logging:
+      # Teto de log — a justificativa está em ../postgres/docker-compose.yml.
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-50m}
+        max-file: "${LOG_MAX_FILE:-3}"
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_CACHE_MEMORY_LIMIT:-1G}
+          cpus: "${REDIS_CACHE_CPU_LIMIT:-1}"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis-fila:
+    image: ghcr.io/brasildatahub/redis:7
+    restart: unless-stopped
+    env_file:
+      - path: .env.fila
+        required: true
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?defina REDIS_PASSWORD}
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-256mb}
+      REDIS_MAXMEMORY_POLICY: ${REDIS_MAXMEMORY_POLICY:-noeviction}
+      REDIS_APPENDONLY: ${REDIS_APPENDONLY:-yes}
+    labels:
+      org.brasildatahub.service: redis-fila
+    volumes:
+      # Aqui o volume é obrigatório: é o AOF que faz um job enfileirado
+      # sobreviver a um restart do container.
+      - redis_fila_data:/data
+    ports:
+      - "${BIND_IP:-0.0.0.0}:${REDIS_FILA_PORT:-6380}:6379"
+    logging:
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-50m}
+        max-file: "${LOG_MAX_FILE:-3}"
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_FILA_MEMORY_LIMIT:-512M}
+          cpus: "${REDIS_FILA_CPU_LIMIT:-1}"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  redis_fila_data:
+    driver: local
+    name: ${REDIS_FILA_VOLUME:-bdh_redis_fila_data}
