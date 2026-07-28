@@ -1,0 +1,130 @@
+# Overlay de BACKUP FÍSICO do PostgreSQL — acrescenta o sidecar de pgBackRest ao
+# projeto Compose do banco e liga o arquivamento contínuo de WAL.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.backup.yml up -d
+#
+# (com métricas, os três: -f docker-compose.yml -f docker-compose.metrics.yml
+#  -f docker-compose.backup.yml)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# DIFERENÇA DELIBERADA PARA O OVERLAY DE MÉTRICAS: este RECRIA o container do
+# banco, e não tem como não recriar.
+#
+# O overlay de métricas foi desenhado para deixar o serviço `postgres` byte a
+# byte idêntico, porque ligar um gráfico não pode custar downtime. Aqui é o
+# contrário: `archive_mode` é um parâmetro de POSTMASTER — mudá-lo exige
+# restart do Postgres, ponto. Não existe versão sem restart deste item.
+#
+# Então o restart é planejado, uma vez, e nele entram de uma vez só as três
+# mudanças que ele exige: archive_mode, archive_command e archive_timeout.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ORDEM DE IMPLANTAÇÃO — não inverter (backup/README.md, e a trava 2 do roadmap
+# 20):
+#
+#   1. Escrever /etc/pgbackrest/pgbackrest.conf no host (chmod 640, dono do uid
+#      do postgres do container: `chown 999:999`). Modelo em
+#      backup/pgbackrest.conf.example.
+#   2. Ligar o alerta ArquivamentoDeWalParado (monitoring/prometheus/rules/
+#      backup.rules.yml) e CONFIRMAR que ele notifica. Um archive_command que
+#      falha em silêncio enche o pg_wal e derruba o banco — o alerta é o que
+#      transforma isso em um aviso em vez de um incidente.
+#   3. Só então este `up -d`.
+#
+# .env ao lado (além do que o compose base já pede):
+#   PGBACKREST_STANZA=dados-cnpj
+#   # opcionais:
+#   # PGBACKREST_CONF_DIR=/etc/pgbackrest
+#   # BDH_BACKUP_FULL_SCHEDULE=0 6 * * 0      # domingo 03:00 BRT
+#   # BDH_BACKUP_DIFF_SCHEDULE=0 6 * * 1-6    # demais dias 03:00 BRT
+#   # PG_ARCHIVE_TIMEOUT=60s
+#   # PGBACKREST_MEMORY_LIMIT=512M
+#
+# As CREDENCIAIS do object storage NÃO estão aqui nem em nenhum .env: ficam no
+# pgbackrest.conf do host, que é montado read-only. É a única forma de elas não
+# aparecerem inteiras num `docker inspect`.
+
+services:
+  postgres:
+    environment:
+      # Ligar o overlay é ligar o arquivamento. Deixar `archive_mode` fora daqui
+      # permitiria o pior estado possível: o sidecar agendado, o repositório
+      # criado, e nenhum WAL chegando nele — backup completo sem PITR.
+      PG_ARCHIVE_MODE: ${PG_ARCHIVE_MODE:-on}
+      PG_ARCHIVE_COMMAND: pgbackrest --stanza=${PGBACKREST_STANZA:?defina PGBACKREST_STANZA} archive-push %p
+      PG_ARCHIVE_TIMEOUT: ${PG_ARCHIVE_TIMEOUT:-60s}
+    volumes:
+      # O socket precisa ser um volume compartilhado para o sidecar conseguir
+      # abrir a conexão libpq que `pgbackrest backup` exige (pg_backup_start).
+      # Sem ele, só sobraria TCP — e o pgBackRest não fala TCP com o banco local.
+      - pg_socket:/var/run/postgresql
+      # O MESMO arquivo de configuração dos dois lados. O banco lê para o
+      # archive-push; o sidecar lê para backup/restore/check. Divergir os dois é
+      # um jeito silencioso de arquivar num repositório e restaurar de outro.
+      - type: bind
+        source: ${PGBACKREST_CONF_DIR:-/etc/pgbackrest}
+        target: /etc/pgbackrest
+        read_only: true
+        bind:
+          create_host_path: false
+
+  pgbackrest:
+    image: ghcr.io/brasildatahub/pgbackrest:17
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PGBACKREST_STANZA: ${PGBACKREST_STANZA:?defina PGBACKREST_STANZA}
+      BDH_BACKUP_FULL_SCHEDULE: ${BDH_BACKUP_FULL_SCHEDULE:-0 6 * * 0}
+      BDH_BACKUP_DIFF_SCHEDULE: ${BDH_BACKUP_DIFF_SCHEDULE:-0 6 * * 1-6}
+      BDH_BACKUP_CHECK_SCHEDULE: ${BDH_BACKUP_CHECK_SCHEDULE:-0 */6 * * *}
+      BDH_BACKUP_TEXTFILE_DIR: /var/lib/node_exporter/textfile
+    labels:
+      org.brasildatahub.service: pgbackrest
+    volumes:
+      # LEITURA do PGDATA. Read-only não serve: o `restore` e o `stanza-upgrade`
+      # escrevem, e o pgBackRest verifica a permissão no start de vários
+      # comandos. A proteção real contra escrever no lugar errado está no
+      # primeiro `if` de restore-test.sh, não no modo do mount.
+      - pg_data:/var/lib/postgresql/data
+      - pg_socket:/var/run/postgresql
+      - type: bind
+        source: ${PGBACKREST_CONF_DIR:-/etc/pgbackrest}
+        target: /etc/pgbackrest
+        read_only: true
+        bind:
+          create_host_path: false
+      # Métricas para o textfile collector do node_exporter (backup.rules.yml).
+      # Bind de DIRETÓRIO do host, e não volume nomeado, porque quem lê é um
+      # container de OUTRO projeto Compose (monitoring/).
+      - type: bind
+        source: ${NODE_TEXTFILE_DIR:-/var/lib/node_exporter/textfile}
+        target: /var/lib/node_exporter/textfile
+    # Sem `ports:` — o sidecar não escuta em nada.
+    deploy:
+      resources:
+        limits:
+          # process-max=4 com compressão zstd: cada processo mantém buffers de
+          # compressão e de transferência. 512M é folgado para 4 processos e
+          # impede que o backup dispute memória com o banco.
+          memory: ${PGBACKREST_MEMORY_LIMIT:-512M}
+    healthcheck:
+      # `info` e não `check`: o `check` força uma troca de segmento de WAL, e um
+      # healthcheck a cada 60s geraria um segmento por minuto para sempre.
+      test: ["CMD-SHELL", "pgbackrest --stanza=$${PGBACKREST_STANZA} info --output=json | jq -e '.[0].status.code == 0' > /dev/null"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 2m
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  # Só o socket. `pg_data` já é declarado pelo compose base e é reusado por
+  # nome — redeclará-lo aqui com outro `name` criaria um volume vazio e o
+  # sidecar faria backup de um PGDATA inexistente.
+  pg_socket:
+    driver: local
+    name: ${PG_SOCKET_VOLUME:-bdh_pg_socket}

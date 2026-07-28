@@ -3,6 +3,7 @@ name: Build e publica imagens
 # Publica as imagens de infraestrutura da organização no GHCR, sob o
 # namespace da org (minúsculo, exigência de nome de imagem Docker):
 #   ghcr.io/brasildatahub/postgres:17     (imagem única; tuning via envs PG_*)
+#   ghcr.io/brasildatahub/pgbackrest:17   (sidecar de backup físico + PITR)
 #   ghcr.io/brasildatahub/redis:7
 #   ghcr.io/brasildatahub/meilisearch:1.34
 #   ghcr.io/brasildatahub/prometheus:3    (config e regras de alerta embutidas)
@@ -20,6 +21,8 @@ on:
       # métricas, que não entram em imagem nenhuma.
       - "postgres/Dockerfile"
       - "postgres/*.sh"
+      - "postgres/backup/Dockerfile"
+      - "postgres/backup/*.sh"
       - "postgres/initdb/**"
       - "postgres/.dockerignore"
       - "postgres/test/**"
@@ -64,6 +67,36 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/postgres:17
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/postgres:17.10
+
+  # Sidecar de backup. Job SEPARADO do postgres e rodando o teste de integração
+  # antes do push: o teste sobe banco + sidecar de verdade e percorre
+  # archive_command → stanza → full → diff → restore → contagem. É o único
+  # ponto do repositório onde "o backup existe" deixa de ser uma afirmação e
+  # passa a ser uma verificação.
+  pgbackrest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ciclo completo de backup e restore
+        run: bash postgres/backup/test/backup.test.sh
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: postgres/backup
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/pgbackrest:17
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/pgbackrest:17.10
 
   redis:
     runs-on: ubuntu-latest

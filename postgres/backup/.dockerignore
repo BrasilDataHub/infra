@@ -1,0 +1,7 @@
+# Mesma política do ../.dockerignore: o Dockerfile copia arquivo a arquivo, e
+# manter o resto fora do contexto evita rebuild quando só o teste ou a
+# documentação mudam.
+test/
+README.md
+restore-drill.sh
+pgbackrest.conf.example

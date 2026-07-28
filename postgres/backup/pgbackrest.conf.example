@@ -1,0 +1,59 @@
+; Modelo de /etc/pgbackrest/pgbackrest.conf — copie para o HOST do banco.
+;
+;   install -d -m 0750 /etc/pgbackrest
+;   cp pgbackrest.conf.example /etc/pgbackrest/pgbackrest.conf
+;   # preencher as chaves, e então:
+;   chown -R 999:999 /etc/pgbackrest     # uid/gid do postgres na imagem oficial
+;   chmod 0640 /etc/pgbackrest/pgbackrest.conf
+;
+; O arquivo fica FORA do repositório git e fora de qualquer .env de propósito:
+; é o único lugar da stack onde as credenciais do object storage aparecem, e um
+; bind read-only não expõe nada em `docker inspect`.
+;
+; Os caminhos pg1-* são os de DENTRO do container (o sidecar monta o volume de
+; dados exatamente onde o Postgres o monta), então nada aqui depende do layout
+; do host.
+
+[global]
+repo1-type=s3
+repo1-s3-endpoint=fsn1.your-objectstorage.com
+repo1-s3-bucket=baseempresarial-pgbackrest
+repo1-s3-region=fsn1
+repo1-s3-key=COLOQUE_A_ACCESS_KEY
+repo1-s3-key-secret=COLOQUE_A_SECRET_KEY
+repo1-path=/dados-cnpj
+
+; Retenção declarativa: 2 fulls significa que o full de N-1 sobrevive ao de N.
+; Com 1, uma falha durante o full novo deixaria a operação sem full nenhum.
+repo1-retention-full=2
+repo1-retention-diff=7
+
+; zst é o melhor custo-benefício de CPU por byte para este volume de dados; o
+; nível 3 é o default e não vale subir num host que divide CPU com o banco.
+compress-type=zst
+compress-level=3
+
+; 4 processos num host de 12 vCPU deixa 8 para o Postgres. Subir isto acelera o
+; full e piora tudo o mais que estiver rodando junto — ver a nota de
+; coexistência em ../docs/perfis.md.
+process-max=4
+
+; Dispara um checkpoint imediato em vez de esperar o spread checkpoint. Encurta o
+; backup ao custo de um pico de IO no início — preferível a manter o
+; pg_backup_start aberto por até checkpoint_timeout (15min nos perfis).
+start-fast=y
+
+; Verificação de página durante o backup. Detecta corrupção silenciosa de disco
+; no momento em que ela ainda cabe num backup anterior.
+checksum-page=y
+
+; Retenção do log dentro do container; o que interessa mesmo vai para o stdout
+; via cron (ver entrypoint.sh).
+log-level-console=info
+log-level-file=info
+
+[dados-cnpj]
+pg1-path=/var/lib/postgresql/data
+pg1-port=5432
+pg1-socket-path=/var/run/postgresql
+pg1-user=postgres

@@ -8,6 +8,7 @@ rule_files:
   - ../prometheus/rules/infra.rules.yml
   - ../prometheus/rules/postgres.rules.yml
   - ../prometheus/rules/redis.rules.yml
+  - ../prometheus/rules/backup.rules.yml
 
 evaluation_interval: 1m
 
@@ -121,3 +122,153 @@ tests:
       - eval_time: 15m
         alertname: RedisDespejandoChaves
         exp_alerts: []
+
+  # --- backup ---------------------------------------------------------------
+  # A trava do roadmap 20: este alerta tem de estar VERDE e notificando ANTES de
+  # `archive_mode` virar `on`. Os testes abaixo provam as duas metades — que ele
+  # dispara com o arquivamento parado, e que NÃO dispara com um atraso normal.
+  - interval: 1m
+    name: "arquivamento de WAL parado por mais de 5 minutos dispara"
+    input_series:
+      # idade crescendo 60s por minuto: o archive_command parou de funcionar
+      - series: 'pg_stat_archiver_last_archive_age{instance="pg:9187"}'
+        values: "0+60x20"
+    alert_rule_test:
+      # em 5m a idade é 300 — o limiar é `> 300`, ainda não bateu
+      - eval_time: 5m
+        alertname: ArquivamentoDeWalParado
+        exp_alerts: []
+      # passa de 300 em 6m, e o `for: 5m` só o entrega em 11m
+      - eval_time: 10m
+        alertname: ArquivamentoDeWalParado
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: ArquivamentoDeWalParado
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              runbook: postgres/backup/README.md
+              instance: pg:9187
+            exp_annotations:
+              summary: "Nenhum WAL arquivado há mais de 5 minutos"
+              description: "O pg_wal está retendo segmentos. Verifique `docker logs postgres-postgres-1 | grep archive` e `pgbackrest --stanza=<stanza> check`. Se o repositório estiver inacessível, o disco do banco enche — meça o espaço livre AGORA com `df -h` no volume do PGDATA antes de investigar a causa."
+
+  - interval: 1m
+    name: "arquivamento normal com archive_timeout=60s não gera alerta"
+    input_series:
+      # serra de 0 a 120s: é o comportamento esperado, não um problema
+      - series: 'pg_stat_archiver_last_archive_age{instance="pg:9187"}'
+        values: "0 60 120 0 60 120 0 60 120 0 60 120 0 60 120 0 60 120 0 60"
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: ArquivamentoDeWalParado
+        exp_alerts: []
+
+  - interval: 1m
+    name: "archive_mode off (série ausente) dispara o alerta de nunca arquivou"
+    input_series:
+      # a única série do banco é outra: o exporter está de pé, o archiver não
+      - series: 'pg_stat_archiver_failed_count{instance="pg:9187"}'
+        values: "0+0x40"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ArquivamentoDeWalNuncaAconteceu
+        exp_alerts: []
+      - eval_time: 35m
+        alertname: ArquivamentoDeWalNuncaAconteceu
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              runbook: postgres/backup/README.md
+            exp_annotations:
+              summary: "O Postgres nunca arquivou um segmento de WAL"
+              description: "Ou archive_mode está off, ou nenhum segmento foi fechado desde o start. Sem arquivamento não há PITR: o RPO volta a ser o intervalo entre backups completos."
+
+  - interval: 1m
+    name: "com arquivamento saudável, o alerta de ausência não dispara"
+    input_series:
+      - series: 'pg_stat_archiver_last_archive_age{instance="pg:9187"}'
+        values: "30+0x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: ArquivamentoDeWalNuncaAconteceu
+        exp_alerts: []
+
+  - interval: 1m
+    name: "repositório sem nenhum backup completo dispara"
+    input_series:
+      - series: 'pgbackrest_backup_count{stanza="dados-cnpj",type="full",instance="node:9100"}'
+        values: "0+0x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NenhumBackupCompleto
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              runbook: postgres/backup/README.md
+              stanza: dados-cnpj
+              type: full
+              instance: node:9100
+            exp_annotations:
+              summary: "A stanza dados-cnpj não tem nenhum backup completo"
+              description: "Rode `docker exec <sidecar> pgbackrest-backup-run.sh full`. Enquanto isto estiver disparando, um DROP TABLE CASCADE do ETL é irreversível."
+
+  - interval: 1m
+    name: "com um full no repositório, nenhum alerta de ausência de backup"
+    input_series:
+      - series: 'pgbackrest_backup_count{stanza="dados-cnpj",type="full",instance="node:9100"}'
+        values: "1+0x20"
+      - series: 'pgbackrest_archive_segments_present{stanza="dados-cnpj",instance="node:9100"}'
+        values: "1+0x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NenhumBackupCompleto
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: SemSegmentosDeWalNoRepositorio
+        exp_alerts: []
+
+  - interval: 1m
+    name: "backup completo sem WAL no repositório é backup sem PITR"
+    input_series:
+      - series: 'pgbackrest_backup_count{stanza="dados-cnpj",type="full",instance="node:9100"}'
+        values: "1+0x60"
+      - series: 'pgbackrest_archive_segments_present{stanza="dados-cnpj",instance="node:9100"}'
+        values: "0+0x60"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SemSegmentosDeWalNoRepositorio
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: SemSegmentosDeWalNoRepositorio
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              runbook: postgres/backup/README.md
+              stanza: dados-cnpj
+              instance: node:9100
+            exp_annotations:
+              summary: "Há backup completo mas nenhum WAL no repositório de dados-cnpj"
+              description: "Sem WAL não há PITR: o RPO é a idade do último full, não segundos."
+
+  - interval: 1m
+    name: "execução agendada que falhou dispara mesmo com backup antigo presente"
+    input_series:
+      - series: 'pgbackrest_run_last_success{stanza="dados-cnpj",type="diff",instance="node:9100"}'
+        values: "1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ExecucaoDeBackupFalhou
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: ExecucaoDeBackupFalhou
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              runbook: postgres/backup/README.md
+              stanza: dados-cnpj
+              type: diff
+              instance: node:9100
+            exp_annotations:
+              summary: "A última execução 'diff' do backup de dados-cnpj falhou"
+              description: "Difere de BackupCompletoAtrasado de propósito: aqui o agendamento RODOU e deu erro, o que costuma ser credencial, cota do bucket ou disco. `docker logs` do sidecar tem a mensagem."

@@ -156,10 +156,23 @@ services:
       # DEPOIS do start fica invisível, e o coletor passa a medir um filesystem
       # que não é mais o que interessa.
       - /:/host:ro,rslave
+      # Textfile collector: o canal por onde processos do host publicam
+      # métricas que nenhum exporter conhece. Hoje quem escreve aqui é o sidecar
+      # de pgBackRest (../postgres/backup/backup-run.sh); o node_exporter só lê.
+      # Bind de diretório do HOST, e não volume nomeado, porque escritor e
+      # leitor vivem em projetos Compose diferentes.
+      - type: bind
+        source: ${NODE_TEXTFILE_DIR:-/var/lib/node_exporter/textfile}
+        target: /var/lib/node_exporter/textfile
+        read_only: true
     command:
       - --path.procfs=/host/proc
       - --path.sysfs=/host/sys
       - --path.rootfs=/host
+      # Sem --path.rootfs no prefixo: este caminho é o do MOUNT, não do host
+      # visto por /host. Prefixá-lo faria o coletor ler um diretório inexistente
+      # e publicar node_textfile_scrape_error 1 para sempre.
+      - --collector.textfile.directory=/var/lib/node_exporter/textfile
       # $$ escapa a interpolação do Compose. Com um único $, a regex chega VAZIA
       # ao exporter e o filtro silenciosamente não filtra nada.
       - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+)($$|/)

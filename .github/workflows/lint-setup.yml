@@ -76,6 +76,29 @@ jobs:
           COMPOSE_PROFILES=node,containers GRAFANA_ADMIN_PASSWORD=x \
             docker compose -f monitoring/docker-compose.yml config -q
 
+      - name: Composes válidos com o overlay de backup
+        run: |
+          POSTGRES_DB=d POSTGRES_PASSWORD=p PGBACKREST_STANZA=dados-cnpj \
+            docker compose -f postgres/docker-compose.yml \
+                           -f postgres/docker-compose.backup.yml config -q
+          # Os três juntos: é assim que o host de produção fica.
+          POSTGRES_DB=d POSTGRES_PASSWORD=p PGBACKREST_STANZA=dados-cnpj \
+            docker compose -f postgres/docker-compose.yml \
+                           -f postgres/docker-compose.metrics.yml \
+                           -f postgres/docker-compose.backup.yml config -q
+
+      # O oposto do passo anterior, e igualmente deliberado: o overlay de backup
+      # TEM de mudar o serviço `postgres` — `archive_mode` é parâmetro de
+      # postmaster. Se um dia ele parar de mudar, o arquivamento não estará
+      # ligado e o backup existirá sem PITR, em silêncio.
+      - name: Overlay de backup liga o arquivamento no serviço postgres
+        run: |
+          comb=$(POSTGRES_DB=d POSTGRES_PASSWORD=p PGBACKREST_STANZA=dados-cnpj \
+                 docker compose -f postgres/docker-compose.yml \
+                                -f postgres/docker-compose.backup.yml config)
+          printf '%s' "$comb" | yq -e '.services.postgres.environment.PG_ARCHIVE_MODE == "on"'
+          printf '%s' "$comb" | yq -e '.services.postgres.environment.PG_ARCHIVE_COMMAND | test("archive-push")'
+
       # O princípio central desta entrega: ligar métricas não pode recriar um
       # container de banco de centenas de GB. Se alguém acrescentar uma chave ao
       # serviço `postgres` dentro do overlay, ou puser uma variável de métricas

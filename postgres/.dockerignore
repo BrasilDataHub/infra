@@ -2,6 +2,9 @@
 # fora do contexto evita rebuild desnecessário quando só a documentação muda.
 docs/
 test/
+# O sidecar tem contexto próprio (backup/). Deixá-lo aqui faria toda mudança de
+# script do backup invalidar o cache da imagem do banco sem necessidade.
+backup/
 README.md
 docker-compose.yml
 docker-compose.local.yml

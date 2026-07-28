@@ -1,0 +1,187 @@
+# Alertas de backup físico e arquivamento de WAL — BrasilDataHub.
+#
+# Este arquivo existe por causa de UM modo de falha específico, e é ele que
+# ordena tudo aqui dentro:
+#
+#   `archive_mode = on` com um `archive_command` que falha faz o Postgres
+#   RETER todo segmento de WAL não arquivado. O pg_wal cresce sem teto, o
+#   filesystem enche, e o banco para. O intervalo entre "o backup quebrou" e "o
+#   banco caiu" é o espaço livre do disco dividido pela taxa de WAL — horas, e
+#   sem nenhum sintoma no meio.
+#
+# Por isso `ArquivamentoDeWalParado` é a PRÉ-CONDIÇÃO de ligar o archive_mode, e
+# não uma consequência dele (backup/README.md; trava 2 do roadmap 20).
+#
+# Duas fontes de métrica, deliberadamente independentes:
+#   pg_stat_archiver_*  vem do postgres_exporter — o que o BANCO acha que
+#                       aconteceu com o arquivamento;
+#   pgbackrest_*        vem do textfile collector do node_exporter, escrito
+#                       pelo sidecar — o que existe DE FATO no repositório.
+# Um repositório apagado por fora não move nenhuma série do primeiro grupo.
+
+groups:
+  - name: arquivamento-wal
+    rules:
+      - alert: ArquivamentoDeWalParado
+        # 300s é o limiar da trava. O nome real da métrica do postgres_exporter
+        # v0.20.1 é `last_archive_age` (e não `last_archived_age`, como
+        # aparece no roadmap): o coletor stat_archiver publica
+        # `extract(epoch from now() - last_archived_time)`.
+        #
+        # Para este alerta não ser um falso positivo permanente num banco de
+        # baixa escrita, o overlay de backup fixa archive_timeout=60s — sem ele,
+        # um banco ocioso passaria horas sem fechar um segmento e a série
+        # cresceria para sempre. Os dois números são um par.
+        expr: pg_stat_archiver_last_archive_age > 300
+        for: 5m
+        labels:
+          severity: critical
+          runbook: postgres/backup/README.md
+        annotations:
+          summary: "Nenhum WAL arquivado há mais de 5 minutos"
+          description: >-
+            O pg_wal está retendo segmentos. Verifique
+            `docker logs postgres-postgres-1 | grep archive` e
+            `pgbackrest --stanza=<stanza> check`. Se o repositório estiver
+            inacessível, o disco do banco enche — meça o espaço livre AGORA com
+            `df -h` no volume do PGDATA antes de investigar a causa.
+
+      - alert: ArquivamentoDeWalFalhando
+        # Falha ISOLADA de archive-push é recuperável (o Postgres reexecuta o
+        # comando). O que importa é a falha que persiste, e é por isso que a
+        # janela é de 15m e não instantânea.
+        expr: increase(pg_stat_archiver_failed_count[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          runbook: postgres/backup/README.md
+        annotations:
+          summary: "archive_command falhando ({{ $value | printf \"%.0f\" }} tentativas em 15 min)"
+          description: >-
+            O Postgres reexecuta o comando, então isto ainda não é perda. Se
+            continuar, vira ArquivamentoDeWalParado — que é perda iminente.
+
+      - alert: ArquivamentoDeWalNuncaAconteceu
+        # `absent()` e não `== 0`: com archive_mode=off, last_archived_time é
+        # NULL e o exporter não publica a série NENHUMA. `> 300` nunca
+        # dispararia, e o furo passaria despercebido exatamente no estado que se
+        # quer evitar — banco em produção sem PITR.
+        expr: absent(pg_stat_archiver_last_archive_age)
+        for: 30m
+        labels:
+          severity: critical
+          runbook: postgres/backup/README.md
+        annotations:
+          summary: "O Postgres nunca arquivou um segmento de WAL"
+          description: >-
+            Ou archive_mode está off, ou nenhum segmento foi fechado desde o
+            start. Sem arquivamento não há PITR: o RPO volta a ser o intervalo
+            entre backups completos.
+
+  - name: pgbackrest
+    rules:
+      - alert: MetricasDeBackupAusentes
+        # O sidecar escreve o .prom no start e a cada execução. A série sumir
+        # significa sidecar fora do ar, textfile collector desligado, ou o bind
+        # do diretório errado — e nos três casos o resto deste grupo fica cego.
+        expr: absent(pgbackrest_info_ok)
+        for: 1h
+        labels:
+          severity: warning
+          runbook: postgres/backup/README.md
+        annotations:
+          summary: "Nenhuma métrica do pgBackRest está chegando"
+          description: >-
+            Confira `docker ps | grep pgbackrest` e se o node_exporter está com
+            --collector.textfile.directory apontando para o mesmo diretório do
+            bind do sidecar.
+
+      - alert: RepositorioDeBackupComProblema
+        expr: pgbackrest_info_ok == 0 or pgbackrest_repo_status_code != 0
+        for: 15m
+        labels:
+          severity: critical
+          runbook: postgres/backup/README.md
+        annotations:
+          summary: "pgbackrest info reporta a stanza {{ $labels.stanza }} com problema"
+          description: >-
+            Código {{ $value }}. Rode `pgbackrest --stanza={{ $labels.stanza }}
+            info` no sidecar para a mensagem completa.
+
+      - alert: NenhumBackupCompleto
+        # O estado que este roadmap existe para eliminar. Sem `for` longo: se
+        # não há full, não há o que esperar.
+        expr: pgbackrest_backup_count{type="full"} == 0
+        for: 10m
+        labels:
+          severity: critical
+          runbook: postgres/backup/README.md
+        annotations:
+          summary: "A stanza {{ $labels.stanza }} não tem nenhum backup completo"
+          description: >-
+            Rode `docker exec <sidecar> pgbackrest-backup-run.sh full`. Enquanto
+            isto estiver disparando, um DROP TABLE CASCADE do ETL é irreversível.
+
+      - alert: BackupCompletoAtrasado
+        # Agenda: full semanal. 9 dias dá margem para um domingo perdido por
+        # janela de manutenção sem virar ruído; o segundo domingo consecutivo já
+        # é um problema real.
+        expr: time() - pgbackrest_backup_last_completion_timestamp_seconds{type="full"} > 9 * 24 * 3600
+        for: 1h
+        labels:
+          severity: warning
+          runbook: postgres/backup/README.md
+        annotations:
+          summary: "O último backup completo de {{ $labels.stanza }} tem mais de 9 dias"
+          description: >-
+            Com repo1-retention-full=2, dois fulls perdidos começam a comer a
+            janela de retenção dos diffs que dependem deles.
+
+      - alert: BackupDiferencialAtrasado
+        expr: |
+          min by (stanza) (
+            time() - pgbackrest_backup_last_completion_timestamp_seconds{type=~"diff|full"}
+          ) > 48 * 3600
+        for: 1h
+        labels:
+          severity: warning
+          runbook: postgres/backup/README.md
+        annotations:
+          summary: "Sem backup (full ou diff) de {{ $labels.stanza }} há mais de 48 h"
+          description: >-
+            O RPO continua protegido pelo WAL enquanto o arquivamento estiver
+            de pé, mas o RTO cresce: cada dia sem diff é mais WAL a reaplicar
+            no restore.
+
+      - alert: ExecucaoDeBackupFalhou
+        expr: pgbackrest_run_last_success == 0
+        for: 10m
+        labels:
+          severity: critical
+          runbook: postgres/backup/README.md
+        annotations:
+          summary: "A última execução '{{ $labels.type }}' do backup de {{ $labels.stanza }} falhou"
+          description: >-
+            Difere de BackupCompletoAtrasado de propósito: aqui o agendamento
+            RODOU e deu erro, o que costuma ser credencial, cota do bucket ou
+            disco. `docker logs` do sidecar tem a mensagem.
+
+      - alert: SemSegmentosDeWalNoRepositorio
+        # Existe backup completo e NÃO existe WAL: o restore volta ao instante
+        # do full e nada além. É o furo mais fácil de não perceber, porque
+        # `pgbackrest info` mostra um backup saudável.
+        # `on (instance, stanza)`, e não `and` puro: os dois lados têm conjuntos
+        # de rótulo diferentes (o da direita tem `type`), e sem o `on` explícito
+        # o casamento exige rótulos idênticos — a regra nunca casaria nada e
+        # ficaria eternamente silenciosa. Foi o que o teste pegou.
+        expr: |
+          pgbackrest_archive_segments_present == 0
+            and on (instance, stanza) (pgbackrest_backup_count{type="full"} > 0)
+        for: 30m
+        labels:
+          severity: critical
+          runbook: postgres/backup/README.md
+        annotations:
+          summary: "Há backup completo mas nenhum WAL no repositório de {{ $labels.stanza }}"
+          description: >-
+            Sem WAL não há PITR: o RPO é a idade do último full, não segundos.
