@@ -1,9 +1,12 @@
 # monitoring
 
-Observabilidade da infraestrutura BrasilDataHub: Prometheus, Grafana e os
-coletores de escopo de máquina. Duas imagens, `ghcr.io/brasildatahub/prometheus`
-(config e regras de alerta embutidas) e `ghcr.io/brasildatahub/grafana`
-(provisioning e dashboards embutidos).
+Observabilidade da infraestrutura BrasilDataHub: Prometheus, Alertmanager,
+Grafana, sondas de caixa-preta e os coletores de escopo de máquina. Quatro
+imagens: `ghcr.io/brasildatahub/prometheus` (config e regras embutidas),
+`ghcr.io/brasildatahub/grafana` (provisioning e dashboards),
+`ghcr.io/brasildatahub/alertmanager` (roteamento, inibição e a janela de
+silenciamento do ETL) e `ghcr.io/brasildatahub/blackbox-exporter` (os módulos
+das classes de SLO).
 
 É o único módulo que observa os outros. Os **exporters de Postgres e Redis não
 estão aqui** — vivem no diretório do serviço que observam, porque a DSN, os
@@ -14,7 +17,7 @@ coletores desligados e os timeouts são fatos sobre aquele serviço:
 | [`../postgres/docker-compose.metrics.yml`](../postgres/docker-compose.metrics.yml) | `postgres_exporter` + a role `metrics_read` |
 | [`../redis/docker-compose.metrics.yml`](../redis/docker-compose.metrics.yml) | `redis_exporter` |
 | [`../meilisearch/docker-compose.metrics.yml`](../meilisearch/docker-compose.metrics.yml) | liga o `/metrics` nativo (não há exporter) |
-| `monitoring/` | Prometheus, Grafana, node exporter, cAdvisor |
+| `monitoring/` | Prometheus, Alertmanager, Grafana, blackbox, node exporter, cAdvisor |
 
 Tudo isso é **opcional**: nada sobe sem `--metrics`, e os composes de produção
 dos três serviços continuam idênticos.
@@ -37,11 +40,59 @@ projeto postgres          projeto redis            projeto monitoring
          └──────────────── bdh_metrics ──────────────────┘
 ```
 
+### Alertmanager: por que ele existe
+
+Antes dele havia **18 regras de alerta validadas e sem destino nenhum**. O
+Alertmanager é o que as faz chegar a alguém, e traz três coisas que um contact
+point do Grafana não daria:
+
+- **`silence`.** O runbook mensal começa com "silence do Alertmanager por 6 h" e
+  termina com "remover o silence". É um recurso do Alertmanager; o alerting do
+  Grafana só roteia regras gerenciadas pelo próprio Grafana, e estas são
+  avaliadas pelo Prometheus.
+- **Janela de ETL.** Cinco alertas — `IOSaturado`, `CacheHitBaixo`,
+  `MuitosArquivosTemporarios`, `CheckpointsForcadosDemais` e
+  `PostgresConexoesPertoDoLimite` — são falsos positivos **legítimos** durante a
+  carga mensal. Sem silenciá-los, a operação aprende a ignorá-los, o que é pior
+  que não ter alerta.
+- **Inibição.** Host fora do ar cala o que roda nele; sonda que falha cala o p95
+  do mesmo alvo.
+
+**O container RECUSA subir sem um destino configurado.** É deliberado: um
+Alertmanager que não notifica ninguém reproduziria o estado que ele veio
+corrigir, com a aparência de resolvido.
+
+### blackbox_exporter: o que substitui o Pulse
+
+Antes dele **não existia uma métrica de TTFB no sistema**. O Laravel Pulse media
+latência por dentro e custava uma transação no banco por requisição pública —
+100% das inserções do banco da aplicação. O blackbox mede por fora, com retenção
+e histórico, e mede o que o usuário experimenta: TLS, borda e origem.
+
+Há um módulo por classe da tabela de SLO, e três deles sondam a **mesma URL** de
+propósito, porque fazem perguntas diferentes:
+
+| Módulo | Pergunta | Falha significa |
+|---|---|---|
+| `borda_hit` | a borda está servindo? | a Cache Rule caiu ou a resposta virou incachável |
+| `condicional_304` | o `Last-Modified` está sendo emitido? | o crawl do Googlebot volta a 314 dias |
+| `anonima_sem_cookie` | a rota pública continua sem sessão? | **estado de login vazando para o cache público** |
+
 **Nenhum exporter publica porta no host.** O `/metrics` não tem autenticação e o
 do Postgres entrega o `pg_settings_*` inteiro; expô-lo daria de graça o que o
 resto da stack protege com senha. O Prometheus os alcança pelo nome do **serviço**
 Compose, que o Docker registra como alias na rede compartilhada — por isso o
 endereço não depende do nome do projeto.
+
+### Quando o Prometheus fica em outro host
+
+Nesta operação ele fica: Prometheus no `bdh-apps`, dados no `bdh-data`, sem rede
+privada entre os dois. O nome de serviço Compose não atravessa hosts, então os
+exporters remotos precisam publicar porta — o que os overlays
+`*/docker-compose.metrics-remote.yml` e `docker-compose.remote.yml` fazem, com
+`METRICS_BIND_IP` **obrigatória e sem default**. A proteção passa a ser o
+firewall restrito ao IP do par, e a sonda `PortaDeDadosAlcancavelDeFora` existe
+para pegar a regressão dessa regra. Detalhes em [`targets/`](targets/README.md).
 
 A rede é declarada **sem `external: true`**, e isso é deliberado. Com `external`,
 um `docker network prune` com os containers parados faria o `docker compose up`

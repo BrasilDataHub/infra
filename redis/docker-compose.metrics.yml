@@ -51,10 +51,17 @@ services:
     networks:
       - default        # fala com o `redis` pelo DNS do projeto
       - bdh_metrics    # é scrapeado pelo Prometheus, que vive em outro projeto
+    logging:
+      # Teto de log — a justificativa está em ../postgres/docker-compose.yml.
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-50m}
+        max-file: "${LOG_MAX_FILE:-3}"
     deploy:
       resources:
         limits:
           memory: ${REDIS_EXPORTER_MEMORY_LIMIT:-64M}
+          cpus: "${REDIS_EXPORTER_CPU_LIMIT:-0.25}"
     depends_on:
       redis:
         condition: service_healthy

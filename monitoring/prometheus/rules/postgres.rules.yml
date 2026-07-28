@@ -116,6 +116,10 @@ groups:
               ) < 0.95
         for: 1h
         labels:
-          severity: info
+          # `warning`, e não `info`: com 77% medido — 18 pontos abaixo do
+          # limiar — e 42,6 TB de leitura de disco explicada em 80 h de uptime,
+          # este sinal deixou de ser curiosidade. `info` é o nível de quem não
+          # pretende agir.
+          severity: warning
         annotations:
           summary: "Cache hit ratio abaixo de 95% na última hora"

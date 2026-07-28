@@ -83,12 +83,19 @@ services:
     networks:
       - default
       - bdh_metrics
+    logging:
+      # Teto de log — a justificativa está em ../postgres/docker-compose.yml.
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-50m}
+        max-file: "${LOG_MAX_FILE:-3}"
     deploy:
       resources:
         limits:
           # Folgado de propósito: o Prometheus não tem teto interno de memória, e
           # um OOMKill no meio da compactação obriga replay do WAL no restart.
           memory: ${PROM_MEMORY_LIMIT:-512M}
+          cpus: "${PROM_CPU_LIMIT:-2}"
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --spider http://127.0.0.1:9090/-/healthy || exit 1"]
       interval: 10s
@@ -121,10 +128,16 @@ services:
       - "${MONITORING_BIND_IP:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
     networks:
       - default
+    logging:
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-50m}
+        max-file: "${LOG_MAX_FILE:-3}"
     deploy:
       resources:
         limits:
           memory: ${GRAFANA_MEMORY_LIMIT:-512M}
+          cpus: "${GRAFANA_CPU_LIMIT:-1}"
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --spider http://127.0.0.1:3000/api/health || exit 1"]
       interval: 10s
@@ -134,6 +147,61 @@ services:
     depends_on:
       prometheus:
         condition: service_healthy
+
+  alertmanager:
+    image: ghcr.io/brasildatahub/alertmanager:0
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # PELO MENOS UMA destas precisa existir, senão o container NÃO SOBE — e
+      # essa recusa é o ponto do serviço. Ver alertmanager/generate-config.sh.
+      ALERTMANAGER_SLACK_WEBHOOK: ${ALERTMANAGER_SLACK_WEBHOOK:-}
+      ALERTMANAGER_SLACK_CHANNEL: ${ALERTMANAGER_SLACK_CHANNEL:-}
+      ALERTMANAGER_WEBHOOK_URL: ${ALERTMANAGER_WEBHOOK_URL:-}
+      ALERTMANAGER_EMAIL_TO: ${ALERTMANAGER_EMAIL_TO:-}
+      ALERTMANAGER_EMAIL_FROM: ${ALERTMANAGER_EMAIL_FROM:-}
+      ALERTMANAGER_SMTP_HOST: ${ALERTMANAGER_SMTP_HOST:-}
+      ALERTMANAGER_SMTP_USER: ${ALERTMANAGER_SMTP_USER:-}
+      ALERTMANAGER_SMTP_PASSWORD: ${ALERTMANAGER_SMTP_PASSWORD:-}
+      # Janela de silenciamento da carga mensal (05 §9.3-A e §9.4).
+      ALERTMANAGER_ETL_TIMEZONE: ${ALERTMANAGER_ETL_TIMEZONE:-America/Sao_Paulo}
+      ALERTMANAGER_ETL_DAYS_OF_MONTH: ${ALERTMANAGER_ETL_DAYS_OF_MONTH:-1:7}
+      ALERTMANAGER_ETL_WEEKDAY: ${ALERTMANAGER_ETL_WEEKDAY:-saturday}
+      ALERTMANAGER_ETL_START: ${ALERTMANAGER_ETL_START:-00:00}
+      ALERTMANAGER_ETL_END: ${ALERTMANAGER_ETL_END:-07:00}
+    labels:
+      org.brasildatahub.service: alertmanager
+    volumes:
+      # Silences e o estado do nflog. Perder este volume faz TODO alerta ativo
+      # notificar de novo no start — e um silence de janela de ETL sumir no meio
+      # da carga.
+      - alertmanager_data:/alertmanager
+    ports:
+      # Mesma inversão do Prometheus e do Grafana: 127.0.0.1 por default. A API
+      # de silences não tem autenticação; quem alcança a porta silencia o que
+      # quiser.
+      - "${MONITORING_BIND_IP:-127.0.0.1}:${ALERTMANAGER_PORT:-9093}:9093"
+    networks:
+      - default
+      - bdh_metrics
+    logging:
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-50m}
+        max-file: "${LOG_MAX_FILE:-3}"
+    deploy:
+      resources:
+        limits:
+          memory: ${ALERTMANAGER_MEMORY_LIMIT:-128M}
+          cpus: "${ALERTMANAGER_CPU_LIMIT:-0.5}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --spider http://127.0.0.1:9093/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   node-exporter:
     image: quay.io/prometheus/node-exporter:v1.12.1
@@ -208,10 +276,54 @@ services:
       org.brasildatahub.service: node-exporter
     networks:
       - bdh_metrics
+    logging:
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-50m}
+        max-file: "${LOG_MAX_FILE:-3}"
     deploy:
       resources:
         limits:
           memory: ${NODE_EXPORTER_MEMORY_LIMIT:-128M}
+          cpus: "${NODE_EXPORTER_CPU_LIMIT:-0.5}"
+
+  blackbox-exporter:
+    image: ghcr.io/brasildatahub/blackbox-exporter:0
+    restart: unless-stopped
+    # Sem `profiles:` — ao contrário do node-exporter e do cAdvisor, este é o
+    # único componente que mede o que o USUÁRIO experimenta, e é o substituto
+    # direto dos cards de "slow requests" do Laravel Pulse. Desligá-lo por
+    # default reabriria o buraco que a saída do Pulse abre.
+    labels:
+      org.brasildatahub.service: blackbox-exporter
+    command:
+      - --config.file=/etc/blackbox_exporter/config.yml
+      - --web.listen-address=0.0.0.0:9115
+      # As sondas saem para a internet (a borda da Cloudflare, o próprio
+      # domínio). O log de cada probe com falha é o que distingue "DNS não
+      # resolveu" de "a origem devolveu 502" sem precisar reproduzir à mão.
+      - --log.level=warn
+    # Sem `ports:` — é alcançado pelo Prometheus dentro da rede bdh_metrics.
+    # /probe aceita qualquer URL no parâmetro `target`: publicar esta porta
+    # daria a qualquer um um proxy de requisições saindo deste host.
+    networks:
+      - bdh_metrics
+    logging:
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-50m}
+        max-file: "${LOG_MAX_FILE:-3}"
+    deploy:
+      resources:
+        limits:
+          memory: ${BLACKBOX_MEMORY_LIMIT:-128M}
+          cpus: "${BLACKBOX_CPU_LIMIT:-0.5}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --spider http://127.0.0.1:9115/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.60.5
@@ -242,10 +354,16 @@ services:
       org.brasildatahub.service: cadvisor
     networks:
       - bdh_metrics
+    logging:
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-50m}
+        max-file: "${LOG_MAX_FILE:-3}"
     deploy:
       resources:
         limits:
           memory: ${CADVISOR_MEMORY_LIMIT:-512M}
+          cpus: "${CADVISOR_CPU_LIMIT:-1}"
 
 volumes:
   # Volumes nomeados com driver local e `name` fixo — padrão do repositório
@@ -257,6 +375,9 @@ volumes:
   grafana_data:
     driver: local
     name: ${GRAFANA_VOLUME:-bdh_grafana_data}
+  alertmanager_data:
+    driver: local
+    name: ${ALERTMANAGER_VOLUME:-bdh_alertmanager_data}
 
 networks:
   # Sem `external: true` — ver a justificativa completa em

@@ -102,6 +102,12 @@ services:
         source: ${NODE_TEXTFILE_DIR:-/var/lib/node_exporter/textfile}
         target: /var/lib/node_exporter/textfile
     # Sem `ports:` — o sidecar não escuta em nada.
+    logging:
+      # Teto de log — a justificativa está em docker-compose.yml.
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-50m}
+        max-file: "${LOG_MAX_FILE:-3}"
     deploy:
       resources:
         limits:
@@ -109,6 +115,7 @@ services:
           # compressão e de transferência. 512M é folgado para 4 processos e
           # impede que o backup dispute memória com o banco.
           memory: ${PGBACKREST_MEMORY_LIMIT:-512M}
+          cpus: "${PGBACKREST_CPU_LIMIT:-4}"
     healthcheck:
       # `info` e não `check`: o `check` força uma troca de segmento de WAL, e um
       # healthcheck a cada 60s geraria um segmento por minuto para sempre.

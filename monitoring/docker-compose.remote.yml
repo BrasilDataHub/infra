@@ -1,0 +1,45 @@
+# Overlay de COLETA REMOTA — publica a porta dos exporters para que um
+# Prometheus em OUTRO host consiga scrapeá-los.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d
+#   (no host que roda o serviço; o Prometheus fica no outro)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# POR QUE ISTO EXISTE, E POR QUE É UM ARQUIVO SEPARADO
+#
+# O `docker-compose.metrics.yml` de cada serviço NÃO publica porta, e há teste
+# na CI afirmando isso (`test/infra-setup.test.sh`): o /metrics não tem
+# autenticação nenhuma e entrega `pg_settings_*` inteiro. A regra está certa —
+# para o caso em que Prometheus e serviço vivem na mesma máquina, alcançáveis
+# pela rede `bdh_metrics`.
+#
+# Não é o caso desta operação. O Prometheus vai no `bdh-apps` e o Postgres,
+# o Redis e o motor de busca ficam no `bdh-data` (03 §3.2: em `bdh-data` cada
+# GiB de page cache vale menos amplificação de leitura, e o monitor não deve
+# morrer junto com o monitorado). Não há rede privada entre os dois hosts —
+# eles se falam por IP público, em /22 diferentes.
+#
+# Então a porta precisa ser publicada, e a proteção passa a ser o FIREWALL
+# (item 8 do roadmap: ufw + DOCKER-USER restritos ao IP do par). Manter isso
+# num arquivo separado é deliberado: a exceção fica explícita, revisável, e
+# ligá-la é uma decisão consciente em vez de um efeito colateral.
+#
+# DUAS TRAVAS antes de usar este arquivo:
+#   1. `METRICS_BIND_IP` é OBRIGATÓRIA e sem default. Um default de 0.0.0.0
+#      publicaria os internos do banco na internet.
+#   2. A sonda `PortaDeDadosAlcancavelDeFora` (blackbox.rules.yml) existe para
+#      pegar a regressão do firewall — porque `infra-setup.sh --metrics-only`
+#      sem `--allow-from` esvazia a chain DOCKER-USER e não a repovoa.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  node-exporter:
+    ports:
+      - "${METRICS_BIND_IP:?defina METRICS_BIND_IP — nunca 0.0.0.0}:${NODE_EXPORTER_PORT:-9100}:9100"
+
+  blackbox-exporter:
+    # Publicado apenas quando o Prometheus é remoto. Vale relembrar por que a
+    # porta é sensível: /probe aceita qualquer URL no parâmetro `target`, então
+    # quem a alcança tem um proxy de requisições saindo deste host.
+    ports:
+      - "${METRICS_BIND_IP:?defina METRICS_BIND_IP — nunca 0.0.0.0}:${BLACKBOX_PORT:-9115}:9115"

@@ -41,6 +41,36 @@ groups:
             vazio. A monitoração deste serviço está desligada sem ninguém ter
             pedido.
 
+  - name: notificacao
+    rules:
+      - alert: AlertmanagerForaDoAr
+        # Sem ele, TODA regra desta stack volta ao estado anterior a este
+        # roadmap: avaliada, visível no Prometheus, e sem destino nenhum. É o
+        # único alerta que, ao disparar, não consegue ser entregue — daí o par
+        # com AlertmanagerSemDestino no Grafana.
+        expr: absent(up{job="alertmanager"}) or up{job="alertmanager"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alertmanager fora do ar — nenhum alerta está sendo notificado"
+          description: >-
+            Causa mais provável: nenhuma env de destino definida. O container
+            recusa subir sem receiver de propósito
+            (monitoring/alertmanager/generate-config.sh).
+
+      - alert: NotificacaoFalhando
+        expr: rate(alertmanager_notifications_failed_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Falha ao entregar notificação por {{ $labels.integration }}"
+          description: >-
+            O alerta foi avaliado, agrupado e a entrega falhou. Webhook fora do
+            ar, token expirado ou SMTP recusando. Enquanto durar, a stack está
+            cega na prática.
+
   - name: host
     rules:
       - alert: DiscoQuaseCheio
@@ -83,6 +113,28 @@ groups:
             Verifique a soma dos limites dos containers contra a RAM real —
             a fórmula de coexistência está em postgres/docs/perfis.md, e a stack
             de métricas também consome (monitoring/README.md).
+
+      - alert: MemoriaSobPressao
+        # Complementa MemoriaDoHostCritica, que olha MemAvailable. O PSI de
+        # memória é um sinal MAIS PRECOCE: ele mede o tempo em que processos
+        # ficaram parados por causa de reclaim, e sobe enquanto o MemAvailable
+        # ainda parece saudável — porque o kernel está descartando page cache
+        # para não faltar memória. Num host cujo gargalo medido É page cache,
+        # esse é o número que importa.
+        #
+        # Media 0,0975 no diagnóstico de 28/07 — ou seja, DISPARARIA hoje. É um
+        # verdadeiro positivo, não uma calibragem folgada.
+        expr: rate(node_pressure_memory_stalled_seconds_total[5m]) > 0.05
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Processos parados por pressão de memória mais de 5% do tempo"
+          description: >-
+            O kernel está descartando page cache para atender alocações. Num
+            host em que a saturação medida é de page cache, isto se traduz
+            diretamente em amplificação de leitura no Postgres. Confira a soma
+            dos limites dos containers antes de olhar para o Postgres.
 
       - alert: IOSaturado
         # PSI, e não %util: em NVMe o %util satura em 100% sem que o disco esteja

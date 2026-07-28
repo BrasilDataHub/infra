@@ -1620,6 +1620,26 @@ cmd_verify() {
     if [[ "$svc" == "postgres" ]]; then
         echo "== /dev/shm (64M indica perfil aplicado pela metade)"
         docker exec "$cid" df -h /dev/shm | tail -1
+        # Comparação, e não só exibição. Este é o gate de D-1 do runbook mensal:
+        # em 25/07 foram perdidas 6h43 de ETL porque o mount havia voltado aos
+        # 64 MB de default e ninguém CONFERIU o número — ele estava na tela.
+        # `bdh verify` agora sai != 0 quando diverge, para poder ser usado num
+        # `set -e` ou num checklist automatizado.
+        local shm_esperado shm_real
+        shm_esperado="$(grep -h '^PG_SHM_BYTES=' "$(svc_dir postgres)/.env" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]')"
+        shm_real="$(docker exec "$cid" stat -f -c '%s * %b' /dev/shm 2>/dev/null | tr -d ' ')"
+        if [[ -n "$shm_esperado" && -n "$shm_real" ]]; then
+            shm_real="$(( ${shm_real%%\**} * ${shm_real##*\*} ))"
+            if [[ "$shm_real" -lt "$shm_esperado" ]]; then
+                echo "   ✗ /dev/shm tem $shm_real bytes; o perfil pede $shm_esperado."
+                echo "     Um redeploy devolveu o mount ao default. NÃO inicie a carga mensal."
+                VERIFY_FALHOU=1
+            else
+                echo "   ✓ /dev/shm confere com PG_SHM_BYTES ($shm_esperado bytes)"
+            fi
+        else
+            echo "   ! não foi possível comparar /dev/shm com PG_SHM_BYTES"
+        fi
         echo "== shm-guard"
         docker logs "$cid" 2>&1 | grep shm-guard | tail -2 || echo "(sem linhas do shm-guard)"
         echo "== entradas inválidas no postgresql.conf (deve vir vazio)"
@@ -1627,6 +1647,7 @@ cmd_verify() {
         docker exec "$cid" psql -U postgres -d "${db:-postgres}" -c \
             "SELECT sourceline, name, error FROM pg_file_settings WHERE NOT applied OR error IS NOT NULL;"
     fi
+    return "${VERIFY_FALHOU:-0}"
 }
 
 case "${1:-status}" in
