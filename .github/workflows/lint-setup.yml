@@ -52,6 +52,9 @@ jobs:
       - name: Testes
         run: bash test/infra-setup.test.sh
 
+      - name: Re-execução herda o estado
+        run: bash test/reexecucao.test.sh
+
       - name: Ajuda não falha
         run: bash infra-setup.sh --help > /dev/null
 
