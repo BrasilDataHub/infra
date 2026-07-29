@@ -164,9 +164,11 @@ done
 
 printf '\nPerfis do Postgres: recursos do container conferem com o guia\n'
 # Tabela "Recursos do container" de docs/perfis.md — limite e /dev/shm em bytes.
-doc_limits="$(awk -F'|' '/^\| Limite de memória/ {for (i=2;i<=NF;i++) gsub(/ /,"",$i); print $3, $4, $5, $6, $7}' \
+# A 8ª coluna entrou com `compartilhada-14gb`; a ordem das colunas da tabela
+# tem de seguir a de PG_PROFILES, e é isso que este bloco afirma.
+doc_limits="$(awk -F'|' '/^\| Limite de memória/ {for (i=2;i<=NF;i++) gsub(/ /,"",$i); print $3, $4, $5, $6, $7, $8}' \
     "$REPO_ROOT/postgres/docs/perfis.md" | head -1)"
-doc_shm="$(awk -F'|' '/^\| em bytes/ {for (i=2;i<=NF;i++) gsub(/ /,"",$i); print $3, $4, $5, $6, $7}' \
+doc_shm="$(awk -F'|' '/^\| em bytes/ {for (i=2;i<=NF;i++) gsub(/ /,"",$i); print $3, $4, $5, $6, $7, $8}' \
     "$REPO_ROOT/postgres/docs/perfis.md" | head -1)"
 i=1
 for prof in $PG_PROFILES; do
@@ -314,11 +316,53 @@ else
     pass "overlay do Postgres lê a senha de .env.metrics, não do .env"
 fi
 
+printf '\nFirewall: nunca esvaziar sem repovoar\n'
+# O defeito que este bloco trava: a versão anterior de `configure_firewall`
+# fazia `iptables -F DOCKER-USER` ANTES de checar ALLOW_FROM. Numa execução sem
+# a flag — o caso de `--metrics-only` sem repetir as flags da instalação — o
+# firewall dos containers era apagado e não reconstruído, e as três portas de
+# dados voltavam a aceitar conexão de qualquer origem. Em silêncio: `ufw status`
+# segue `active`, porque a DOCKER-USER não aparece ali.
+trecho_fw="$(awk '/^configure_firewall\(\)/,/^}/' "$REPO_ROOT/infra-setup.sh")"
+linha_flush="$(printf '%s\n' "$trecho_fw" | grep -n 'iptables -F DOCKER-USER' | head -1 | cut -d: -f1)"
+linha_guarda="$(printf '%s\n' "$trecho_fw" | grep -n 'if \[\[ -z "\$ALLOW_FROM" \]\]' | tail -1 | cut -d: -f1)"
+if [[ -n "$linha_flush" && -n "$linha_guarda" && "$linha_guarda" -lt "$linha_flush" ]]; then
+    pass "o flush da DOCKER-USER só acontece DEPOIS da guarda de ALLOW_FROM"
+else
+    fail "iptables -F DOCKER-USER roda antes da guarda — o firewall regride em silêncio"
+fi
+if printf '%s\n' "$trecho_fw" | grep -q 'PRESERVADA'; then
+    pass "sem --allow-from, a chain existente é preservada e o aviso diz isso"
+else
+    fail "sem --allow-from não há aviso de que a chain foi preservada"
+fi
+
+printf '\nObservabilidade: coleta remota\n'
+# A regra "exporter não publica porta" (verificada acima) vale para o caso em
+# que Prometheus e serviço dividem host. Esta operação é a exceção: Prometheus
+# no bdh-apps, dados no bdh-data, sem rede privada. A exceção vive em arquivos
+# SEPARADOS, e o que se afirma aqui é que ela continua exigindo uma decisão.
+for svc in postgres redis; do
+    f="$REPO_ROOT/$svc/docker-compose.metrics-remote.yml"
+    if [[ ! -f "$f" ]]; then fail "FALTA $svc/docker-compose.metrics-remote.yml"; continue; fi
+    if grep -q 'METRICS_BIND_IP:?' "$f"; then
+        pass "$svc/metrics-remote exige METRICS_BIND_IP explícito (sem default)"
+    else
+        fail "$svc/metrics-remote tem default para METRICS_BIND_IP — 0.0.0.0 acidental publica o exporter"
+    fi
+done
+if grep -q 'METRICS_BIND_IP:?' "$REPO_ROOT/monitoring/docker-compose.remote.yml"; then
+    pass "monitoring/remote exige METRICS_BIND_IP explícito"
+else
+    fail "monitoring/remote tem default para METRICS_BIND_IP"
+fi
+
 printf '\nObservabilidade: compose do monitoring\n'
 mon="$REPO_ROOT/monitoring/docker-compose.yml"
-# O Prometheus não tem autenticação NENHUMA: publicá-lo em 0.0.0.0 expõe
-# /api/v1/admin/tsdb/* a quem alcançar a porta.
-check "Grafana/Prometheus em loopback por default" "2" \
+# Nenhum dos três tem autenticação: publicar o Prometheus em 0.0.0.0 expõe
+# /api/v1/admin/tsdb/*, e publicar o Alertmanager entrega a API de silences —
+# com a qual se cala qualquer alerta desta stack.
+check "Grafana/Prometheus/Alertmanager em loopback por default" "3" \
     "$(grep -cE '\$\{MONITORING_BIND_IP:-127\.0\.0\.1\}' "$mon")"
 if grep -q 'BIND_IP:-0.0.0.0' "$mon"; then
     fail "monitoring usa BIND_IP dos serviços de dados (default 0.0.0.0)"

@@ -1,0 +1,21 @@
+# Publica a porta do postgres_exporter para um Prometheus em OUTRO host.
+#
+#   docker compose -f docker-compose.yml \
+#                  -f docker-compose.metrics.yml \
+#                  -f docker-compose.metrics-remote.yml up -d
+#
+# A justificativa completa — por que a regra "exporter não publica porta" vale
+# e por que esta operação é a exceção — está em
+# ../monitoring/docker-compose.remote.yml. Resumo: Prometheus no bdh-apps,
+# Postgres no bdh-data, sem rede privada entre eles. A proteção passa a ser o
+# firewall restrito ao IP do par (item 8 do roadmap 20).
+#
+# O serviço `postgres` continua intocado: este overlay só acrescenta `ports` ao
+# EXPORTER. Ligar coleta remota não recria o container do banco.
+
+services:
+  postgres-exporter:
+    ports:
+      # Sem default, de propósito. Um 0.0.0.0 aqui entregaria pg_settings_*
+      # inteiro para a internet — inclusive nomes de database e caminhos.
+      - "${METRICS_BIND_IP:?defina METRICS_BIND_IP — nunca 0.0.0.0}:${PG_EXPORTER_PORT:-9187}:9187"

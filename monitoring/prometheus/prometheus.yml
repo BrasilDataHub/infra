@@ -28,6 +28,15 @@ global:
     # forem federadas.
     host: ${MON_HOSTNAME}
 
+# Destino dos alertas. Estático e não file_sd, ao contrário dos alvos de
+# scrape: o Alertmanager vive no MESMO projeto Compose que o Prometheus, então
+# ou os dois existem, ou nenhum existe. Antes disto, as 18 regras eram
+# avaliadas e não iam a lugar nenhum.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
 rule_files:
   - /etc/prometheus/rules/*.yml
 
@@ -37,6 +46,13 @@ scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: ["127.0.0.1:9090"]
+
+  # O Alertmanager sobre si mesmo. Sem este job, `notifications_failed_total`
+  # não existiria — e uma notificação que falha em silêncio é o mesmo estado
+  # que este módulo veio corrigir, com outra roupa.
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
 
   - job_name: node
     file_sd_configs:
@@ -64,6 +80,47 @@ scrape_configs:
       credentials_file: /etc/prometheus/secrets/meili-metrics.key
     file_sd_configs:
       - files: ["/etc/prometheus/targets/meilisearch*.json"]
+
+  # Sondas de caixa-preta. Duas particularidades do job:
+  #
+  #   1. o alvo do SCRAPE é sempre o blackbox_exporter; o alvo da SONDA vai no
+  #      parâmetro `target` da URL, e é por isso que o relabel abaixo existe.
+  #      Sem ele o Prometheus tentaria coletar métricas da própria página.
+  #   2. `module` vem dos LABELS do arquivo de alvos, não da config: é o que
+  #      permite sondar a mesma URL como página pública e como condicional 304
+  #      sem duplicar job.
+  #
+  # 60s e não 15s: cada probe é uma requisição REAL à origem ou à borda. A 15s,
+  # seis classes × dois hosts dariam 48 requisições por minuto só de
+  # monitoração — e as classes de MISS forçam `Cache-Control: no-cache`.
+  - job_name: blackbox
+    scrape_interval: 60s
+    scrape_timeout: 20s
+    metrics_path: /probe
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/blackbox*.json"]
+    relabel_configs:
+      # O endereço declarado no arquivo de alvos é a URL a sondar…
+      - source_labels: [__address__]
+        target_label: __param_target
+      # …vira o rótulo `instance`, para que o alerta diga qual URL falhou…
+      - source_labels: [__param_target]
+        target_label: instance
+      # …o módulo sai do rótulo `module` do próprio alvo…
+      - source_labels: [module]
+        target_label: __param_module
+      # …e o endereço real do scrape passa a ser o exporter.
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # O motor de busca. `/_prometheus/metrics` vem do plugin de exporter que a
+  # imagem instala; sem ele, opensearch.rules.yml não teria série nenhuma para
+  # avaliar. 30s como o Postgres: cada scrape agrega estatísticas de 6 shards.
+  - job_name: opensearch
+    scrape_interval: 30s
+    metrics_path: /_prometheus/metrics
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/opensearch*.json"]
 
   - job_name: cadvisor
     scrape_interval: 30s

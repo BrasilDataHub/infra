@@ -26,6 +26,7 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?defina REDIS_PASSWORD}
       REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-512mb}
       REDIS_MAXMEMORY_POLICY: ${REDIS_MAXMEMORY_POLICY:-volatile-lru}
+      REDIS_APPENDONLY: ${REDIS_APPENDONLY:-yes}
     # consumida pelo `bdh status` e pela mensagem de login (ver infra-setup.sh)
     labels:
       org.brasildatahub.service: redis
@@ -37,12 +38,19 @@ services:
       # trafega em claro. Para restringir, defina BIND_IP e/ou limite a origem
       # no firewall — ver ../postgres/docs/host.md, Rede.
       - "${BIND_IP:-0.0.0.0}:${REDIS_PORT:-6379}:6379"
+    logging:
+      # Teto de log — a justificativa está em ../postgres/docker-compose.yml.
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-50m}
+        max-file: "${LOG_MAX_FILE:-3}"
     deploy:
       resources:
         limits:
           # ~2× maxmemory: o rewrite do AOF forka e as páginas copy-on-write
           # podem dobrar a memória do processo (ver README).
           memory: ${REDIS_MEMORY_LIMIT:-1G}
+          cpus: "${REDIS_CPU_LIMIT:-0}"
     healthcheck:
       test: ["CMD-SHELL", "redis-cli ${REDIS_PASSWORD:+-a \"$REDIS_PASSWORD\"} ping | grep PONG"]
       interval: 10s

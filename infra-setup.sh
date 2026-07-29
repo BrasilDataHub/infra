@@ -28,6 +28,25 @@ esac
 
 SCRIPT_VERSION="1.0.0"
 
+# --- flags explicitamente informadas -----------------------------------------
+# A LACUNA RAIZ que este bloco fecha: o script GRAVA o .setup-state e não o
+# RELÊ — só relia VOLUMES_MODE. A consequência é que uma segunda execução (por
+# exemplo `--metrics-only`, que o README indica para ligar observabilidade)
+# roda o main() inteiro com os DEFAULTS DE FÁBRICA: POSTGRES_DB volta para
+# "dados", BIND_IP para 0.0.0.0, ALLOW_FROM para vazio. O .env muda, o Postgres
+# é RECRIADO, a DSN do exporter aponta para um database que não existe e o
+# firewall é esvaziado.
+#
+# A correção precisa distinguir "o usuário pediu" de "é o default", e não há
+# como fazer isso olhando só o valor: `--bind-ip 0.0.0.0` e a ausência da flag
+# produzem a mesma string. Daí este registro, alimentado pelo parser.
+#
+# Lista separada por espaço, e não array associativo: `declare -A` é bash 4+, e
+# o bash de fábrica do macOS é 3.2 — onde os testes deste repositório rodam.
+FLAGS_EXPLICITAS=""
+_explicita()    { FLAGS_EXPLICITAS="${FLAGS_EXPLICITAS} $1"; }
+foi_explicita() { case " $FLAGS_EXPLICITAS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
 # --- defaults ----------------------------------------------------------------
 REPO_SLUG="BrasilDataHub/infra"
 REF="main"
@@ -40,6 +59,11 @@ POSTGRES_DB="dados"
 PG_PROFILE="auto"
 REDIS_PROFILE="auto"
 MEILI_PROFILE="auto"
+# Um perfil só, e não `auto`: o dimensionamento do OpenSearch não é uma função
+# da RAM do host — é a conta de 03 §3.1, que reserva 7,5 GiB de page cache para
+# o mmap do Lucene. Detectar por RAM produziria um heap grande e page cache
+# insuficiente, que é o pior dos dois mundos.
+OPENSEARCH_PROFILE="compartilhada-8gb"
 PROFILES_DIR=""
 ALLOW_OVERSIZED="false"
 VOLUMES_MODE="named"
@@ -55,8 +79,19 @@ BIND_IP="0.0.0.0"
 POSTGRES_PORT="5432"
 REDIS_PORT="6379"
 MEILI_PORT="7700"
+# O OpenSearch entra no catálogo com porta própria. Ele NÃO tem autenticação
+# (o plugin de segurança está desligado — ver infra/opensearch/README.md), então
+# a barreira é inteiramente o firewall: publicar esta porta sem --allow-from
+# entrega o índice inteiro.
+OPENSEARCH_PORT="9200"
+# O PgBouncer roda no host da APLICAÇÃO e por default em loopback: ele fica no
+# mesmo host de quem o consome, e publicá-lo fora daria um caminho até o banco
+# com a autenticação do pooler no meio.
+PGBOUNCER_PORT="6432"
 ALLOW_FROM=""
 ENABLE_FIREWALL="true"
+# 262144 é o mínimo que o bootstrap check do OpenSearch exige.
+VM_MAX_MAP_COUNT="262144"
 
 # --- observabilidade (opt-in por --metrics) ----------------------------------
 # Fora do default de propósito: incluir monitoração no --auto mudaria o
@@ -64,6 +99,9 @@ ENABLE_FIREWALL="true"
 # orçamento que detect_pg_profile() não sabe descontar.
 METRICS_ENABLED="false"
 METRICS_ONLY="false"             # --metrics-only: acrescenta métricas SEM recriar os serviços
+UPDATE_MODE="false"              # --update / --add-service: herda o estado e reaplica
+SOMENTE_MONITORING="false"       # --services monitoring: host só de observabilidade
+ADD_SERVICE=""                   # serviço a acrescentar sem tocar nos demais
 MONITORING_ENABLED="true"        # --no-monitoring: só exporters, Prometheus alhures
 METRICS_PROFILE="auto"
 METRICS_CONTAINERS="false"       # --metrics-containers liga o cAdvisor
@@ -247,6 +285,16 @@ OPTIONS (rede e firewall):
                              (default: sem restrição — qualquer origem)
       --no-firewall          Não configura o ufw
 
+OPTIONS (atualização de uma instalação existente — herda o .setup-state):
+      --update               Reaplica a configuração sem repetir as flags da
+                             instalação original. Flag explícita sobrescreve;
+                             ausência HERDA. É o que substitui o contorno de
+                             "repetir --postgres-db, --bind-ip e --allow-from de
+                             cor" — cujo esquecimento recriava o banco, reexpunha
+                             as portas e esvaziava o firewall.
+      --add-service NOME     Acrescenta um serviço (opensearch, pgbouncer, ...)
+                             sem tocar nos que já existem. Implica --update.
+
 OPTIONS (webhook):
       --webhook-url URL      Notifica progresso e erros (POST JSON)
 
@@ -273,11 +321,11 @@ while [[ $# -gt 0 ]]; do
         --docker-version) DOCKER_VERSION="$2"; shift 2 ;;
         --docker-data-root) DOCKER_DATA_ROOT="$2"; shift 2 ;;
         --no-motd) INSTALL_MOTD="false"; shift ;;
-        --services) SERVICES_INPUT="$2"; shift 2 ;;
-        --postgres-db) POSTGRES_DB="$2"; shift 2 ;;
-        --pg-profile) PG_PROFILE="$2"; shift 2 ;;
-        --redis-profile) REDIS_PROFILE="$2"; shift 2 ;;
-        --meili-profile|--meilisearch-profile) MEILI_PROFILE="$2"; shift 2 ;;
+        --services) SERVICES_INPUT="$2"; _explicita SERVICES_INPUT; shift 2 ;;
+        --postgres-db) POSTGRES_DB="$2"; _explicita POSTGRES_DB; shift 2 ;;
+        --pg-profile) PG_PROFILE="$2"; _explicita PG_PROFILE; shift 2 ;;
+        --redis-profile) REDIS_PROFILE="$2"; _explicita REDIS_PROFILE; shift 2 ;;
+        --meili-profile|--meilisearch-profile) MEILI_PROFILE="$2"; _explicita MEILI_PROFILE; shift 2 ;;
         --profiles-dir) PROFILES_DIR="$2"; shift 2 ;;
         --allow-oversized-profile) ALLOW_OVERSIZED="true"; shift ;;
         --volumes) VOLUMES_MODE="$2"; shift 2 ;;
@@ -289,13 +337,23 @@ while [[ $# -gt 0 ]]; do
         --dados-read-password) DADOS_READ_PASSWORD="$2"; shift 2 ;;
         --redis-password) REDIS_PASSWORD="$2"; shift 2 ;;
         --meilisearch-key) MEILI_MASTER_KEY="$2"; shift 2 ;;
-        --bind-ip) BIND_IP="$2"; shift 2 ;;
-        --postgres-port) POSTGRES_PORT="$2"; shift 2 ;;
-        --redis-port) REDIS_PORT="$2"; shift 2 ;;
-        --meilisearch-port) MEILI_PORT="$2"; shift 2 ;;
-        --allow-from) ALLOW_FROM="$2"; shift 2 ;;
-        --enable-firewall) ENABLE_FIREWALL="true"; shift ;;
+        --bind-ip) BIND_IP="$2"; _explicita BIND_IP; shift 2 ;;
+        --postgres-port) POSTGRES_PORT="$2"; _explicita POSTGRES_PORT; shift 2 ;;
+        --redis-port) REDIS_PORT="$2"; _explicita REDIS_PORT; shift 2 ;;
+        --meilisearch-port) MEILI_PORT="$2"; _explicita MEILI_PORT; shift 2 ;;
+        --allow-from) ALLOW_FROM="$2"; _explicita ALLOW_FROM; shift 2 ;;
+        --enable-firewall) ENABLE_FIREWALL="true"
+# 262144 é o mínimo que o bootstrap check do OpenSearch exige.
+VM_MAX_MAP_COUNT="262144"; shift ;;
         --no-firewall) ENABLE_FIREWALL="false"; shift ;;
+        # Reaplica a configuração de uma instalação existente, herdando tudo o
+        # que não for passado explicitamente. É o modo que transforma
+        # "reinstalar repetindo todas as flags de cor" em "atualizar".
+        --update) UPDATE_MODE="true"; FORCE="true"; shift ;;
+        # Acrescenta um serviço SEM tocar nos outros: os composes dos existentes
+        # não são reescritos, e credentials.env recebe merge em vez de ser
+        # truncado aos serviços desta execução.
+        --add-service) ADD_SERVICE="$2"; UPDATE_MODE="true"; FORCE="true"; shift 2 ;;
         --metrics) METRICS_ENABLED="true"; shift ;;
         # Acrescenta observabilidade a uma instalação existente sem recriar os
         # containers de dados: implica --force (para reconfigurar) mas suprime o
@@ -303,7 +361,7 @@ while [[ $# -gt 0 ]]; do
         # page cache frio só para ligar um gráfico.
         --metrics-only) METRICS_ENABLED="true"; METRICS_ONLY="true"; FORCE="true"; shift ;;
         --no-monitoring) MONITORING_ENABLED="false"; shift ;;
-        --metrics-profile) METRICS_PROFILE="$2"; METRICS_ENABLED="true"; shift 2 ;;
+        --metrics-profile) METRICS_PROFILE="$2"; METRICS_ENABLED="true"; _explicita METRICS_PROFILE; shift 2 ;;
         --metrics-containers) METRICS_CONTAINERS="true"; METRICS_ENABLED="true"; shift ;;
         --metrics-bind-ip) MONITORING_BIND_IP="$2"; shift 2 ;;
         --prometheus-port) PROMETHEUS_PORT="$2"; shift 2 ;;
@@ -348,6 +406,7 @@ service_data_dir() {
         postgres)    printf '%s' "${POSTGRES_DATA_DIR:-$DATA_DIR/postgres}" ;;
         redis)       printf '%s' "${REDIS_DATA_DIR:-$DATA_DIR/redis}" ;;
         meilisearch) printf '%s' "${MEILI_DATA_DIR:-$DATA_DIR/meilisearch}" ;;
+        opensearch)  printf '%s' "${OPENSEARCH_DATA_DIR:-$DATA_DIR/opensearch}" ;;
     esac
 }
 
@@ -357,6 +416,7 @@ service_volume_name() {
         postgres) printf '%s' "${PG_VOLUME:-bdh_pg_data}" ;;
         redis) printf '%s' "${REDIS_VOLUME:-bdh_redis_data}" ;;
         meilisearch) printf '%s' "${MEILI_VOLUME:-bdh_meili_data}" ;;
+        opensearch) printf '%s' "${OS_VOLUME:-bdh_os_data}" ;;
     esac
 }
 
@@ -366,6 +426,7 @@ service_volume_key() {
         postgres) printf 'pg_data' ;;
         redis) printf 'redis_data' ;;
         meilisearch) printf 'meili_data' ;;
+        opensearch) printf 'os_data' ;;
     esac
 }
 
@@ -374,6 +435,8 @@ service_port() {
         postgres) printf '%s' "$POSTGRES_PORT" ;;
         redis) printf '%s' "$REDIS_PORT" ;;
         meilisearch) printf '%s' "$MEILI_PORT" ;;
+        opensearch) printf '%s' "$OPENSEARCH_PORT" ;;
+        pgbouncer) printf '%s' "$PGBOUNCER_PORT" ;;
     esac
 }
 
@@ -384,6 +447,8 @@ service_internal_port() {
         postgres) printf '5432' ;;
         redis) printf '6379' ;;
         meilisearch) printf '7700' ;;
+        opensearch) printf '9200' ;;
+        pgbouncer) printf '6432' ;;
     esac
 }
 
@@ -474,9 +539,17 @@ detect_metrics_profile() {
 # arquivo .env no repositório (postgres/profiles/, redis/profiles/,
 # meilisearch/profiles/), baixado no momento do provisionamento. É o mesmo
 # arquivo que a documentação manda copiar num deploy manual.
-PG_PROFILES="dedicada-8gb dedicada-16gb dedicada-32gb dedicada-64gb dedicada-128gb"
-REDIS_PROFILES="cache-256mb cache-512mb cache-1gb cache-2gb"
+# `compartilhada-14gb` é o perfil do host que divide CPU e page cache com o
+# motor de busca. O nome é parte da correção: o perfil em uso até 07/2026
+# chamava-se `dedicada-16gb` num host que nunca foi dedicado, e é o nome
+# errado que faz alguém somar os limites e concluir que cabe.
+PG_PROFILES="dedicada-8gb dedicada-16gb dedicada-32gb dedicada-64gb dedicada-128gb compartilhada-14gb"
+# cache-768mb e fila-256mb são o PAR do desenho de duas instâncias
+# (redis/docker-compose.par.yml): separar cache de fila+sessões é o que
+# permite `allkeys-lru` num lado sem arriscar despejar job no outro.
+REDIS_PROFILES="cache-256mb cache-512mb cache-768mb cache-1gb cache-2gb fila-256mb"
 MEILI_PROFILES="busca-512mb busca-1gb busca-4gb busca-16gb"
+OPENSEARCH_PROFILES="compartilhada-8gb"
 METRICS_PROFILES="metricas-512mb metricas-2gb metricas-8gb"
 
 profile_valid() {
@@ -494,6 +567,10 @@ service_profile() {
         # monitoring NÃO entra no array SERVICES (ver create_layout), mas usa o
         # mesmo fetch_profile para baixar monitoring/profiles/<perfil>.env.
         monitoring) printf '%s' "$METRICS_PROFILE" ;;
+        opensearch) printf '%s' "$OPENSEARCH_PROFILE" ;;
+        # O PgBouncer não tem perfil: ele é dimensionado por `default_pool_size`
+        # e `max_client_conn`, que são decisão da APLICAÇÃO, não do host. Ver
+        # pgbouncer/generate-config.sh.
     esac
 }
 
@@ -516,6 +593,12 @@ neighbor_budget_gb() {
         busca-1gb)      printf '1' ;;
         busca-4gb)      printf '4' ;;
         busca-16gb)     printf '16' ;;
+        # OpenSearch — OS_MEMORY_LIMIT. SEM esta linha, o `auto` do Postgres não
+        # desconta o heap da JVM do orçamento do host e SUPERDIMENSIONA o banco:
+        # num host de 31 GiB, ele escolheria `dedicada-32gb` (shared_buffers de
+        # 10 GiB) ignorando que 8 GiB já são do motor de busca. O erro aparece
+        # como OOM-kill, semanas depois.
+        compartilhada-8gb) printf '8' ;;
         # Observabilidade — Prometheus + Grafana + node exporter + exporters.
         # O cAdvisor entra à parte, em metrics_budget_gb().
         metricas-512mb) printf '2' ;;
@@ -584,11 +667,35 @@ validate_and_prompt() {
     local s
     for s in "${SERVICES[@]}"; do
         case "$s" in
-            postgres|redis|meilisearch) ;;
-            *) die "serviço desconhecido: '$s' (use postgres, redis ou meilisearch)" ;;
+            postgres|redis|meilisearch|opensearch|pgbouncer) ;;
+            # `monitoring` em --services provisiona um host SÓ de
+            # observabilidade — o desenho que este roadmap adota (Prometheus no
+            # bdh-apps, dados no bdh-data). Ele não entra no array SERVICES
+            # (ver logo abaixo): tem layout próprio, não tem volume de dados de
+            # serviço e o gerador de override de bind assumiria um.
+            monitoring)
+                METRICS_ENABLED="true"
+                MONITORING_ENABLED="true"
+                SOMENTE_MONITORING="true"
+                ;;
+            *) die "serviço desconhecido: '$s' (use postgres, redis, meilisearch, opensearch, pgbouncer ou monitoring)" ;;
         esac
     done
-    [[ ${#SERVICES[@]} -eq 0 ]] && die "nenhum serviço selecionado"
+    # `monitoring` sai do array: ele é provisionado por setup_metrics(), não
+    # pelo laço de serviços de dados.
+    if [[ "$SOMENTE_MONITORING" == "true" ]]; then
+        local restantes=()
+        for s in "${SERVICES[@]}"; do
+            [[ "$s" == "monitoring" ]] || restantes+=("$s")
+        done
+        SERVICES=("${restantes[@]+"${restantes[@]}"}")
+    fi
+
+    # Um host só de observabilidade é legítimo e tem ZERO serviços de dados —
+    # a checagem original o rejeitaria.
+    if [[ ${#SERVICES[@]} -eq 0 && "$SOMENTE_MONITORING" != "true" ]]; then
+        die "nenhum serviço selecionado"
+    fi
 
     # --- dimensionamento coordenado ------------------------------------------
     # Os VIZINHOS são resolvidos primeiro e o Postgres fica com a memória que
@@ -722,6 +829,66 @@ validate_and_prompt() {
     info "workdir ........ $WORKDIR"
 }
 
+# =============================================================================
+# Estado da instalação
+# =============================================================================
+# Lê o `.setup-state` e preenche o que NÃO foi passado por flag.
+#
+# A regra é uma só, e é ela que torna o modo de atualização seguro:
+#
+#     flag explícita SOBRESCREVE · ausência HERDA do estado
+#
+# Sem isso, ligar observabilidade num host que já tem Postgres significava
+# rodar o main() com os defaults de fábrica: POSTGRES_DB voltando para "dados"
+# (o `.env` muda → o BANCO é recriado, e a DSN do exporter aponta para um
+# database inexistente), BIND_IP para 0.0.0.0 (recriado E reexposto) e
+# ALLOW_FROM para vazio (a chain DOCKER-USER esvaziada). Está documentado como
+# risco imediato em 05 §5.1, e o contorno era repetir TODAS as flags da
+# instalação original de cor.
+load_state() {
+    local arquivo="$WORKDIR/.setup-state"
+    [[ -f "$arquivo" ]] || return 0
+
+    local chave valor herdados=()
+
+    while IFS='=' read -r chave valor; do
+        [[ -z "$chave" || "$chave" == \#* ]] && continue
+
+        case "$chave" in
+            SERVICES)         foi_explicita SERVICES_INPUT  || { SERVICES_INPUT="$valor";  herdados+=("serviços=$valor"); } ;;
+            POSTGRES_DB)      foi_explicita POSTGRES_DB     || { POSTGRES_DB="$valor";     herdados+=("postgres-db=$valor"); } ;;
+            BIND_IP)          foi_explicita BIND_IP         || { BIND_IP="$valor";         herdados+=("bind-ip=$valor"); } ;;
+            ALLOW_FROM)       foi_explicita ALLOW_FROM      || { ALLOW_FROM="$valor";      herdados+=("allow-from=$valor"); } ;;
+            POSTGRES_PORT)    foi_explicita POSTGRES_PORT   || POSTGRES_PORT="$valor" ;;
+            REDIS_PORT)       foi_explicita REDIS_PORT      || REDIS_PORT="$valor" ;;
+            MEILI_PORT)       foi_explicita MEILI_PORT      || MEILI_PORT="$valor" ;;
+            PG_PROFILE)       foi_explicita PG_PROFILE      || PG_PROFILE="$valor" ;;
+            REDIS_PROFILE)    foi_explicita REDIS_PROFILE   || REDIS_PROFILE="$valor" ;;
+            MEILI_PROFILE)    foi_explicita MEILI_PROFILE   || MEILI_PROFILE="$valor" ;;
+            METRICS_PROFILE)  foi_explicita METRICS_PROFILE || METRICS_PROFILE="$valor" ;;
+            # `METRICS_ENABLED` só é herdado quando LIGADO: desligar observabilidade
+            # é uma decisão que precisa ser tomada, nunca herdada de um estado antigo.
+            METRICS_ENABLED)  [[ "$valor" == "true" ]] && METRICS_ENABLED="true" ;;
+            MONITORING_ENABLED) [[ "$METRICS_ENABLED" == "true" ]] && MONITORING_ENABLED="$valor" ;;
+        esac
+    done < "$arquivo"
+
+    # `--add-service` acrescenta ao conjunto herdado em vez de substituí-lo. É a
+    # diferença entre "agora este host tem também OpenSearch" e "agora este host
+    # tem SÓ OpenSearch" — e a segunda leitura removeria os outros serviços do
+    # conjunto gerenciado, com `--remove-orphans` levando os containers junto.
+    if [[ -n "$ADD_SERVICE" ]]; then
+        case ",$SERVICES_INPUT," in
+            *",$ADD_SERVICE,"*) info "$ADD_SERVICE já está instalado" ;;
+            *) SERVICES_INPUT="${SERVICES_INPUT},${ADD_SERVICE}" ;;
+        esac
+    fi
+
+    if (( ${#herdados[@]} )); then
+        ok "estado herdado de .setup-state: ${herdados[*]}"
+    fi
+}
+
 preflight() {
     section "Pré-checagens"
 
@@ -758,8 +925,12 @@ preflight() {
         die "sem permissão para criar $WORKDIR — rode com sudo ou escolha outro --workdir"
     fi
 
+    # ANTES de qualquer validação: as pré-checagens e o dimensionamento
+    # coordenado precisam enxergar os valores herdados, não os defaults.
+    load_state
+
     if [[ -f "$WORKDIR/.setup-state" && "$FORCE" != "true" ]]; then
-        die "instalação existente em $WORKDIR — use -f para refazer a configuração (volumes preservados)"
+        die "instalação existente em $WORKDIR — use --update para reaplicar a configuração herdando o estado, ou -f para refazer do zero (volumes preservados)"
     fi
     if [[ -f "$WORKDIR/.setup-state" ]]; then
         local previous
@@ -818,6 +989,54 @@ setup_system() {
     run apt-get install -y -qq bsdextrautils || run apt-get install -y -qq bsdmainutils || true
     ok "pacotes base instalados"
     notify "progress" "sistema preparado"
+}
+
+# =============================================================================
+# Parâmetros de kernel
+# =============================================================================
+# O `infra-setup.sh` não tinha etapa de sysctl até este roadmap (05 §5.2, item
+# 5), e o OpenSearch não sobe sem uma: com `vm.max_map_count` no default do
+# Debian (65530), o container morre no bootstrap check com uma mensagem que fala
+# de `vm.max_map_count` e NÃO de OpenSearch — e quem lê procura o problema no
+# lugar errado.
+#
+# A persistência em /etc/sysctl.d/ é a metade que costuma faltar: sem ela, o
+# valor volta no próximo boot e o motor de busca não sobe junto com o host, o
+# que transforma um reboot de rotina em incidente.
+configure_sysctl() {
+    [[ "$OS_FAMILY" == "linux" ]] || return 0
+
+    # Só quando há serviço que precisa. Escrever sysctl num host que não roda
+    # OpenSearch é mexer em configuração de kernel sem motivo.
+    service_selected opensearch || return 0
+
+    section "Parâmetros de kernel"
+
+    local arquivo=/etc/sysctl.d/99-brasildatahub.conf
+    local atual
+    atual="$(sysctl -n vm.max_map_count 2>/dev/null || printf '0')"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        _log "    ${C_DIM}[dry-run] vm.max_map_count: ${atual} → ${VM_MAX_MAP_COUNT} e ${arquivo}${C_RESET}"
+        return 0
+    fi
+
+    if [[ "$atual" -lt "$VM_MAX_MAP_COUNT" ]]; then
+        run sysctl -w "vm.max_map_count=${VM_MAX_MAP_COUNT}"
+        ok "vm.max_map_count: ${atual} → ${VM_MAX_MAP_COUNT}"
+    else
+        ok "vm.max_map_count já em ${atual}"
+    fi
+
+    # Reescrever o arquivo inteiro, e não acrescentar: uma execução repetida
+    # deixaria a mesma linha duas vezes, e a última venceria em silêncio.
+    {
+        printf '# GERADO por infra-setup.sh — não editar à mão.\n'
+        printf '# O OpenSearch usa mmap para os segmentos do Lucene; o default do\n'
+        printf '# Debian (65530) o faz morrer no bootstrap check.\n'
+        printf 'vm.max_map_count=%s\n' "$VM_MAX_MAP_COUNT"
+    } > "$arquivo"
+    ok "persistido em ${arquivo}"
 }
 
 install_docker() {
@@ -1154,7 +1373,38 @@ write_env_files() {
                         "$GRAFANA_ADMIN_PASSWORD" "$GRAFANA_PORT" "$PROMETHEUS_PORT"
                 fi
             fi
-        } > "$WORKDIR/secrets/credentials.env"
+        } > "$WORKDIR/secrets/credentials.env.novo"
+
+        # MERGE, e não sobrescrita. O arquivo era reescrito com as credenciais
+        # apenas dos serviços DESTA execução: um `--add-service opensearch` num
+        # host que já tinha Postgres e Redis truncava as senhas dos dois, e o
+        # operador só descobria ao precisar delas — quando `bdh creds --show`
+        # devolvesse metade do que devolvia antes.
+        #
+        # A chave da linha nova vence a antiga; o que não foi regerado sobrevive.
+        if [[ -f "$WORKDIR/secrets/credentials.env" ]]; then
+            local chaves_novas
+            chaves_novas="$(grep -oE '^[A-Z][A-Z0-9_]*=' "$WORKDIR/secrets/credentials.env.novo" || true)"
+            {
+                cat "$WORKDIR/secrets/credentials.env.novo"
+                printf '\n# --- preservadas de execuções anteriores ---\n'
+                while IFS= read -r linha; do
+                    case "$linha" in
+                        ''|'#'*) continue ;;
+                    esac
+                    local chave="${linha%%=*}="
+                    case "$chaves_novas" in
+                        *"$chave"*) continue ;;
+                    esac
+                    printf '%s\n' "$linha"
+                done < "$WORKDIR/secrets/credentials.env"
+            } > "$WORKDIR/secrets/credentials.env.merge"
+            mv "$WORKDIR/secrets/credentials.env.merge" "$WORKDIR/secrets/credentials.env"
+            rm -f "$WORKDIR/secrets/credentials.env.novo"
+        else
+            mv "$WORKDIR/secrets/credentials.env.novo" "$WORKDIR/secrets/credentials.env"
+        fi
+
         chmod 600 "$WORKDIR/secrets/credentials.env"
         ok "credenciais em $WORKDIR/secrets/credentials.env (chmod 600)"
 
@@ -1164,6 +1414,17 @@ write_env_files() {
             printf 'INSTALLED_AT=%s\n' "$(now_iso)"
             printf 'SERVICES=%s\n' "$(IFS=,; printf '%s' "${SERVICES[*]}")"
             printf 'VOLUMES_MODE=%s\n' "$VOLUMES_MODE"
+            # As cinco chaves abaixo são o que faltava, e a ausência delas era o
+            # defeito: sem POSTGRES_DB, BIND_IP e ALLOW_FROM no estado, a segunda
+            # execução recriava o banco, reexpunha as portas e esvaziava o
+            # firewall — em silêncio, porque cada valor sozinho parece plausível.
+            printf 'WORKDIR=%s\n' "$WORKDIR"
+            printf 'POSTGRES_DB=%s\n' "$POSTGRES_DB"
+            printf 'BIND_IP=%s\n' "$BIND_IP"
+            printf 'ALLOW_FROM=%s\n' "$ALLOW_FROM"
+            printf 'POSTGRES_PORT=%s\n' "$POSTGRES_PORT"
+            printf 'REDIS_PORT=%s\n' "$REDIS_PORT"
+            printf 'MEILI_PORT=%s\n' "$MEILI_PORT"
             # Cada bloco num `if`: uma condição falsa como última expressão do
             # grupo faria o `set -e` abortar o script (era o caso quando o
             # Meilisearch não estava entre os serviços escolhidos).
@@ -1442,16 +1703,41 @@ configure_firewall() {
         sed -i "/$(printf '%s' "$begin" | sed 's/[][\.*^$/]/\\&/g')/,/$(printf '%s' "$end" | sed 's/[][\.*^$/]/\\&/g')/d" "$rules_file"
     fi
 
-    # Tirar o bloco do arquivo não basta: `ufw reload` apenas reaplica o que
-    # está nele, e as regras já inseridas continuam na chain. O script gerencia
-    # a DOCKER-USER integralmente, então limpa antes de reaplicar.
-    iptables -F DOCKER-USER 2>/dev/null || true
-
+    # A ORDEM AQUI JÁ FOI UM DEFEITO. A versão anterior esvaziava a chain e só
+    # depois checava `ALLOW_FROM`: numa execução sem a flag — que é o caso de
+    # `--metrics-only` sem repetir todas as flags da instalação original — o
+    # firewall dos containers era APAGADO e não reconstruído. As três portas de
+    # dados voltavam a aceitar conexão de qualquer origem, em silêncio, e o
+    # `ufw status` continuava mostrando `active`, porque a DOCKER-USER não
+    # aparece ali.
+    #
+    # Regra: nunca esvaziar sem repovoar. Sem `ALLOW_FROM`, a chain existente é
+    # deixada exatamente como está.
     if [[ -z "$ALLOW_FROM" ]]; then
         run ufw reload
-        warn "portas publicadas acessíveis de qualquer origem (sem --allow-from)"
+        if iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j DROP'; then
+            warn "sem --allow-from: a chain DOCKER-USER existente foi PRESERVADA."
+            warn "para alterá-la, repita --allow-from com a lista completa de origens."
+        else
+            warn "portas publicadas acessíveis de qualquer origem (sem --allow-from)"
+            warn "as três portas de dados aceitam conexão da internet inteira."
+        fi
         return 0
     fi
+
+    # RECONSTRUÇÃO A PARTIR DO ESTADO. Com `ALLOW_FROM` herdado do
+    # `.setup-state` (load_state) e a chain vazia — o cenário que uma execução
+    # anterior sem a flag produzia —, chegar aqui é o que a repovoa. Antes, o
+    # firewall só voltava se alguém repetisse a flag de cor.
+    if ! iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j DROP'; then
+        info "chain DOCKER-USER vazia: reconstruindo a partir de ALLOW_FROM=${ALLOW_FROM}"
+    fi
+
+    # Daqui para baixo há `ALLOW_FROM`, então esvaziar é seguro: a chain é
+    # reconstruída logo abaixo, no mesmo bloco. `ufw reload` sozinho não
+    # bastaria — ele reaplica o arquivo, e as regras já inseridas continuariam
+    # na chain.
+    iptables -F DOCKER-USER 2>/dev/null || true
 
     IFS=',' read -r -a cidrs <<< "$ALLOW_FROM"
     {
@@ -1508,11 +1794,12 @@ bdh — serviços de dados da BrasilDataHub
   bdh logs <serviço> [-f]  logs do serviço
   bdh up|down|restart <serviço>
   bdh verify [serviço]     verificação pós-deploy (/dev/shm, memória, conf)
+  bdh pull [serviço]       puxa a imagem nova da MESMA tag e recria só o que mudou
   bdh metrics              estado dos alvos do Prometheus
   bdh creds [--show]       caminho (ou conteúdo) das credenciais
   bdh path <serviço>       diretório do serviço
 
-Serviços: postgres, redis, meilisearch, monitoring
+Serviços: postgres, redis, meilisearch, opensearch, pgbouncer, monitoring
 USAGE
 }
 
@@ -1609,6 +1896,31 @@ cmd_status() {
     _t 3 docker volume ls --filter name=bdh_ --format '  {{.Name}}' 2>/dev/null || true
 }
 
+cmd_pull() {
+    # Atualizar a imagem de um serviço era o único caminho não coberto: as tags
+    # nos composes são fixas (`:17`, `:7`), então `docker compose pull` traz a
+    # versão nova daquela tag maior — e sem um comando, isso virava
+    # `docker compose -f ... -f ... pull` digitado à mão, com os overlays certos
+    # e na ordem certa.
+    local alvos svc
+    if [[ -n "$1" ]]; then
+        alvos="$1"
+    else
+        alvos="$(docker ps --format '{{.Label "org.brasildatahub.service"}}' \
+                 | grep -vE '^$|exporter|cadvisor|monitoring-' | sort -u)"
+    fi
+
+    for svc in $alvos; do
+        [[ -d "$(svc_dir "$svc")" ]] || { echo "  ! $svc não está instalado aqui" >&2; continue; }
+        echo "==> $svc"
+        compose "$svc" pull
+        # `up -d` sem `--force-recreate`: o Compose recria SÓ o que mudou. Num
+        # banco de centenas de GB, um recreate desnecessário é downtime e page
+        # cache frio.
+        compose "$svc" up -d
+    done
+}
+
 cmd_verify() {
     local svc="${1:-postgres}" cid
     cid="$(docker ps -q --filter "label=$LABEL=$svc" | head -1)"
@@ -1620,6 +1932,26 @@ cmd_verify() {
     if [[ "$svc" == "postgres" ]]; then
         echo "== /dev/shm (64M indica perfil aplicado pela metade)"
         docker exec "$cid" df -h /dev/shm | tail -1
+        # Comparação, e não só exibição. Este é o gate de D-1 do runbook mensal:
+        # em 25/07 foram perdidas 6h43 de ETL porque o mount havia voltado aos
+        # 64 MB de default e ninguém CONFERIU o número — ele estava na tela.
+        # `bdh verify` agora sai != 0 quando diverge, para poder ser usado num
+        # `set -e` ou num checklist automatizado.
+        local shm_esperado shm_real
+        shm_esperado="$(grep -h '^PG_SHM_BYTES=' "$(svc_dir postgres)/.env" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]')"
+        shm_real="$(docker exec "$cid" stat -f -c '%s * %b' /dev/shm 2>/dev/null | tr -d ' ')"
+        if [[ -n "$shm_esperado" && -n "$shm_real" ]]; then
+            shm_real="$(( ${shm_real%%\**} * ${shm_real##*\*} ))"
+            if [[ "$shm_real" -lt "$shm_esperado" ]]; then
+                echo "   ✗ /dev/shm tem $shm_real bytes; o perfil pede $shm_esperado."
+                echo "     Um redeploy devolveu o mount ao default. NÃO inicie a carga mensal."
+                VERIFY_FALHOU=1
+            else
+                echo "   ✓ /dev/shm confere com PG_SHM_BYTES ($shm_esperado bytes)"
+            fi
+        else
+            echo "   ! não foi possível comparar /dev/shm com PG_SHM_BYTES"
+        fi
         echo "== shm-guard"
         docker logs "$cid" 2>&1 | grep shm-guard | tail -2 || echo "(sem linhas do shm-guard)"
         echo "== entradas inválidas no postgresql.conf (deve vir vazio)"
@@ -1627,6 +1959,7 @@ cmd_verify() {
         docker exec "$cid" psql -U postgres -d "${db:-postgres}" -c \
             "SELECT sourceline, name, error FROM pg_file_settings WHERE NOT applied OR error IS NOT NULL;"
     fi
+    return "${VERIFY_FALHOU:-0}"
 }
 
 case "${1:-status}" in
@@ -1636,6 +1969,7 @@ case "${1:-status}" in
     down) compose "${2:?serviço}" down ;;      # sem -v: nunca apaga volume
     restart) compose "${2:?serviço}" restart ;;
     verify) cmd_verify "${2:-postgres}" ;;
+    pull) cmd_pull "${2:-}" ;;
     metrics) cmd_metrics ;;
     creds)
         if [[ "${2:-}" == "--show" ]]; then cat "$BDH_ROOT/secrets/credentials.env"
@@ -1751,6 +2085,7 @@ main() {
     validate_and_prompt
     preflight
     setup_system
+    configure_sysctl
     install_docker
     configure_docker_data_root
     create_layout

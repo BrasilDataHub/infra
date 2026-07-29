@@ -41,11 +41,18 @@ services:
       # 0.0.0.0 por default; a master key é a única barreira. Para restringir,
       # defina BIND_IP e/ou limite a origem no firewall.
       - "${BIND_IP:-0.0.0.0}:${MEILI_PORT:-7700}:7700"
+    logging:
+      # Teto de log — a justificativa está em ../postgres/docker-compose.yml.
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-50m}
+        max-file: "${LOG_MAX_FILE:-3}"
     deploy:
       resources:
         limits:
           # ~2× MEILI_MAX_INDEXING_MEMORY durante a indexação (ver README)
           memory: ${MEILI_MEMORY_LIMIT:-1G}
+          cpus: "${MEILI_CPU_LIMIT:-0}"
     healthcheck:
       # 127.0.0.1 (não "localhost"): o wget do busybox resolve localhost
       # para ::1 e o Meili escuta só em 0.0.0.0.

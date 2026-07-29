@@ -6,13 +6,22 @@ Este repositório centraliza a configuração da stack Docker utilizada por algu
 
 | Serviço | Imagem | Documentação |
 |---|---|---|
-| PostgreSQL | `ghcr.io/brasildatahub/postgres:17` — imagem única, tuning por envs `PG_*`, perfis **dedicados** de 8 a 128 GB, todos com NVMe local ([perfis](postgres/docs/perfis.md), [deploy](postgres/docs/deploy.md), [troubleshooting](postgres/docs/troubleshooting.md), [preparação do host](postgres/docs/host.md)) | [`postgres/`](postgres/) |
-| Redis | `ghcr.io/brasildatahub/redis:7` — volatile-lru, AOF, perfis `cache-256mb`–`cache-2gb` | [`redis/`](redis/) |
-| Meilisearch | `ghcr.io/brasildatahub/meilisearch:1.34` — wrapper pinado, perfis `busca-512mb`–`busca-16gb` | [`meilisearch/`](meilisearch/) |
-| Observabilidade | `ghcr.io/brasildatahub/prometheus:3` e `ghcr.io/brasildatahub/grafana:13` — **opcional**, perfis `metricas-512mb`–`metricas-8gb` | [`monitoring/`](monitoring/) |
+| PostgreSQL | `ghcr.io/brasildatahub/postgres:17` — imagem única, tuning por envs `PG_*`, perfis **dedicados** de 8 a 128 GB e o **compartilhado** `compartilhada-14gb`, todos com NVMe local ([perfis](postgres/docs/perfis.md), [deploy](postgres/docs/deploy.md), [troubleshooting](postgres/docs/troubleshooting.md), [preparação do host](postgres/docs/host.md)) | [`postgres/`](postgres/) |
+| Backup | `pgBackRest` como sidecar do Postgres — backup físico, WAL archiving, PITR e **restore ensaiado** que mede o RTO real | [`postgres/backup/`](postgres/backup/README.md) |
+| Redis | `ghcr.io/brasildatahub/redis:7` — perfis `cache-256mb`–`cache-2gb`; e o **par** cache/fila em instâncias separadas, com políticas incompatíveis entre si | [`redis/`](redis/README.md), [par](redis/README-par.md) |
+| PgBouncer | `ghcr.io/brasildatahub/pgbouncer:1` — transaction pooling, 400 clientes sobre 20 conexões reais. Roda no host da **aplicação** | [`pgbouncer/`](pgbouncer/README.md) |
+| OpenSearch | `ghcr.io/brasildatahub/opensearch:3` — o motor de busca, mapping versionado, perfil `compartilhada-8gb` | [`opensearch/`](opensearch/README.md) |
+| Meilisearch | `ghcr.io/brasildatahub/meilisearch:1.34` — wrapper pinado, perfis `busca-512mb`–`busca-16gb`. **Em substituição** pelo OpenSearch | [`meilisearch/`](meilisearch/) |
+| Observabilidade | `prometheus:3`, `grafana:13`, `alertmanager` e `blackbox-exporter` — **opcional**, perfis `metricas-512mb`–`metricas-8gb` | [`monitoring/`](monitoring/) |
 
 Cada pasta tem seu README com as variáveis de configuração, os perfis por
 máquina e o passo a passo de implantação.
+
+> **Implantando do zero?** A ordem entre os quatro repositórios da operação
+> (infra, cnpj-pipeline, search-indexer-service, website) e o que depende de
+> quê está no
+> [runbook de implantação](../../docs/roadmap/20-arquitetura-de-busca-2026-07/IMPLANTACAO.md).
+> Este README cobre a parte de infraestrutura; ele sozinho não é suficiente.
 
 ## Como implantar
 
@@ -226,14 +235,48 @@ alteraria.
 
 ### Rodar de novo
 
-`sudo bash infra-setup.sh --force` refaz `.env` e composes e recria os
-containers. **Nunca remove volumes**: os dados permanecem. Trocar o modo de
-volume (`named` ↔ `bind`) numa instalação existente é recusado, porque a troca
-não move dados — copie-os antes:
+Há três modos, e escolher o errado é caro.
+
+| Comando | O que faz |
+|---|---|
+| `--update` | **o modo normal de reexecução.** Herda tudo do `.setup-state` e reaplica. Flag explícita sobrescreve; ausência **herda** |
+| `--add-service NOME` | acrescenta `opensearch`, `pgbouncer`, … sem tocar no que já existe. Implica `--update` |
+| `--force` | refaz `.env` e composes **do zero**, sem herdar nada |
+
+`--update` existe para eliminar um contorno que custava caro: antes dele, uma
+reexecução exigia repetir `--postgres-db`, `--bind-ip` e `--allow-from` **de
+cor**, e esquecer qualquer um recriava o banco, reexpunha as portas e esvaziava
+o firewall. Com ele, o estado da instalação original é a fonte da verdade.
+
+Nenhum dos três **remove volumes**: os dados permanecem. Trocar o modo de volume
+(`named` ↔ `bind`) numa instalação existente é recusado, porque a troca não move
+dados — copie-os antes:
 
 ```bash
 docker run --rm -v bdh_pg_data:/from -v /mnt/nvme/postgres:/to alpine cp -a /from/. /to/
 ```
+
+### Serviços acrescentados depois
+
+Os módulos do roadmap 20 entram por `--add-service`, um de cada vez, sem recriar
+os containers de dados:
+
+```bash
+sudo bash infra-setup.sh --add-service opensearch
+sudo bash infra-setup.sh --add-service pgbouncer
+sudo bash infra-setup.sh --add-service monitoring
+```
+
+Serviços aceitos: `postgres`, `redis`, `meilisearch`, `opensearch`, `pgbouncer`
+e `monitoring`.
+
+Ao acrescentar o `opensearch`, o script também ajusta **`vm.max_map_count`** e o
+persiste em `/etc/sysctl.d/99-brasildatahub.conf`. Os dois passos importam: com
+o default do Debian (65530), o container morre no bootstrap check com uma
+mensagem que fala de `vm.max_map_count` e **não** de OpenSearch — e quem lê
+procura o problema no lugar errado. Sem a persistência, o valor volta no próximo
+boot e o motor não sobe junto com o host, o que transforma um reboot de rotina em
+incidente.
 
 ### Acesso e exposição
 

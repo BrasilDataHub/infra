@@ -1,0 +1,275 @@
+{
+  "settings": {
+    "index": {
+      "number_of_shards": 6,
+      "auto_expand_replicas": "0-1",
+      "codec": "best_compression",
+      "refresh_interval": "30s",
+      "max_result_window": 10000,
+      "translog": {
+        "durability": "async",
+        "sync_interval": "30s",
+        "flush_threshold_size": "1gb"
+      },
+      "merge": {
+        "policy": {
+          "max_merged_segment": "5gb"
+        },
+        "scheduler": {
+          "max_thread_count": 1
+        }
+      },
+      "requests": {
+        "cache": {
+          "enable": true
+        }
+      },
+      "mapping": {
+        "total_fields": {
+          "limit": 100
+        }
+      },
+      "sort": {
+        "field": [
+          "cnpj_completo"
+        ],
+        "order": [
+          "asc"
+        ]
+      }
+    },
+    "analysis": {
+      "char_filter": {
+        "razao_punct": {
+          "type": "pattern_replace",
+          "pattern": "[.,/&'\\-]",
+          "replacement": " "
+        }
+      },
+      "filter": {
+        "br_stop": {
+          "type": "stop",
+          "stopwords": [
+            "de",
+            "da",
+            "do",
+            "das",
+            "dos",
+            "e",
+            "em",
+            "a",
+            "o",
+            "as",
+            "os",
+            "para",
+            "com",
+            "por",
+            "no",
+            "na"
+          ]
+        },
+        "br_forma_juridica": {
+          "type": "stop",
+          "stopwords": [
+            "ltda",
+            "me",
+            "epp",
+            "eireli",
+            "sa",
+            "s",
+            "mei",
+            "ss",
+            "cia",
+            "ei",
+            "limitada",
+            "microempresa"
+          ]
+        },
+        "br_sinonimos": {
+          "type": "synonym_graph",
+          "synonyms_path": "analysis/razao_social_sinonimos.txt",
+          "updateable": true
+        }
+      },
+      "normalizer": {
+        "br_sort": {
+          "type": "custom",
+          "filter": [
+            "lowercase",
+            "asciifolding"
+          ]
+        }
+      },
+      "analyzer": {
+        "br_corporativo": {
+          "tokenizer": "standard",
+          "char_filter": [
+            "razao_punct"
+          ],
+          "filter": [
+            "lowercase",
+            "asciifolding",
+            "br_stop",
+            "br_forma_juridica"
+          ]
+        },
+        "br_corporativo_busca": {
+          "tokenizer": "standard",
+          "char_filter": [
+            "razao_punct"
+          ],
+          "filter": [
+            "lowercase",
+            "asciifolding",
+            "br_stop",
+            "br_forma_juridica",
+            "br_sinonimos"
+          ]
+        },
+        "br_simples": {
+          "tokenizer": "standard",
+          "filter": [
+            "lowercase",
+            "asciifolding"
+          ]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "_source": {
+      "enabled": false
+    },
+    "properties": {
+      "cnpj_completo": {
+        "type": "keyword",
+        "index": false,
+        "doc_values": true
+      },
+      "cnpj_basico": {
+        "type": "keyword",
+        "doc_values": false
+      },
+      "matriz_filial": {
+        "type": "keyword"
+      },
+      "razao_social": {
+        "type": "text",
+        "analyzer": "br_corporativo",
+        "search_analyzer": "br_corporativo_busca",
+        "index_options": "positions",
+        "norms": true,
+        "fields": {
+          "sort": {
+            "type": "keyword",
+            "index": false,
+            "doc_values": true,
+            "normalizer": "br_sort",
+            "ignore_above": 64
+          }
+        }
+      },
+      "nome_fantasia": {
+        "type": "text",
+        "analyzer": "br_corporativo",
+        "search_analyzer": "br_corporativo_busca",
+        "index_options": "freqs",
+        "norms": false
+      },
+      "cnae_principal": {
+        "type": "keyword"
+      },
+      "cnae_secundarios": {
+        "type": "keyword"
+      },
+      "cnae_todos": {
+        "type": "keyword"
+      },
+      "cnae_divisao": {
+        "type": "keyword"
+      },
+      "cnae_divisao_todos": {
+        "type": "keyword",
+        "doc_values": false
+      },
+      "cnae_grupo": {
+        "type": "keyword"
+      },
+      "natureza_juridica": {
+        "type": "keyword"
+      },
+      "porte": {
+        "type": "keyword"
+      },
+      "situacao_cadastral": {
+        "type": "keyword"
+      },
+      "motivo_situacao": {
+        "type": "keyword",
+        "doc_values": false
+      },
+      "regime_tributario": {
+        "type": "keyword"
+      },
+      "regiao_id": {
+        "type": "keyword"
+      },
+      "uf": {
+        "type": "keyword"
+      },
+      "uf_id": {
+        "type": "keyword"
+      },
+      "municipio_id": {
+        "type": "keyword"
+      },
+      "bairro": {
+        "type": "keyword",
+        "doc_values": false,
+        "fields": {
+          "texto": {
+            "type": "text",
+            "analyzer": "br_simples",
+            "index_options": "docs",
+            "norms": false
+          }
+        }
+      },
+      "cep": {
+        "type": "keyword",
+        "doc_values": false
+      },
+      "ddd": {
+        "type": "keyword",
+        "doc_values": false
+      },
+      "data_inicio_atividade": {
+        "type": "date",
+        "format": "yyyy-MM-dd"
+      },
+      "data_situacao_cadastral": {
+        "type": "date",
+        "format": "yyyy-MM-dd"
+      },
+      "capital_social": {
+        "type": "scaled_float",
+        "scaling_factor": 100
+      },
+      "tem_email": {
+        "type": "boolean"
+      },
+      "tem_telefone": {
+        "type": "boolean"
+      },
+      "email_contabilidade": {
+        "type": "boolean"
+      },
+      "peso_relevancia": {
+        "type": "float",
+        "index": false,
+        "doc_values": true
+      }
+    }
+  }
+}

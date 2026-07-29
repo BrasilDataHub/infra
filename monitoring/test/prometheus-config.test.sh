@@ -63,14 +63,55 @@ else
     nok "testes unitários dos alertas falharam — rode: promtool test rules"
 fi
 
-# Todo job de serviço usa file_sd: é o que faz um serviço não instalado ficar SEM
+# Todo job de SERVIÇO usa file_sd: é o que faz um serviço não instalado ficar SEM
 # ALVO em vez de ficar `up == 0` para sempre, envenenando o alerta que mais
-# importa. Só o job do próprio Prometheus pode ser estático.
+# importa.
+#
+# Três exceções, todas com o mesmo argumento — o alvo vive no MESMO projeto
+# Compose que o Prometheus, então ou os dois existem ou nenhum existe:
+#   1. o job `prometheus` (127.0.0.1, responde mesmo com a rede doente);
+#   2. o job `alertmanager`;
+#   3. o bloco `alerting.alertmanagers`, que é destino e não alvo.
 estaticos="$(grep -c 'static_configs' "$RAIZ/prometheus/prometheus.yml")"
-if [ "$estaticos" -eq 1 ]; then
-    ok "apenas o job do próprio Prometheus é estático; o resto usa file_sd"
+if [ "$estaticos" -eq 3 ]; then
+    ok "só prometheus e alertmanager são estáticos; o resto usa file_sd"
 else
-    nok "há $estaticos static_configs — jobs de serviço devem usar file_sd_configs"
+    nok "há $estaticos static_configs (esperado 3) — jobs de serviço devem usar file_sd_configs"
+fi
+
+# A verificação acima é de contagem e envelheceria mal sozinha. Esta é a que
+# realmente importa: nenhum job de serviço pode ter alvo estático.
+for job in node postgres redis meilisearch cadvisor blackbox opensearch; do
+    trecho="$(awk -v j="$job" '
+        $0 ~ "^  - job_name: "j"$" {dentro=1; next}
+        /^  - job_name:/ {dentro=0}
+        dentro {print}
+    ' "$RAIZ/prometheus/prometheus.yml")"
+    if [ -z "$trecho" ]; then
+        nok "job $job sumiu do prometheus.yml"
+    elif printf '%s' "$trecho" | grep -q 'static_configs'; then
+        nok "job $job usa static_configs — um host sem esse serviço ficaria up == 0 para sempre"
+    else
+        ok "job $job usa file_sd"
+    fi
+done
+
+# O job do blackbox só funciona com os quatro relabels: sem o primeiro, o
+# Prometheus tentaria coletar métricas da PÁGINA em vez de sondá-la.
+for campo in __param_target __param_module blackbox-exporter:9115; do
+    if grep -q "$campo" "$RAIZ/prometheus/prometheus.yml"; then
+        ok "relabel do blackbox tem $campo"
+    else
+        nok "relabel do blackbox sem $campo — as sondas não funcionariam"
+    fi
+done
+
+# O destino dos alertas. Antes deste roadmap, 18 regras eram avaliadas e não
+# iam a lugar nenhum; sem este bloco, voltariam a não ir.
+if grep -q 'alertmanagers:' "$RAIZ/prometheus/prometheus.yml"; then
+    ok "há um Alertmanager configurado como destino dos alertas"
+else
+    nok "nenhum alertmanager em alerting: — as regras seriam avaliadas sem destino"
 fi
 
 # A chave do Meilisearch entra por credentials_file. Se alguém trocar por
@@ -80,6 +121,58 @@ if grep -qE '^\s+credentials:' "$RAIZ/prometheus/prometheus.yml"; then
 else
     ok "nenhuma credencial inline na config (só credentials_file)"
 fi
+
+echo
+echo "Alertmanager e blackbox_exporter"
+
+# `amtool check-config` já roda no entrypoint da imagem; aqui o que se valida é
+# a regra de negócio: o container tem de RECUSAR subir sem destino. Um
+# Alertmanager silencioso reproduz exatamente o estado que ele veio corrigir.
+docker build -q -t bdh-test/alertmanager "$RAIZ/alertmanager" >/dev/null 2>&1
+if docker run --rm --entrypoint /usr/local/bin/generate-config.sh \
+       bdh-test/alertmanager true >/dev/null 2>&1; then
+    nok "o Alertmanager subiu SEM destino configurado"
+else
+    ok "o Alertmanager recusa subir sem destino"
+fi
+
+if docker run --rm -e ALERTMANAGER_WEBHOOK_URL=https://exemplo.invalido/hook \
+       --entrypoint /usr/local/bin/generate-config.sh \
+       bdh-test/alertmanager true >/dev/null 2>&1; then
+    ok "a configuração gerada passa no amtool check-config"
+else
+    nok "a configuração gerada é inválida — rode o entrypoint à mão para ver o erro"
+fi
+
+# A janela de ETL precisa estar na config gerada, senão os cinco falsos
+# positivos legítimos da carga mensal acordam alguém toda madrugada de D0.
+if docker run --rm -e ALERTMANAGER_WEBHOOK_URL=https://exemplo.invalido/hook \
+       --entrypoint /usr/local/bin/generate-config.sh bdh-test/alertmanager \
+       sh -c 'cat /etc/alertmanager/alertmanager.yml' 2>/dev/null \
+     | grep -q 'mute_time_intervals'; then
+    ok "a janela de silenciamento do ETL está na configuração gerada"
+else
+    nok "sem mute_time_intervals — os 5 alertas da carga mensal notificariam"
+fi
+
+docker build -q -t bdh-test/blackbox "$RAIZ/blackbox" >/dev/null 2>&1
+if docker run --rm --entrypoint blackbox_exporter bdh-test/blackbox \
+       --config.file=/etc/blackbox_exporter/config.yml --config.check >/dev/null 2>&1; then
+    ok "blackbox.yml é válido"
+else
+    nok "blackbox.yml inválido"
+fi
+
+# Uma sonda por classe de SLO (05 §9.2). Se um módulo sumir, a classe fica sem
+# medição e o alerta correspondente nunca avalia nada.
+for modulo in borda_hit condicional_304 empresa_por_cnpj hub_territorial \
+              autocomplete busca anonima_sem_cookie; do
+    if grep -q "^  ${modulo}:" "$RAIZ/blackbox/blackbox.yml"; then
+        ok "módulo $modulo presente"
+    else
+        nok "módulo $modulo ausente — a classe de SLO ficaria sem sonda"
+    fi
+done
 
 echo
 echo "Dashboards do Grafana"

@@ -1,0 +1,8 @@
+# Publica a porta do redis_exporter para um Prometheus em OUTRO host.
+# Mesma justificativa e mesmas travas do overlay equivalente do Postgres —
+# ver ../monitoring/docker-compose.remote.yml.
+
+services:
+  redis-exporter:
+    ports:
+      - "${METRICS_BIND_IP:?defina METRICS_BIND_IP — nunca 0.0.0.0}:${REDIS_EXPORTER_PORT:-9121}:9121"

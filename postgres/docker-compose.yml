@@ -53,10 +53,20 @@ services:
       # senha é a única barreira. Para restringir, defina BIND_IP (interface
       # privada) e/ou limite a origem no firewall — ver docs/host.md, Rede.
       - "${BIND_IP:-0.0.0.0}:${POSTGRES_PORT:-5432}:5432"
+    logging:
+      # Sem isto, o log de um container cresce sem teto no /var/lib/docker do
+      # host — que é o MESMO NVMe do PGDATA. "Log enche o disco e derruba o
+      # banco" é um modo de falha real, e 05 §9.3-I é explícito: não alerte
+      # sobre log, corrija. 50m × 3 = 150 MB por container, no pior caso.
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-50m}
+        max-file: "${LOG_MAX_FILE:-3}"
     deploy:
       resources:
         limits:
           memory: ${PG_MEMORY_LIMIT:-7G}      # default = dedicada-8gb
+          cpus: "${PG_CPU_LIMIT:-0}"
     healthcheck:
       # SELECT em vez de `pg_isready`: o pg_isready responde "accepting
       # connections" mesmo quando o database do projeto não existe — o que

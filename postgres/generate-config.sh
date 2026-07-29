@@ -81,6 +81,18 @@ synchronous_commit = ${PG_SYNCHRONOUS_COMMIT:-on}
 # --- Backup físico / PITR (pgBackRest — ver backup/) ------------------------
 archive_mode = ${PG_ARCHIVE_MODE:-off}
 archive_command = '${PG_ARCHIVE_COMMAND:-/bin/true}'
+# Força a troca de segmento mesmo sem escrita suficiente para fechar os 16 MB.
+# Duas consequências, e as duas são o motivo de o default do overlay de backup
+# ser 60s e não 0 (desligado):
+#   1. RPO. Sem isto, um banco ocioso pode passar horas com o último commit
+#      apenas no segmento corrente, que NÃO está no repositório.
+#   2. O alerta. `pg_stat_archiver_last_archive_age > 300s` é a trava que
+#      protege o pg_wal (backup/README.md); num banco ocioso com
+#      archive_timeout=0 ele dispararia como falso positivo eterno, e um alerta
+#      que sempre está vermelho é um alerta desligado.
+# O custo é um segmento de 16 MB por intervalo mesmo quase vazio — alguns KB no
+# repositório depois da compressão zstd.
+archive_timeout = ${PG_ARCHIVE_TIMEOUT:-0}
 
 # --- Autovacuum -------------------------------------------------------------
 autovacuum_max_workers = ${PG_AUTOVACUUM_MAX_WORKERS:-3}

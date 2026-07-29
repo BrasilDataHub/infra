@@ -84,10 +84,25 @@ autovacuum agressivo o bastante para tabelas de dezenas de milhões de linhas.
 | `dedicada-32gb` | 32 GB | 8–16 | 10GB | 24GB | 48MB | 8/4 | centenas de GB; consolidação multi-projeto |
 | `dedicada-64gb` | 64 GB | 16 | 24GB | 48GB | 64MB | 16/4 | base grande com busca textual (Base Empresarial) |
 | `dedicada-128gb` | 128 GB | 24 | 48GB | 96GB | 96MB | 24/6 | working set inteiro em RAM |
+| `compartilhada-14gb` | 14 GB | 12 (**6 efetivas**) | 8GB | 15GB | 96MB | 8/4 | host de 31 GiB dividido com motor de busca |
 
-Todos com NVMe local e máquina dedicada. Se o host também rodar Redis ou
-Meilisearch, some o limite de container deles à RAM da máquina
-([fórmula](#fórmula-de-reserva)).
+Os cinco `dedicada-*` assumem NVMe local e **máquina dedicada**. Se o host
+também rodar Redis ou Meilisearch, some o limite de container deles à RAM da
+máquina ([fórmula](#fórmula-de-reserva)).
+
+`compartilhada-14gb` é o primeiro perfil que assume o contrário, e o nome é
+parte da correção: até 07/2026 a Base Empresarial rodava `dedicada-16gb` num
+host que **nunca foi dedicado** — dividido com o Meilisearch (12 GiB) e com o
+Redis. O nome errado é o que faz alguém somar os limites e concluir que cabe.
+
+Duas particularidades dele, e as duas são consequência de dividir a máquina:
+
+- **`work_mem` de 96 MB com `max_connections` de 60**, e não 100. É um par
+  indivisível com o PgBouncer: 100 × 96 MB = 9,6 GB de pior caso não cabe num
+  limite de 14 GiB; 60 × 96 MB = 5,8 GB cabe. Subir um sem o outro é a via
+  rápida para o OOM-killer.
+- **`shared_buffers` de 8 GiB só depois de o vizinho sair.** Aplicado com o
+  Meilisearch ainda no ar, 14 + 12 + 2 já passa dos 31 GiB do host.
 
 ## Como escolher
 
@@ -216,11 +231,11 @@ Não são envs do Postgres — são configuração do serviço no deploy, e viaj
 **junto** com o bloco: subir `shared_buffers` sem subir o limite aproxima o
 OOM-killer.
 
-| | 8gb | 16gb | 32gb | 64gb | 128gb |
-|---|---|---|---|---|---|
-| Limite de memória (`PG_MEMORY_LIMIT`) | 7G | 14G | 28G | 56G | 120G |
-| `/dev/shm` | 1 GB | 2 GB | 4 GB | 4 GB | 8 GB |
-| em bytes (`PG_SHM_BYTES`)¹ | 1073741824 | 2147483648 | 4294967296 | 4294967296 | 8589934592 |
+| | 8gb | 16gb | 32gb | 64gb | 128gb | compart.-14gb |
+|---|---|---|---|---|---|---|
+| Limite de memória (`PG_MEMORY_LIMIT`) | 7G | 14G | 28G | 56G | 120G | 14G |
+| `/dev/shm` | 1 GB | 2 GB | 4 GB | 4 GB | 8 GB | 4 GB |
+| em bytes (`PG_SHM_BYTES`)¹ | 1073741824 | 2147483648 | 4294967296 | 4294967296 | 8589934592 | 4294967296 |
 
 ¹ o mount `tmpfs` da [receita de deploy](deploy.md#a-receita) só aceita bytes.
 

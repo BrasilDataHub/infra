@@ -1,0 +1,190 @@
+# Configuração do blackbox_exporter — BrasilDataHub.
+#
+# Este arquivo é a razão de a saída do Laravel Pulse ser uma TROCA e não uma
+# perda. O Pulse media latência de requisição por dentro, cobrando uma transação
+# no banco por requisição pública; o blackbox mede a mesma coisa por fora, de
+# graça, com retenção e histórico — e mede o que o usuário realmente
+# experimenta, incluindo TLS, CDN e a borda.
+#
+# Hoje **não existe uma métrica de TTFB no sistema** (05 §9.3-D). É esta.
+#
+# Os módulos correspondem às classes da tabela de SLO (05 §9.2); os ALVOS de
+# cada classe vivem em targets/blackbox.json, no host, porque dependem do
+# domínio — a config aqui é genérica e vai na imagem.
+
+modules:
+  # --- Classe 1 · página pública servida pela borda -------------------------
+  # `no_follow_redirects` de propósito: um 301 respondido pela borda tem TTFB
+  # ótimo e diria muito pouco. O que se quer medir é a página final.
+  borda_hit:
+    prober: http
+    timeout: 10s
+    http:
+      method: GET
+      valid_http_versions: [HTTP/1.1, HTTP/2.0]
+      valid_status_codes: [200]
+      follow_redirects: true
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+      headers:
+        User-Agent: bdh-blackbox/1.0
+        # Sem cookie. Uma página pública que responde diferente com sessão é
+        # exatamente o defeito que o item 3 previne — e aqui ela é sondada
+        # anônima, como o Googlebot a vê.
+        Accept: "text/html,application/xhtml+xml"
+      # `fail_if_header_not_matches` sobre cf-cache-status é o que transforma
+      # "a página responde" em "a página está sendo servida DA BORDA". Sem
+      # isto, o alvo de 80% de HIT do item 3 não teria como ser medido.
+      fail_if_header_not_matches:
+        - header: cf-cache-status
+          regexp: "^(HIT|STALE|UPDATING|REVALIDATED)$"
+          allow_missing: false
+
+  # A mesma página, sem exigir HIT. Serve para separar "a origem está lenta" de
+  # "a borda não está cacheando" — dois problemas com correções opostas.
+  pagina_publica:
+    prober: http
+    timeout: 15s
+    http:
+      method: GET
+      valid_http_versions: [HTTP/1.1, HTTP/2.0]
+      valid_status_codes: [200]
+      follow_redirects: true
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+      headers:
+        User-Agent: bdh-blackbox/1.0
+        Accept: "text/html,application/xhtml+xml"
+        # Força MISS na borda: mede a origem, que é o que o item 4 e o item 17
+        # atacam.
+        Cache-Control: "no-cache"
+
+  # --- Classe 2 · revalidação condicional ----------------------------------
+  # A data no futuro faz o servidor comparar com o Last-Modified e responder
+  # 304 se o recurso não mudou desde então — que é sempre, com uma data de
+  # 2099. É a sonda que prova que o Last-Modified de rfb_last_load_date está
+  # sendo emitido: sem ele, a resposta é 200 e o probe falha.
+  condicional_304:
+    prober: http
+    timeout: 10s
+    http:
+      method: GET
+      valid_http_versions: [HTTP/1.1, HTTP/2.0]
+      valid_status_codes: [304]
+      follow_redirects: false
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+      headers:
+        User-Agent: bdh-blackbox/1.0
+        If-Modified-Since: "Fri, 01 Jan 2099 00:00:00 GMT"
+
+  # --- Classes 3 e 4 · páginas canônicas de origem -------------------------
+  # Mesma mecânica de pagina_publica; existem separadas para que o SLO por
+  # classe (05 §9.2) tenha uma série por classe, e não uma média que esconde a
+  # classe lenta.
+  empresa_por_cnpj:
+    prober: http
+    timeout: 15s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      follow_redirects: true
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+      headers:
+        User-Agent: bdh-blackbox/1.0
+        Cache-Control: "no-cache"
+      # A página canônica tem de conter o CNPJ consultado. Sem esta verificação
+      # uma página de erro estilizada com status 200 passaria como sucesso.
+      fail_if_body_not_matches_regexp:
+        - "[0-9]{2}\\.[0-9]{3}\\.[0-9]{3}/[0-9]{4}-[0-9]{2}"
+
+  hub_territorial:
+    prober: http
+    timeout: 15s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      follow_redirects: true
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+      headers:
+        User-Agent: bdh-blackbox/1.0
+        Cache-Control: "no-cache"
+
+  # --- Classe 5 · autocomplete ---------------------------------------------
+  autocomplete:
+    prober: http
+    timeout: 5s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      follow_redirects: false
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+      headers:
+        User-Agent: bdh-blackbox/1.0
+        Accept: "application/json"
+      fail_if_body_not_matches_regexp:
+        - "\\[|\\{"
+
+  # --- Classe 6 · busca -----------------------------------------------------
+  busca:
+    prober: http
+    timeout: 15s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      follow_redirects: true
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+      headers:
+        User-Agent: bdh-blackbox/1.0
+        Cache-Control: "no-cache"
+
+  # --- Guardas de regressão de cabeçalho ------------------------------------
+  # O risco do item 3 é servir conteúdo de sessão no cache público. Os dois
+  # testes de PHPUnit de 03 §6.4 cobrem isso no CI; esta sonda cobre em
+  # PRODUÇÃO, que é onde a Cache Rule existe. Falha se uma rota anônima passar
+  # a emitir Set-Cookie.
+  anonima_sem_cookie:
+    prober: http
+    timeout: 10s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      follow_redirects: false
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+      headers:
+        User-Agent: bdh-blackbox/1.0
+      fail_if_header_matches:
+        - header: Set-Cookie
+          regexp: ".+"
+          allow_missing: true
+        - header: Cache-Control
+          regexp: "(private|no-store)"
+          allow_missing: false
+
+  # --- Infra ----------------------------------------------------------------
+  # Sonda de TCP puro, para portas de dados. Não abre conexão de protocolo: só
+  # confirma que a porta aceita conexão de onde o Prometheus está — que é
+  # justamente o que o item 8 (firewall) muda de propósito.
+  tcp_conecta:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+
+  # Certificado. `probe_ssl_earliest_cert_expiry` é a única forma barata de
+  # descobrir um certificado vencendo antes do usuário.
+  tls_certificado:
+    prober: http
+    timeout: 10s
+    http:
+      method: GET
+      valid_status_codes: [200, 301, 302, 304, 403, 404]
+      follow_redirects: false
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false

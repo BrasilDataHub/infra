@@ -1,4 +1,4 @@
-# Backup da instância dedicada — pgBackRest + PITR
+# Backup da instância — pgBackRest + PITR
 
 > **Escopo.** Vale para qualquer instância do catálogo de
 > [perfis](../docs/perfis.md) — todas assumem máquina dedicada com NVMe local
@@ -17,104 +17,200 @@
 - **Execução:** container sidecar no mesmo host do Postgres, montando o **volume
   de dados** (`bdh_pg_data`) e o socket.
 
-## Configuração (modelo)
+### O binário vive nos DOIS lados
 
-`/etc/pgbackrest/pgbackrest.conf` no host (ou montado no sidecar):
+Quem executa o `archive_command` é o **servidor Postgres**, como subprocesso do
+postmaster — não o sidecar. Por isso o `pgbackrest` está instalado também na
+imagem do banco (`../Dockerfile`). Sem ele, `PG_ARCHIVE_MODE=on` faz o comando
+falhar a cada segmento, o `pg_wal` cresce sem teto e o banco cai com o disco
+cheio.
 
-```ini
-[global]
-repo1-type=s3
-repo1-s3-endpoint=fsn1.your-objectstorage.com
-repo1-s3-bucket=baseempresarial-pgbackrest
-repo1-s3-region=fsn1
-repo1-s3-key=<ACCESS_KEY>
-repo1-s3-key-secret=<SECRET_KEY>
-repo1-path=/dados-cnpj
-repo1-retention-full=2
-repo1-retention-diff=7
-compress-type=zst
-process-max=4
-start-fast=y
+| Componente | Papel |
+|---|---|
+| imagem `postgres` | `archive-push` de cada segmento de WAL |
+| sidecar `pgbackrest` | `stanza-create`, `check`, `backup`, `restore`, agendamento, métricas |
+| `/etc/pgbackrest/pgbackrest.conf` no host | **o mesmo arquivo** montado read-only nos dois |
 
-[dados-cnpj]
-pg1-path=/var/lib/postgresql/data
-pg1-port=5432
-pg1-socket-path=/var/run/postgresql
+## Arquivos deste diretório
+
+| Arquivo | O que é |
+|---|---|
+| `Dockerfile` | imagem do sidecar (`ghcr.io/brasildatahub/pgbackrest:17`) |
+| `entrypoint.sh` | valida, espera o banco, cria a stanza, agenda e entrega o PID 1 ao `cron` |
+| `backup-run.sh` | executa `full`/`diff`/`incr`/`check` e publica métricas Prometheus |
+| `restore-test.sh` | restaura num caminho separado, dentro do sidecar |
+| `restore-drill.sh` | **ensaio completo no host**: restore + Postgres temporário + contagem + RTO |
+| `pgbackrest.conf.example` | modelo do arquivo de configuração do host |
+| `test/backup.test.sh` | teste de integração de ponta a ponta (sem S3, repo `posix`) |
+
+O compose está em [`../docker-compose.backup.yml`](../docker-compose.backup.yml).
+
+## Instalação — a ordem não é negociável
+
+### 1. Configuração no host
+
+```bash
+install -d -m 0750 /etc/pgbackrest
+cp pgbackrest.conf.example /etc/pgbackrest/pgbackrest.conf
+$EDITOR /etc/pgbackrest/pgbackrest.conf     # preencher as chaves do bucket
+chown -R 999:999 /etc/pgbackrest            # uid/gid do postgres na imagem
+chmod 0640 /etc/pgbackrest/pgbackrest.conf
+
+install -d -o 999 -g 999 -m 0755 /var/lib/node_exporter/textfile
 ```
 
-`pg1-path` é o caminho **dentro do container** — o sidecar monta o volume de
-dados ali, exatamente como o Postgres faz:
+As credenciais ficam **só** nesse arquivo: nenhum `.env`, nenhum `docker
+inspect`, nenhum commit.
 
-```yaml
-  pgbackrest:
-    image: <imagem com pgbackrest>
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-      - /etc/pgbackrest:/etc/pgbackrest:ro
-      - pg_socket:/var/run/postgresql
+### 2. O alerta ANTES do `archive_mode`
+
+`archive_mode = on` com um `archive_command` que falha faz o Postgres **reter**
+todo segmento não arquivado. O `pg_wal` cresce, o filesystem enche, o banco
+para — e o intervalo entre "quebrou" e "caiu" é só o espaço livre dividido pela
+taxa de WAL.
+
+Por isso `ArquivamentoDeWalParado`
+([`../../monitoring/prometheus/rules/backup.rules.yml`](../../monitoring/prometheus/rules/backup.rules.yml))
+tem de estar **coletando e notificando** antes do passo 3. Confira que a série
+existe:
+
+```bash
+curl -s localhost:9090/api/v1/query --data-urlencode \
+  'query=pg_stat_archiver_last_archive_age' | jq '.data.result'
 ```
 
-Com isso a configuração não depende de nenhum caminho do host. Para snapshot ou
-inspeção pelo host, o diretório real do volume sai de
-`docker volume inspect bdh_pg_data -f '{{.Mountpoint}}'` — mas **copiar dali com
-o banco no ar não é backup consistente**; use o pgBackRest.
+> O nome da métrica é `pg_stat_archiver_last_archive_age` (postgres_exporter
+> v0.20.1). O roadmap 20 a chama de `..._last_archived_age`; o nome correto é
+> este.
 
-No deploy da instância dedicada, definir as envs de archiving da imagem:
+### 3. Subir
 
-```env
-PG_ARCHIVE_MODE=on
-PG_ARCHIVE_COMMAND=pgbackrest --stanza=dados-cnpj archive-push %p
+```bash
+docker compose -f docker-compose.yml -f docker-compose.metrics.yml \
+               -f docker-compose.backup.yml up -d
 ```
 
-(mudar `archive_mode` exige restart do Postgres; fazer junto com a primeira
-implantação).
+**Este overlay RECRIA o container do Postgres** — ao contrário do de métricas,
+que foi desenhado para não recriar. Não há alternativa: `archive_mode` é
+parâmetro de postmaster e exige restart. O restart é planejado uma vez e nele
+entram as três mudanças de uma vez (`archive_mode`, `archive_command`,
+`archive_timeout`).
 
-**Convivência com o resto do host.** `process-max` e a compressão `zst` do
-pgBackRest disputam CPU com o Postgres e, se houver, com Redis e Meilisearch no
-mesmo host (ver
-[coexistência](../docs/perfis.md#coexistência-com-outros-serviços-no-mesmo-host)).
-O NVMe também é único: agende o full semanal fora da janela de reindexação e da
-carga mensal.
+O `entrypoint.sh` faz `stanza-create` e `check` sozinho no primeiro start; o
+`check` força uma troca de segmento e confirma que ele chegou ao repositório.
+Se o log do sidecar chegar em `agendado: ...`, o arquivamento está de pé.
+
+### 4. Primeiro backup completo
+
+```bash
+docker exec -u postgres <sidecar> /usr/local/bin/pgbackrest-backup-run.sh full
+```
+
+### 5. Ensaio de restauração — sem isto, não há backup
+
+```bash
+bash postgres/backup/restore-drill.sh \
+    --stanza dados-cnpj --db dados_cnpj \
+    --tabela estabelecimento --esperado 72318968
+```
+
+O script cria `bdh_pg_restore` (volume **separado**), restaura, sobe um Postgres
+temporário em `127.0.0.1:15499`, espera o recovery, conta a tabela e imprime o
+**RTO medido**. É esse número que vai para o registro de execução — RTO
+estimado só é conferido durante o incidente.
+
+Três travas impedem que o ensaio toque produção: recusa de volume igual ao de
+produção, recusa de porta ocupada e recusa de restaurar sobre o `pg1-path` da
+stanza.
+
+> **Detalhe que já quebrou o ensaio uma vez:** o `restore` grava em
+> `postgresql.auto.conf` um `restore_command` com o `--pg1-path` usado na
+> restauração. O cluster restaurado precisa ser iniciado com o PGDATA **no
+> mesmo caminho** — o `restore-drill.sh` faz isso passando `PGDATA=/restore`.
 
 ## Rotina
 
-```bash
-# Uma vez, após subir a instância:
-pgbackrest --stanza=dados-cnpj stanza-create
-pgbackrest --stanza=dados-cnpj check
+O agendamento vive **dentro do sidecar** (`/etc/cron.d/pgbackrest`, escrito no
+start a partir das envs) e não no cron do host: assim ele é versionado, sobe
+junto com o serviço e não se perde numa reinstalação do host.
 
-# Agendado (cron do host):
-# full semanal (domingo 03:00 BRT), diff diário (03:00 BRT)
-0 6 * * 0  pgbackrest --stanza=dados-cnpj --type=full backup
-0 6 * * 1-6 pgbackrest --stanza=dados-cnpj --type=diff backup
-```
+| Env | Default (UTC) | Equivalente BRT |
+|---|---|---|
+| `BDH_BACKUP_FULL_SCHEDULE` | `0 6 * * 0` | domingo 03:00 |
+| `BDH_BACKUP_DIFF_SCHEDULE` | `0 6 * * 1-6` | demais dias 03:00 |
+| `BDH_BACKUP_CHECK_SCHEDULE` | `0 */6 * * *` | a cada 6 h |
 
-Com WAL archiving contínuo, o ponto de perda máxima (RPO) é o intervalo de
-archive de um segmento de WAL (segundos a poucos minutos), não 24 h.
+**Nome das envs.** Só `PGBACKREST_STANZA` usa o prefixo do produto. O pgBackRest
+lê qualquer `PGBACKREST_<OPCAO>` como opção e, quando ela não existe, imprime um
+aviso **no stdout** — que corrompe a saída de `info --output=json`. Todo o resto
+usa `BDH_BACKUP_*`.
 
-## Restore (testar antes de precisar — backup não testado não é backup)
+Com WAL archiving contínuo e `archive_timeout=60s`, o RPO é de **até 60
+segundos**, não de 24 h.
 
-Restaure num **volume separado** (ex.: `bdh_pg_restore`), montado no sidecar em
-`/restore`, para nunca escrever sobre o volume em produção:
+## Métricas e alertas
+
+O `backup-run.sh` escreve `/var/lib/node_exporter/textfile/pgbackrest.prom`, lido
+pelo textfile collector do `node_exporter`:
+
+| Métrica | Para quê |
+|---|---|
+| `pgbackrest_info_ok` | o repositório responde |
+| `pgbackrest_repo_status_code` | 0 = ok |
+| `pgbackrest_backup_count{type}` | **0 em `full` = não existe backup** |
+| `pgbackrest_backup_last_completion_timestamp_seconds{type}` | idade do último backup |
+| `pgbackrest_backup_last_{duration_seconds,size_bytes,repo_size_bytes}{type}` | custo e tendência |
+| `pgbackrest_archive_segments_present` | 0 com full presente = backup **sem PITR** |
+| `pgbackrest_run_last_success{type}` | a execução agendada rodou e deu erro |
+
+As duas fontes são independentes de propósito: `pg_stat_archiver_*` é o que o
+**banco** acha do arquivamento; `pgbackrest_*` é o que existe **de fato** no
+repositório. Um repositório apagado por fora não move nenhuma série da primeira.
+
+## Restore manual
 
 ```bash
 docker volume create bdh_pg_restore
 
-# Restauração completa:
-pgbackrest --stanza=dados-cnpj --pg1-path=/restore restore
+# completo:
+docker run --rm --entrypoint /usr/local/bin/pgbackrest-restore-test.sh \
+  -e PGBACKREST_STANZA=dados-cnpj \
+  -v bdh_pg_restore:/restore -v /etc/pgbackrest:/etc/pgbackrest:ro \
+  ghcr.io/brasildatahub/pgbackrest:17
 
-# PITR (ex.: logo antes de um incidente):
-pgbackrest --stanza=dados-cnpj --pg1-path=/restore \
-    --type=time --target="2026-08-01 03:00:00-03" restore
+# PITR, logo antes de um incidente:
+docker run --rm --entrypoint /usr/local/bin/pgbackrest-restore-test.sh \
+  -e PGBACKREST_STANZA=dados-cnpj \
+  -v bdh_pg_restore:/restore -v /etc/pgbackrest:/etc/pgbackrest:ro \
+  ghcr.io/brasildatahub/pgbackrest:17 \
+  --type=time --target="2026-08-01 03:00:00-03"
 ```
 
-Depois do restore: subir um Postgres com `bdh_pg_restore` montado em
-`/var/lib/postgresql/data` e validar contagem de linhas de ao menos uma tabela
-grande
-(`SELECT count(*) FROM estabelecimento;` ≈ 72,3 M no mês de referência).
+Ou, com tudo junto e medido, `restore-drill.sh --tipo time --alvo "..."`.
 
-**Teste de restore trimestral** (mínimo): executar o fluxo acima num
-servidor temporário e registrar o resultado.
+**Teste de restore trimestral, no mínimo.** O `restore-drill.sh` é o
+procedimento; o RTO medido é o entregável.
+
+## Convivência com o resto do host
+
+`process-max` e a compressão `zst` disputam CPU com o Postgres e, se houver, com
+Redis e Meilisearch no mesmo host (ver
+[coexistência](../docs/perfis.md#coexistência-com-outros-serviços-no-mesmo-host)).
+O NVMe também é único: o full semanal está agendado fora da janela de
+reindexação e da carga mensal.
+
+## Testes
+
+```bash
+bash postgres/backup/test/backup.test.sh
+```
+
+Sobe banco + sidecar de verdade, com repositório `posix` num volume local, e
+percorre o ciclo inteiro: `archive_command` → stanza → full → escrita nova →
+diff → restore → contagem. Cada peça é trivial isolada; o que quebra é a junção
+(uid do volume, socket compartilhado, binário ausente na imagem do banco,
+`/etc/cron.d` sem nova linha no fim). Um teste que não sobe os containers não
+pega nenhum desses.
 
 ## Alternativa avaliada
 

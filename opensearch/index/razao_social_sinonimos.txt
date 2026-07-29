@@ -1,0 +1,43 @@
+# Sinônimos de razão social — só em tempo de BUSCA (br_corporativo_busca).
+#
+# `updateable: true` no mapping: editar este arquivo e chamar
+# `POST /busca_estabelecimento/_reload_search_analyzers` aplica a mudança sem
+# reindexar 72,32 milhões de documentos. Se estivessem no analisador de
+# indexação, cada linha nova custaria uma reindexação completa.
+#
+# Formato `synonym_graph` equivalente: os dois lados casam um ao outro.
+#
+# Lista curada, e curta de propósito: o Meilisearch em produção tem ZERO
+# sinônimos, então qualquer linha aqui já é ganho. Abreviações comerciais
+# brasileiras que aparecem em razão social e que ninguém digita por extenso.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# NENHUM TERMO AQUI PODE SER STOPWORD DO MESMO ANALISADOR.
+#
+# O `synonym_graph` roda DEPOIS de `br_stop` e `br_forma_juridica` na cadeia de
+# `br_corporativo_busca`. Um termo que já foi removido chega vazio ao filtro, e
+# o OpenSearch recusa a CRIAÇÃO DO ÍNDICE inteiro com
+# `illegal_argument_exception: Failed to build synonyms` — não a consulta, o
+# índice.
+#
+# Duas linhas da lista original de 03 §2.2 caem por isso:
+#
+#   `com, comercio` — `com` é stopword de `br_stop` (a preposição). Manter a
+#       preposição como stopword é o certo: ela aparece em razão social como
+#       ligação ("COMERCIO COM ATACADO"), e a abreviação "COM." isolada é rara.
+#   `cia, companhia` — `cia` é stopword de `br_forma_juridica`, junto com LTDA,
+#       ME e EPP. O sinônimo seria redundante: a forma jurídica é descartada dos
+#       dois lados, que é exatamente o que se quer.
+#
+# O teste de integração (test/opensearch.test.sh) valida esta regra.
+# ─────────────────────────────────────────────────────────────────────────────
+
+ind, industria
+serv, servicos
+transp, transportes
+repr, representacoes
+const, construcoes
+adm, administracao
+distrib, distribuidora
+emp, empreendimentos
+part, participacoes

@@ -3,10 +3,15 @@ name: Build e publica imagens
 # Publica as imagens de infraestrutura da organização no GHCR, sob o
 # namespace da org (minúsculo, exigência de nome de imagem Docker):
 #   ghcr.io/brasildatahub/postgres:17     (imagem única; tuning via envs PG_*)
+#   ghcr.io/brasildatahub/pgbackrest:17   (sidecar de backup físico + PITR)
 #   ghcr.io/brasildatahub/redis:7
 #   ghcr.io/brasildatahub/meilisearch:1.34
 #   ghcr.io/brasildatahub/prometheus:3    (config e regras de alerta embutidas)
 #   ghcr.io/brasildatahub/grafana:13      (provisioning e dashboards embutidos)
+#   ghcr.io/brasildatahub/alertmanager:0  (roteamento, inibição e janela de ETL)
+#   ghcr.io/brasildatahub/blackbox-exporter:0 (módulos das classes de SLO)
+#   ghcr.io/brasildatahub/pgbouncer:1     (transaction pooling; par do work_mem)
+#   ghcr.io/brasildatahub/opensearch:3    (analisadores BR + exporter de métricas)
 # Imagens genéricas — consumidas por qualquer projeto da org (baseempresarial,
 # baseescolar, basehospitalar, ...). Nada aqui é específico de um projeto.
 
@@ -20,14 +25,24 @@ on:
       # métricas, que não entram em imagem nenhuma.
       - "postgres/Dockerfile"
       - "postgres/*.sh"
+      - "postgres/backup/Dockerfile"
+      - "postgres/backup/*.sh"
       - "postgres/initdb/**"
       - "postgres/.dockerignore"
       - "postgres/test/**"
       - "redis/Dockerfile"
       - "redis/redis.conf"
+      - "pgbouncer/Dockerfile"
+      - "pgbouncer/*.sh"
+      - "pgbouncer/test/**"
+      - "opensearch/Dockerfile"
+      - "opensearch/index/**"
+      - "opensearch/test/**"
       - "meilisearch/Dockerfile"
       - "monitoring/prometheus/**"
       - "monitoring/grafana/**"
+      - "monitoring/alertmanager/**"
+      - "monitoring/blackbox/**"
       - "monitoring/test/**"
       - ".github/workflows/build-publish.yml"
   workflow_dispatch:
@@ -65,6 +80,36 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/postgres:17
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/postgres:17.10
 
+  # Sidecar de backup. Job SEPARADO do postgres e rodando o teste de integração
+  # antes do push: o teste sobe banco + sidecar de verdade e percorre
+  # archive_command → stanza → full → diff → restore → contagem. É o único
+  # ponto do repositório onde "o backup existe" deixa de ser uma afirmação e
+  # passa a ser uma verificação.
+  pgbackrest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ciclo completo de backup e restore
+        run: bash postgres/backup/test/backup.test.sh
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: postgres/backup
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/pgbackrest:17
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/pgbackrest:17.10
+
   redis:
     runs-on: ubuntu-latest
     permissions:
@@ -87,6 +132,36 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/redis:7
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/redis:7.4
 
+  # O PgBouncer é o par indivisível do work_mem de 96 MB (item 18): 100 × 96 MB
+  # não cabe num limite de 14 GiB, 20 × 96 MB cabe. O teste roda antes do push
+  # porque transaction pooling funciona perfeitamente até a aplicação usar um
+  # SET de sessão ou um prepared statement — e aí quebra de formas que não
+  # mencionam o PgBouncer no erro.
+  pgbouncer:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pooling, SET LOCAL e prepared statements
+        run: bash pgbouncer/test/pgbouncer.test.sh
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: pgbouncer
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/pgbouncer:1
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/pgbouncer:1.24.1
+
   meilisearch:
     runs-on: ubuntu-latest
     permissions:
@@ -108,6 +183,37 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/meilisearch:1.34
 
+  # Três decisões do mapping são IMUTÁVEIS SEM REINDEXAR os 72,32 milhões de
+  # documentos: number_of_shards, _source: false e auto_expand_replicas. O teste
+  # sobe um nó de verdade e as afirma antes de a imagem ser publicada — custa
+  # segundos; descobrir o mesmo erro depois custa a reindexação inteira.
+  opensearch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mapping, analisadores e contratos imutáveis
+        run: |
+          sudo sysctl -w vm.max_map_count=262144
+          bash opensearch/test/opensearch.test.sh
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: opensearch
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/opensearch:3
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/opensearch:3.3.0
+
   monitoring:
     runs-on: ubuntu-latest
     permissions:
@@ -120,6 +226,11 @@ jobs:
           # LTS anterior, sai de suporte em 2026-07-31.
           - { dir: prometheus, image: prometheus, major: "3", full: "3.13.1" }
           - { dir: grafana, image: grafana, major: "13", full: "13.1.1" }
+          # O Alertmanager é o que faz as 18 regras chegarem a alguém; o
+          # blackbox é o que substitui os cards de latência do Laravel Pulse.
+          # Os dois entram na mesma matriz porque compartilham o teste acima.
+          - { dir: alertmanager, image: alertmanager, major: "0", full: "0.30.0" }
+          - { dir: blackbox, image: blackbox-exporter, major: "0", full: "0.28.0" }
     steps:
       - uses: actions/checkout@v4
 
