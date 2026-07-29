@@ -8,21 +8,50 @@ Prometheus, que o relê a quente — acrescentar um arquivo aqui não exige rest
 Um arquivo por serviço que existe no host:
 
 ```json
-[{"targets": ["postgres-exporter:9187"]}]
+[{"targets": ["postgres-exporter:9187"], "labels": {"host": "bdh-data"}}]
 ```
 
-| Arquivo | Conteúdo |
-|---|---|
-| `postgres.json` | `postgres-exporter:9187` |
-| `redis.json` | `redis-exporter:9121` |
-| `meilisearch.json` | `meilisearch:7700` (endpoint nativo, sem exporter) |
-| `node.json` | `node-exporter:9100` |
-| `cadvisor.json` | `cadvisor:8080` |
-| `blackbox.json` | as URLs das sondas — formato próprio, ver abaixo |
+| Arquivo | Conteúdo | `host` |
+|---|---|---|
+| `postgres.json` | `postgres-exporter:9187` | sim |
+| `redis.json` | `redis-exporter:9121` | sim |
+| `meilisearch.json` | `meilisearch:7700` (endpoint nativo, sem exporter) | sim |
+| `opensearch.json` | `opensearch:9200` (plugin na imagem, sem exporter) | sim |
+| `node.json` | `node-exporter:9100` | sim |
+| `cadvisor.json` | `cadvisor:8080` | sim |
+| `blackbox.json` | as URLs das sondas — formato próprio, ver abaixo | **não** |
 
 Os endereços são nomes de **serviço** Compose, não de container: na rede
 `bdh_metrics` o Docker registra o nome do serviço como alias, então eles não
 dependem do nome do projeto Compose.
+
+## O rótulo `host`
+
+É o único rótulo que diz **de qual máquina** a série veio, e sem ele a seção de
+infraestrutura da visão geral fica vazia, o alerta `ServidorSemColeta` não tem
+por onde agrupar, e um painel como o de disco livre mostra o pior valor da frota
+sem dizer de quem é.
+
+**Não confunda com os `external_labels` do `prometheus.yml`.** Aquele `host` é
+real, mas não é gravado no TSDB: ele só entra em `remote_write`, em federação e
+nos alertas enviados ao Alertmanager. Toda consulta do Grafana é cega para ele.
+Foi exatamente essa distinção que manteve a stack sem rótulo de máquina até
+29/07/2026 — a configuração parecia correta e o dado não existia.
+
+Os dois se complementam, e por isso o `external_labels` continua onde está: o
+Prometheus só aplica external labels a rótulos **ausentes** na saída, então o
+nome real da máquina vence nos alertas com série, e o nome do monitor sobra como
+reserva para os alertas de `absent()`, que não têm série nenhuma de onde herdar.
+
+O valor é o `hostname` cru da máquina, sem normalizar. Isso é deliberado: no
+Linux `hostname` e `uname -n` leem o mesmo nodename do kernel, então o `host` do
+alvo é byte a byte igual ao `nodename` que o node_exporter publica em
+`node_uname_info`. É essa igualdade que permite cruzar as duas fontes — métricas
+de serviço só têm `host`, métricas de máquina têm os dois — e é o que faz o link
+do dashboard abrir no servidor certo.
+
+`blackbox.json` fica de fora de propósito: ali o alvo é uma URL, não uma máquina,
+e um `host` mentiria sobre o que está sendo medido.
 
 **Serviço que não existe não deve ter arquivo.** O `prometheus.yml` usa um glob
 por job, então a ausência do arquivo deixa o job *sem alvo* — em vez de deixá-lo
@@ -40,17 +69,47 @@ bdh metrics
 
 ## Quando o Prometheus está em OUTRO host
 
-É o caso desta operação: o Prometheus vai no `bdh-apps`, e Postgres, Redis e o
-motor de busca ficam no `bdh-data` (a justificativa está em
+É o caso desta operação: o Prometheus e o Grafana vivem no `bdh-apps`, e
+Postgres, Redis e o motor de busca ficam no `bdh-data` (a justificativa está em
 `03-arquitetura-de-busca.md` §3.2). **Não há rede privada entre os dois** — eles
 se falam por IP público, em blocos /22 diferentes.
+
+Isso torna o firewall a única proteção real: `/metrics` não tem autenticação
+nenhuma, e o do Postgres entrega `pg_settings_*` inteiro. As regras precisam ser
+restritas ao IP do par (`--allow-from`), nunca abertas ao mundo, e a sonda
+`PortaDeDadosAlcancavelDeFora` existe para pegar a regressão dessa regra.
 
 O nome de serviço Compose só resolve dentro do host. Então, para os alvos
 remotos, o arquivo usa `IP:porta`:
 
 ```json
-[{"targets": ["10.0.0.5:9187"], "labels": {"host": "bdh-data"}}]
+[{"targets": ["152.53.36.62:9187"], "labels": {"host": "bdh-data"}}]
 ```
+
+Quem escreve isso é o `setup.sh`, a partir do `--metrics-scrape`, que aceita um
+apelido depois do endereço:
+
+```bash
+# no bdh-apps
+bash setup.sh --update --metrics-scrape \
+  postgres=152.53.36.62:9187@bdh-data,redis=152.53.36.62:9121@bdh-data,\
+node=152.53.36.62:9100@bdh-data
+```
+
+O apelido vira o rótulo `host`. Sem ele, o rótulo cai para o endereço — funciona,
+mas os painéis passam a mostrar `152.53.36.62` no lugar de `bdh-data`. IPv6 exige
+colchetes: `node=[fe80::1]:9100@bdh-x`.
+
+**Use o hostname real da máquina como apelido.** O host observado imprime a linha
+pronta para colar quando roda com `--metrics-publish` — ele conhece o próprio
+`hostname` e o host do Prometheus não. Se os dois divergirem, o link do dashboard
+abre a máquina errada em silêncio; o painel *"Apelidos que não batem com o
+hostname real"* na visão geral e o `bdh metrics` existem para denunciar isso.
+
+Os arquivos com sufixo `-remoto` são **reservados ao script**: ele os reescreve a
+cada `--update` e os apaga quando o job sai do `--metrics-scrape`. Alvos escritos
+à mão devem usar outro sufixo (`postgres-extra.json`), que o glob `postgres*.json`
+casa igual.
 
 E o host remoto precisa **publicar** a porta do exporter, com os overlays feitos
 para isso:

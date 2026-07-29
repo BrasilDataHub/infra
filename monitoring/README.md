@@ -86,13 +86,15 @@ endereço não depende do nome do projeto.
 
 ### Quando o Prometheus fica em outro host
 
-Nesta operação ele fica: Prometheus no `bdh-apps`, dados no `bdh-data`, sem rede
-privada entre os dois. O nome de serviço Compose não atravessa hosts, então os
-exporters remotos precisam publicar porta — o que os overlays
-`*/docker-compose.metrics-remote.yml` e `docker-compose.remote.yml` fazem, com
-`METRICS_BIND_IP` **obrigatória e sem default**. A proteção passa a ser o
-firewall restrito ao IP do par, e a sonda `PortaDeDadosAlcancavelDeFora` existe
-para pegar a regressão dessa regra. Detalhes em [`targets/`](targets/README.md).
+Nesta operação ele fica: Prometheus e Grafana no `bdh-apps`, e Postgres, Redis e
+o motor de busca no `bdh-data`. **Não há rede privada entre os dois** — eles se
+falam por IP público, em blocos /22 diferentes. O nome de serviço Compose não
+atravessa hosts, então os exporters remotos precisam publicar porta — o que os
+overlays `*/docker-compose.metrics-remote.yml` e `docker-compose.remote.yml`
+fazem, com `METRICS_BIND_IP` **obrigatória e sem default**. Sem rede privada, a
+proteção é inteiramente o firewall restrito ao IP do par (`--allow-from`), e a
+sonda `PortaDeDadosAlcancavelDeFora` existe para pegar a regressão dessa regra.
+Detalhes em [`targets/`](targets/README.md).
 
 A rede é declarada **sem `external: true`**, e isso é deliberado. Com `external`,
 um `docker network prune` com os containers parados faria o `docker compose up`
@@ -321,6 +323,8 @@ o git é a fonte da verdade, como nos composes e nos perfis.
 | Dashboard | Origem |
 |---|---|
 | **Visão geral — BrasilDataHub** | escrito para esta operação; comece por ele |
+| OpenSearch — motor de busca | escrito para esta operação |
+| Meilisearch — busca | escrito para esta operação (serviço opcional, em substituição pelo OpenSearch) |
 | Node Exporter Full | grafana.com 1860 |
 | PostgreSQL Database | grafana.com 9628 |
 | Redis | grafana.com 763 |
@@ -328,11 +332,53 @@ o git é a fonte da verdade, como nos composes e nos perfis.
 Os três de comunidade são vendorizados por [`grafana/vendorizar.sh`](grafana/vendorizar.sh)
 e alguns painéis ficam vazios por decisões conscientes de coleta — o que e por
 quê está em [`grafana/dashboards/UPSTREAM.md`](grafana/dashboards/UPSTREAM.md).
+Os três próprios são editados à mão.
+
+A visão geral traz, além do estado de cada serviço, a seção **Infraestrutura**:
+um inventário de quais máquinas a coleta conhece e o que cada uma roda, e uma
+seção que se repete por servidor com CPU, memória, disco, load, rede e pressão
+(PSI). Em all-in-one ela colapsa para um bloco só; em deploy distribuído vira um
+bloco por máquina. Tudo isso depende do rótulo `host`, abaixo.
 
 Alertas: as regras vivem no Prometheus ([`prometheus/rules/`](prometheus/rules/)),
 com testes unitários; a notificação usa o alerting unificado do Grafana, que
 dispensa um Alertmanager e casa com o `--webhook-url` que o script já tem. Ver
 [`docs/alertas.md`](docs/alertas.md).
+
+## Rótulo de máquina
+
+Toda série coletada carrega `host`, escrito **no arquivo de alvos** pelo
+`setup.sh`. É o que faz um painel ou um alerta saber de qual máquina veio o
+número.
+
+Cuidado com uma armadilha que custou caro aqui: o `prometheus.yml` também define
+`external_labels: host`, e isso **não** substitui o rótulo do alvo. External
+labels não são gravados no TSDB — entram só em `remote_write`, federação e nos
+alertas enviados ao Alertmanager. O Grafana não os enxerga. Até 29/07/2026 a
+stack tinha o external label e nenhum rótulo nos alvos: a configuração parecia
+correta e nenhuma consulta conseguia agrupar por máquina.
+
+Os dois convivem de propósito: o Prometheus só aplica external labels a rótulos
+ausentes, então o nome real da máquina vence nos alertas com série, e o nome do
+monitor sobra para os alertas de `absent()`, que não têm série de onde herdar.
+
+Para aplicar numa instalação existente:
+
+```bash
+bash setup.sh --update     # em cada host; reescreve os alvos
+```
+
+No host do Prometheus, repasse os apelidos das máquinas remotas — a flag
+explícita sobrescreve o estado salvo, e omiti-la herda o valor antigo (sem
+apelido):
+
+```bash
+bash setup.sh --update --metrics-scrape postgres=152.53.36.62:9187@bdh-data,...
+```
+
+Acrescentar um rótulo **encerra as séries antigas e cria novas**. Não há perda de
+coleta e nenhum alerta dispara à toa, mas `rate()` e `increase()` que cruzarem
+esse instante ficam errados por uma janela de poucos minutos.
 
 ## Ressalvas no macOS
 
@@ -345,6 +391,12 @@ razões medidas:
    coletor `pressure` falha (`node_scrape_collector_success{collector="pressure"} = 0`).
    Em Ubuntu 22.04+ e Debian 12 o PSI vem habilitado e o painel de pressão de IO
    funciona.
+
+Na visão geral isso aparece como **node_exporter: ausente** na seção daquele
+servidor, com os painéis de máquina dizendo "sem node_exporter nesta máquina".
+É o comportamento esperado, não falha de coleta — o painel está em azul, e não em
+vermelho, exatamente para deixar isso claro. O mesmo vale para um host remoto
+provisionado sem `node=` no `--metrics-scrape`.
 
 Prometheus, Grafana e os exporters de Postgres/Redis/Meilisearch funcionam
 normalmente no macOS.

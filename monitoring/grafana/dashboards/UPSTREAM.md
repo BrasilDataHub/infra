@@ -1,8 +1,8 @@
 # Procedência dos dashboards
 
 Três destes arquivos vêm do grafana.com e são **gerados** por `../vendorizar.sh`
-— não os edite à mão: rode o script de novo e commite o resultado. O quarto é
-nosso.
+— não os edite à mão: rode o script de novo e commite o resultado. Os outros três
+são nossos, e esses sim são editados à mão (o `vendorizar.sh` não os toca).
 
 | Arquivo | Origem | Revisão | Licença |
 |---|---|---|---|
@@ -10,6 +10,8 @@ nosso.
 | `postgres.json` | [grafana.com/dashboards/9628](https://grafana.com/grafana/dashboards/9628) — PostgreSQL Database | 8 | Apache-2.0 |
 | `redis.json` | [grafana.com/dashboards/763](https://grafana.com/grafana/dashboards/763) — Redis (redis_exporter 1.x) | 6 | MIT |
 | `bdh-visao-geral.json` | escrito para esta operação | — | — |
+| `opensearch.json` | escrito para esta operação | — | — |
+| `meilisearch.json` | escrito para esta operação | — | — |
 
 Vendorizados em 2026-07-27, contra `postgres_exporter v0.20.1`,
 `redis_exporter v1.87.0` e `node_exporter v1.12.1`.
