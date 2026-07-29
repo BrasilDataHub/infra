@@ -137,6 +137,88 @@ Se a monitoração dividir o host com o Postgres, some ~2 GB (ou ~3 GB com
 cAdvisor) à [fórmula de coexistência](../postgres/docs/perfis.md#fórmula-de-reserva).
 O `infra-setup.sh` avisa quando o orçamento não fecha.
 
+## Variáveis de ambiente
+
+Os perfis em [`profiles/`](profiles/) cobrem o dimensionamento (`PROM_*`,
+`GRAFANA_*`, limites de CPU/memória de cada exporter). O que **não** está neles,
+porque é segredo ou é específico do host, está abaixo.
+
+### Alertmanager — o destino (ao menos um é obrigatório)
+
+**O container recusa subir sem nenhum destes três.** É deliberado: um
+Alertmanager que não notifica ninguém reproduziria o estado que ele veio
+corrigir — 18 regras validadas e sem destino — com a aparência de resolvido.
+
+| Variável | Descrição |
+|---|---|
+| `ALERTMANAGER_SLACK_WEBHOOK` | webhook do Slack. O caminho mais curto |
+| `ALERTMANAGER_WEBHOOK_URL` | webhook genérico (n8n, Discord via proxy, etc.) |
+| `ALERTMANAGER_EMAIL_TO` | destinatário. **Exige** `ALERTMANAGER_SMTP_HOST` e `ALERTMANAGER_EMAIL_FROM` |
+
+### Alertmanager — Slack e e-mail
+
+| Variável | Default | Descrição |
+|---|---|---|
+| `ALERTMANAGER_SLACK_CHANNEL` | `#alertas` | canal de destino |
+| `ALERTMANAGER_SMTP_HOST` | — | `host:porta`. Obrigatória se `EMAIL_TO` |
+| `ALERTMANAGER_EMAIL_FROM` | — | remetente. Obrigatória se `EMAIL_TO` |
+| `ALERTMANAGER_SMTP_USER` | — | usuário SMTP, se houver |
+| `ALERTMANAGER_SMTP_PASSWORD` | — | senha SMTP, se houver |
+| `ALERTMANAGER_SMTP_TLS` | `true` | `smtp_require_tls` |
+
+### Alertmanager — a janela de ETL
+
+Cinco alertas são falsos positivos **legítimos** durante a carga mensal:
+`IOSaturado`, `CacheHitBaixo`, `MuitosArquivosTemporarios`,
+`CheckpointsForcadosDemais` e `PostgresConexoesPertoDoLimite`. Dentro da janela
+eles continuam **ativos e visíveis na interface** — só não acordam ninguém.
+
+Os defaults descrevem o D0 do runbook mensal: sábado da primeira semana, das
+00:00 às 07:00 no fuso de São Paulo.
+
+| Variável | Default | Descrição |
+|---|---|---|
+| `ALERTMANAGER_ETL_TIMEZONE` | `America/Sao_Paulo` | `location` do intervalo. Escrever a janela em UTC a faz escorregar com o horário de verão |
+| `ALERTMANAGER_ETL_DAYS_OF_MONTH` | `1:7` | primeira semana |
+| `ALERTMANAGER_ETL_WEEKDAY` | `saturday` | |
+| `ALERTMANAGER_ETL_START` | `00:00` | |
+| `ALERTMANAGER_ETL_END` | `07:00` | |
+
+Se a data da carga mudar, **estes cinco valores mudam junto** — senão a janela
+silencia o mês errado.
+
+### Alertmanager — agrupamento e repetição
+
+| Variável | Default | Descrição |
+|---|---|---|
+| `ALERTMANAGER_RESOLVE_TIMEOUT` | `10m` | |
+| `ALERTMANAGER_GROUP_WAIT` | `45s` | espera antes da primeira notificação de um grupo novo |
+| `ALERTMANAGER_GROUP_INTERVAL` | `5m` | |
+| `ALERTMANAGER_REPEAT_INTERVAL` | `4h` | 4 h e não 30 min: um alerta que se repete a cada meia hora é desligado pela operação em duas semanas |
+| `ALERTMANAGER_REPEAT_CRITICAL` | `1h` | `critical` tem repetição própria, mais curta |
+
+### Container
+
+| Variável | Default | Descrição |
+|---|---|---|
+| `ALERTMANAGER_PORT` | `9093` | |
+| `ALERTMANAGER_VOLUME` | `bdh_alertmanager_data` | volume do estado (silences ativos) |
+| `ALERTMANAGER_MEMORY_LIMIT` / `_CPU_LIMIT` | ver perfis | |
+| `BLACKBOX_PORT` | `9115` | |
+| `BLACKBOX_MEMORY_LIMIT` / `_CPU_LIMIT` | ver perfis | |
+| `MONITORING_BIND_IP` | `127.0.0.1` | Grafana e Prometheus. **Separada** de `BIND_IP` de propósito |
+| `METRICS_BIND_IP` | — **sem default** | só nos overlays remotos. Obrigatória por decisão |
+| `NODE_TEXTFILE_DIR` | `/var/lib/node_exporter/textfile` | onde o backup, o indexer e o pipeline escrevem `.prom` |
+| `MON_HOSTNAME` | `desconhecido` | rótulo `host` nas séries |
+| `GRAFANA_ADMIN_PASSWORD` | gerada | fica em `secrets/credentials.env` |
+| `GRAFANA_ROOT_URL` | `http://localhost:3000` | necessária se o Grafana ficar atrás de proxy |
+
+> As métricas escritas por **textfile collector** (`bdh_backup_*`,
+> `bdh_indexer_*`) dependem de `NODE_TEXTFILE_DIR` apontar para o **mesmo
+> diretório** que o node_exporter lê e que os produtores escrevem. Se os três
+> não concordarem, os alertas de freshness e de divergência de contagem nunca
+> disparam — e a ausência de alerta parece saúde.
+
 ## Acesso
 
 Grafana e Prometheus publicam em **`127.0.0.1`**, o oposto dos serviços de dados

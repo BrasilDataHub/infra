@@ -68,6 +68,34 @@ curl -X PUT localhost:9200/busca_estabelecimento_v1 \
   --data-binary @index/busca_estabelecimento.json
 ```
 
+> O nome físico termina com a versão/`load_id`; a aplicação consulta um
+> **alias**, nunca o índice diretamente. Quem cria e move o alias é o
+> `search-indexer-service` — ver
+> [alias versionado](../../search-indexer-service/docs/alias-versionado.md).
+
+### Variáveis de ambiente
+
+O perfil [`profiles/compartilhada-8gb.env`](profiles/compartilhada-8gb.env)
+traz o dimensionamento — heap, breakers, watermarks e limites do container. O
+que **não** está nele:
+
+| Variável | Default | Descrição |
+|---|---|---|
+| `OS_CLUSTER_NAME` | `bdh` | nome do cluster |
+| `OS_NODE_NAME` | `bdh-data` | nome do nó. Aparece nos alertas e no `_cat/nodes` |
+| `OS_VOLUME` | `bdh_os_data` | volume dos índices |
+| `OS_SNAPSHOT_VOLUME` | `bdh_os_snapshots` | volume do repositório de snapshot. Separado do de dados: um snapshot no mesmo volume não protege de nada |
+| `OPENSEARCH_PORT` | `9200` | porta publicada no host |
+| `BIND_IP` | `0.0.0.0` | interface de publicação |
+
+E as que **estão** no perfil, mas cujo valor é uma decisão e não um número:
+
+| Variável | Valor no perfil | Por quê |
+|---|---|---|
+| `OS_JAVA_OPTS` | `-Xms4g -Xmx4g -XX:MaxDirectMemorySize=1g` | `Xms == Xmx` sempre: heap que cresce fragmenta e o GC paga por isso. 4 GiB contra um on-heap projetado de < 700 MiB em regime |
+| `OS_BREAKER_FIELDDATA_LIMIT` | `0%` | **de propósito.** O mapping usa `doc_values` em tudo que é agregado; qualquer uso de fielddata é erro de consulta, e o breaker o transforma em erro visível em vez de OOM |
+| `OS_WATERMARK_LOW` / `_HIGH` / `_FLOOD` | 75% / 85% / 90% | em `flood_stage` **todos** os índices viram read-only, e não voltam sozinhos quando o disco esvazia — exige um `PUT` em `index.blocks.read_only_allow_delete` |
+
 ## As três decisões que não têm volta
 
 Alterar qualquer uma delas depois exige **reindexar os 72,32 milhões de

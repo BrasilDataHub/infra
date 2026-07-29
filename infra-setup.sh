@@ -282,8 +282,10 @@ OPTIONS (rede e firewall):
       --redis-port N         (default: 6379)
       --meilisearch-port N   (default: 7700)
       --allow-from CIDR[,CIDR]  Restringe o firewall a estas origens
+                             (default: sem restrição — qualquer origem)
+      --no-firewall          Não configura o ufw
 
-    Atualização de uma instalação existente (herda o .setup-state):
+OPTIONS (atualização de uma instalação existente — herda o .setup-state):
       --update               Reaplica a configuração sem repetir as flags da
                              instalação original. Flag explícita sobrescreve;
                              ausência HERDA. É o que substitui o contorno de
@@ -291,9 +293,7 @@ OPTIONS (rede e firewall):
                              cor" — cujo esquecimento recriava o banco, reexpunha
                              as portas e esvaziava o firewall.
       --add-service NOME     Acrescenta um serviço (opensearch, pgbouncer, ...)
-                             sem tocar nos que já existem
-                             (default: sem restrição — qualquer origem)
-      --no-firewall          Não configura o ufw
+                             sem tocar nos que já existem. Implica --update.
 
 OPTIONS (webhook):
       --webhook-url URL      Notifica progresso e erros (POST JSON)
