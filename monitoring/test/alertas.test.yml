@@ -66,6 +66,45 @@ tests:
               summary: "Conexões acima de 85% do max_connections"
               description: "Antes de aumentar max_connections, verifique se a aplicação está usando pool — subir o teto multiplica o work_mem alocável e é a via rápida para OOM (postgres/docs/perfis.md)."
 
+  # O collector `long_running_transactions` publica ZERO quando não há
+  # transação longa — não omite a série. Sem a guarda pela contagem, a
+  # expressão vira `time() - 0 > 3600`, que é verdadeira desde 1970: o alerta
+  # disparava em TODA instalação saudável, dez minutos depois de o Prometheus
+  # subir. Encontrado num host recém-provisionado durante os testes de
+  # infraestrutura de 2026-07-29.
+  - interval: 1m
+    name: "sem transação longa, o alerta NÃO dispara (a métrica é zero, não ausente)"
+    input_series:
+      - series: 'pg_long_running_transactions{instance="pg:9187"}'
+        values: "0+0x20"
+      - series: 'pg_long_running_transactions_oldest_timestamp_seconds{instance="pg:9187"}'
+        values: "0+0x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TransacaoLongaSegurandoXmin
+        exp_alerts: []
+
+  - interval: 1m
+    name: "transação aberta há mais de 1 hora dispara"
+    input_series:
+      - series: 'pg_long_running_transactions{instance="pg:9187"}'
+        values: "1+0x20"
+      # Timestamp fixo bem no passado: o `time()` do teste começa em 0 e cresce,
+      # então um valor negativo é o que garante `time() - t > 3600` desde o
+      # primeiro instante avaliado.
+      - series: 'pg_long_running_transactions_oldest_timestamp_seconds{instance="pg:9187"}'
+        values: "-7200+0x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TransacaoLongaSegurandoXmin
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: pg:9187
+            exp_annotations:
+              summary: "Transação aberta há mais de 1 hora"
+              description: "Enquanto ela viver, o autovacuum não consegue limpar tuplas mortas de NENHUMA tabela. Se for um job de ETL, confirme que ele faz commit em lotes. Consulte com: SELECT pid, state, xact_start, query FROM pg_stat_activity WHERE xact_start < now() - interval '1 hour';"
+
   - interval: 1m
     name: "conexões em 50% não alertam"
     input_series:

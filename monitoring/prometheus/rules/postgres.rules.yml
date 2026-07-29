@@ -30,7 +30,22 @@ groups:
       - alert: TransacaoLongaSegurandoXmin
         # A causa nº1 de bloat que o autovacuum não resolve. O sintoma aparece
         # horas depois, como disco cheio — daí alertar cedo.
+        #
+        # A GUARDA DO ZERO NÃO É DEFENSIVA, É O QUE FAZ A REGRA FUNCIONAR.
+        # Sem transação longa nenhuma, o collector `long_running_transactions`
+        # não omite a série: ele publica o valor ZERO. E `time() - 0` são os
+        # segundos desde 1970 — sempre maiores que 3600. A expressão anterior
+        # disparava PARA SEMPRE, em qualquer instalação saudável, dez minutos
+        # depois de o Prometheus subir. Medido num host recém-provisionado, sem
+        # nenhuma transação aberta: `time() - metrica` = 1.785.308.732.
+        #
+        # O custo não é o alerta a mais: é a operação aprender que este alerta
+        # mente, e ignorá-lo no dia em que um ETL de verdade segurar o xmin.
+        # `pg_long_running_transactions` (a CONTAGEM) é o guarda natural — ele
+        # é 0 exatamente quando não há o que alertar.
         expr: |
+          pg_long_running_transactions > 0
+          and
           time() - pg_long_running_transactions_oldest_timestamp_seconds > 3600
         for: 10m
         labels:
