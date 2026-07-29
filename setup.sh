@@ -139,6 +139,10 @@ ALERT_EMAIL_FROM=""
 ALERT_SMTP_HOST=""
 ALERT_SMTP_USER=""
 ALERT_SMTP_PASSWORD=""
+# URL pela qual um humano alcança este Alertmanager. Vai no `title_link` das
+# notificações — e destinos que validam a URL (o Discord é um) RECUSAM a
+# notificação quando ela aponta para o hostname do container.
+ALERT_EXTERNAL_URL="http://localhost:9093"
 PROMETHEUS_PORT="9090"
 GRAFANA_PORT="3000"
 GRAFANA_ADMIN_PASSWORD=""
@@ -326,6 +330,10 @@ OPTIONS (observabilidade — desligada por default):
       --alert-smtp-host HOST:PORTA
       --alert-smtp-user USUÁRIO
       --alert-smtp-password SENHA
+      --alert-external-url URL     URL pela qual VOCÊ alcança o Alertmanager
+                             (default: http://localhost:9093). Vai no link das
+                             notificações; destinos que validam a URL recusam
+                             a notificação se ela apontar para o container.
       --prometheus-port N    (default: 9090)
       --grafana-port N       (default: 3000)
       --grafana-password SENHA  (se omitida, é gerada)
@@ -453,6 +461,7 @@ VM_MAX_MAP_COUNT="262144"; shift ;;
         --alert-smtp-host) ALERT_SMTP_HOST="$2"; _explicita ALERT_SMTP_HOST; shift 2 ;;
         --alert-smtp-user) ALERT_SMTP_USER="$2"; _explicita ALERT_SMTP_USER; shift 2 ;;
         --alert-smtp-password) ALERT_SMTP_PASSWORD="$2"; _explicita ALERT_SMTP_PASSWORD; shift 2 ;;
+        --alert-external-url) ALERT_EXTERNAL_URL="$2"; _explicita ALERT_EXTERNAL_URL; shift 2 ;;
         --prometheus-port) PROMETHEUS_PORT="$2"; shift 2 ;;
         --grafana-port) GRAFANA_PORT="$2"; shift 2 ;;
         --grafana-password) GRAFANA_ADMIN_PASSWORD="$2"; shift 2 ;;
@@ -1823,6 +1832,7 @@ write_env_files() {
             [[ -n "$ALERT_SMTP_HOST" ]]     && printf 'ALERTMANAGER_SMTP_HOST=%s\n' "$ALERT_SMTP_HOST"
             [[ -n "$ALERT_SMTP_USER" ]]     && printf 'ALERTMANAGER_SMTP_USER=%s\n' "$ALERT_SMTP_USER"
             [[ -n "$ALERT_SMTP_PASSWORD" ]] && printf 'ALERTMANAGER_SMTP_PASSWORD=%s\n' "$ALERT_SMTP_PASSWORD"
+            printf 'ALERTMANAGER_EXTERNAL_URL=%s\n' "$ALERT_EXTERNAL_URL"
             # `true` fecha o bloco: o último `[[ ]]` falso derrubaria o `set -e`.
             true
         } > "$dir/.env"

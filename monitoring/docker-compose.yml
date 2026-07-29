@@ -171,6 +171,24 @@ services:
       ALERTMANAGER_ETL_WEEKDAY: ${ALERTMANAGER_ETL_WEEKDAY:-saturday}
       ALERTMANAGER_ETL_START: ${ALERTMANAGER_ETL_START:-00:00}
       ALERTMANAGER_ETL_END: ${ALERTMANAGER_ETL_END:-07:00}
+    # Repete o CMD da imagem para acrescentar UMA flag. O entrypoint é o
+    # generate-config.sh, que termina em `exec "$@"` — então o command chega
+    # inteiro ao binário.
+    #
+    # `--web.external-url` não é cosmético. Sem ela, o Alertmanager monta o
+    # `title_link` das notificações a partir do hostname do CONTAINER, que é um
+    # hex sem TLD (http://a1b2c3:9093). Dois efeitos: o link não leva a lugar
+    # nenhum para quem recebe o alerta, e destinos que VALIDAM a URL recusam a
+    # notificação inteira — o Discord responde 400 {"attachments": ["0"]} e o
+    # Alertmanager registra "notify retry canceled due to unrecoverable error".
+    # O alerta é avaliado, roteado e silenciosamente descartado no último passo.
+    # Medido em 2026-07-29 com um webhook do Discord.
+    command:
+      - /bin/alertmanager
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.listen-address=0.0.0.0:9093
+      - --web.external-url=${ALERTMANAGER_EXTERNAL_URL:-http://localhost:9093}
     labels:
       org.brasildatahub.service: alertmanager
     volumes:
