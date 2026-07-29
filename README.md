@@ -20,7 +20,7 @@ máquina e o passo a passo de implantação.
 > **Implantando do zero?** A ordem entre os quatro repositórios da operação
 > (infra, cnpj-pipeline, search-indexer-service, website) e o que depende de
 > quê está no
-> [runbook de implantação](../../docs/roadmap/20-arquitetura-de-busca-2026-07/IMPLANTACAO.md).
+> [runbook de implantação](https://github.com/BrasilDataHub/docs/blob/main/roadmap/20-arquitetura-de-busca-2026-07/IMPLANTACAO.md).
 > Este README cobre a parte de infraestrutura; ele sozinho não é suficiente.
 
 ## Como implantar

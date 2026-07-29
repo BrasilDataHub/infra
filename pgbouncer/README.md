@@ -102,7 +102,7 @@ Sem esta linha, a conexão é **recusada no handshake** com
 `unsupported startup parameter` — e o erro não menciona o PgBouncer, o que
 torna o diagnóstico caro.
 
-> `search_path` estar nesta lista é o que faz o [ciclo blue/green](../../cnpj-pipeline/docs/ciclo-blue-green.md)
+> `search_path` estar nesta lista é o que faz o [ciclo blue/green](https://github.com/BrasilDataHub/cnpj-pipeline/blob/main/docs/ciclo-blue-green.md)
 > funcionar através do pooler: o `search_path` que vale é o do
 > `ALTER DATABASE`, e não o que a aplicação pede no handshake. Com
 > `server_lifetime = 3600`, uma publicação alcança todas as conexões em no

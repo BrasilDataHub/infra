@@ -71,7 +71,7 @@ curl -X PUT localhost:9200/busca_estabelecimento_v1 \
 > O nome físico termina com a versão/`load_id`; a aplicação consulta um
 > **alias**, nunca o índice diretamente. Quem cria e move o alias é o
 > `search-indexer-service` — ver
-> [alias versionado](../../search-indexer-service/docs/alias-versionado.md).
+> [alias versionado](https://github.com/BrasilDataHub/search-indexer-service/blob/main/docs/alias-versionado.md).
 
 ### Variáveis de ambiente
 
