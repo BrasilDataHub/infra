@@ -27,6 +27,10 @@ on:
       - "postgres/*.sh"
       - "postgres/backup/Dockerfile"
       - "postgres/backup/*.sh"
+      # O job `pgbackrest` roda este teste ANTES do push, mas o teste não estava
+      # no filtro: mudá-lo não disparava o build, e a correção ficava sem
+      # verificação. Foi assim que a imagem passou de julho/2026 sem publicar.
+      - "postgres/backup/test/**"
       - "postgres/initdb/**"
       - "postgres/.dockerignore"
       - "postgres/test/**"

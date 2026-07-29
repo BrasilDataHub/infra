@@ -121,6 +121,58 @@ set** — o subconjunto de dados e índices que as consultas tocam com frequênc
    (116 GB, índices de busca de dezenas de GB) precisa de `dedicada-64gb` ou
    superior para servir busca textual com working set em RAM.
 
+### E se a máquina não tem o tamanho de nenhum perfil?
+
+O catálogo é discreto — 8, 16, 32, 64, 128 — e o `--auto` escolhe **por faixa
+com piso**. Uma máquina de tamanho intermediário recebe o perfil de baixo, e a
+diferença fica fora do limite do container:
+
+| Máquina dedicada | Perfil escolhido | Limite do container | Fora do limite |
+|---|---|---|---|
+| 24 GB | `dedicada-16gb` | 14G | ~9 GiB |
+| **48 GB** | `dedicada-32gb` | 28G | **~19 GiB** |
+| 96 GB | `dedicada-64gb` | 56G | ~38 GiB |
+| 256 GB | `dedicada-128gb` (teto) | 120G | ~131 GiB |
+
+Desde 07/2026 o `setup.sh` **avisa** quando isso acontece, com o número e o
+ponteiro para o [Retrofit](#retrofit-o-host-já-existe). Antes disso, passava em
+silêncio.
+
+**A sobra não é desperdício — mas o `effective_cache_size` fica errado.** A
+memória acima do limite vira page cache do kernel, e o Postgres lê por ela
+normalmente; é o ativo pelo qual se paga uma máquina grande. O que se perde é
+outra coisa: o planner recebe um `effective_cache_size` dimensionado para a
+máquina menor e passa a preferir seq scan onde um index scan serviria.
+
+Se a diferença incomodar, aplique o [Retrofit](#retrofit-o-host-já-existe) —
+é a única receita do catálogo em que os valores de um perfil mudam.
+
+### Nos outros serviços, a sobra tem significados diferentes
+
+Vale ter isto claro antes de decidir que um perfil "está pequeno":
+
+| Serviço | Memória acima do limite do container |
+|---|---|
+| **Postgres** | vira **page cache** e continua servindo o banco. Sobra útil |
+| **OpenSearch** | é o **ativo principal**: o `mmap` do Lucene não conta no RSS do cgroup, conta como page cache reclamável. O heap fica fixo em 4 GiB de propósito |
+| **Meilisearch** | mesma física — o índice é LMDB por `mmap` |
+| **Redis** | aí sim fica **ociosa**. `maxmemory` é teto rígido dos dados, e o Redis não usa page cache para servir. O limite do container é ~2× o `maxmemory` só por causa do fork do rewrite do AOF |
+
+### CPU não é limitada — de propósito
+
+Postgres, Redis e Meilisearch sobem com `cpus: "0"`, ou seja, **sem teto**: numa
+máquina dedicada eles já usam todos os núcleos. O `setup.sh` não detecta nem
+define CPU em lugar nenhum.
+
+A única exceção é o OpenSearch (`OS_CPU_LIMIT=6`), porque ele foi dimensionado
+para dividir o host com o Postgres — o `merge` do Lucene consome CPU em rajadas
+e competiria com as consultas do banco.
+
+O que **varia por perfil** são os parâmetros de paralelismo do Postgres
+(`max_parallel_workers`, `max_worker_processes`), e esses seguem o tamanho do
+perfil, não o número de núcleos da máquina. Numa máquina com mais núcleos que o
+perfil pressupõe, é o mesmo caso da memória: veja o Retrofit.
+
 ## Parâmetros
 
 ### Base fixa da imagem

@@ -181,6 +181,15 @@ Duas observações que costumam pegar de surpresa:
   segue o **número de alvos**, não o tamanho do host: os três serviços geram
   ~3 mil séries tanto em 16 quanto em 128 GB. `metricas-2gb` entra só com
   `--metrics-containers`, e `metricas-8gb` nunca é automático (é para 5–15 hosts).
+- **Máquina de tamanho intermediário recebe o perfil de baixo.** O catálogo é
+  discreto e a escolha é por faixa: um host de 48 GB dedicado ao Postgres fica
+  com `dedicada-32gb` e ~19 GiB fora do limite do container. O script **avisa**
+  quando isso acontece e aponta a receita de ajuste — ver
+  [e se a máquina não tem o tamanho de nenhum perfil](postgres/docs/perfis.md#e-se-a-máquina-não-tem-o-tamanho-de-nenhum-perfil).
+
+**CPU não é limitada.** Postgres, Redis e Meilisearch sobem sem teto de CPU e
+usam todos os núcleos da máquina. A única exceção é o OpenSearch, limitado a 6
+vCPU porque foi dimensionado para dividir o host com o banco.
 
 Qualquer perfil pode ser fixado à mão — `--pg-profile dedicada-32gb`,
 `--redis-profile cache-1gb`, `--meili-profile busca-4gb`,
