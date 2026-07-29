@@ -554,6 +554,13 @@ fi
 # os containers com esta label.
 check "label 'monitoring' aparece uma única vez" "1" \
     "$(grep -cE 'org\.brasildatahub\.service: monitoring$' "$mon")"
+# O `uname -n` de dentro do container é o ID do container, e é ele que vai parar
+# em node_uname_info{nodename=...}. Sem `hostname:`, a seção de infraestrutura
+# via host="bdh-data" e nodename="88cdb3eab7a0": o link para o Node Exporter
+# Full, que casa por nodename, abria a máquina errada. `pid: host` não resolve —
+# o UTS namespace é outro. Encontrado em 29/07/2026, no primeiro deploy real.
+check "node-exporter herda o hostname do host" "ok" \
+    "$(awk '/^  node-exporter:/,/^  [a-z]/' "$mon" | grep -q 'hostname: \${MON_HOSTNAME' && echo ok || echo 'nodename seria o ID do container')"
 
 printf '\nRótulo de máquina nos alvos do Prometheus\n'
 # O `host` do alvo é o ÚNICO rótulo que diz de qual máquina a série veio: os

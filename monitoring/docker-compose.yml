@@ -234,6 +234,13 @@ services:
     #      collector="pressure"} = 0). Em Ubuntu 22.04+/Debian 12 o PSI vem
     #      habilitado e funciona normalmente.
     profiles: [node]
+    # O `uname -n` de DENTRO do container é o ID do container, e é ele que vai
+    # parar em node_uname_info{nodename=...}. Sem esta linha, o painel de
+    # infraestrutura via `host="bdh-data"` e `nodename="88cdb3eab7a0"`: o link
+    # para o Node Exporter Full, que casa por nodename, abria a máquina errada,
+    # e o detector de divergência de apelido acusava um erro que não existia.
+    # `pid: host` não resolve isso — o UTS namespace é outro.
+    hostname: ${MON_HOSTNAME:-desconhecido}
     # Para enxergar os PIDs reais do host. Enfraquece o isolamento — é por isso
     # que este container não publica porta nenhuma.
     pid: host
