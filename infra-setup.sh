@@ -1034,16 +1034,29 @@ configure_sysctl() {
     local atual
     atual="$(sysctl -n vm.max_map_count 2>/dev/null || printf '0')"
 
+    # NUNCA rebaixar. `vm.max_map_count` é global, e um valor MAIOR que o nosso
+    # mínimo foi posto ali por alguém — outro serviço, o instalador do Docker,
+    # uma política da imagem da nuvem. Persistir o nosso por cima rebaixaria no
+    # próximo boot algo que não é nosso, e o sintoma apareceria noutro serviço,
+    # dias depois. Numa máquina real este caso não é hipotético: encontrada com
+    # 1048576, quatro vezes o que o OpenSearch exige.
+    local alvo="$VM_MAX_MAP_COUNT"
+    [[ "$atual" -gt "$alvo" ]] && alvo="$atual"
+
     if [[ "$DRY_RUN" == "true" ]]; then
-        _log "    ${C_DIM}[dry-run] vm.max_map_count: ${atual} → ${VM_MAX_MAP_COUNT} e ${arquivo}${C_RESET}"
+        if [[ "$atual" -ge "$VM_MAX_MAP_COUNT" ]]; then
+            _log "    ${C_DIM}[dry-run] vm.max_map_count já em ${atual} (≥ ${VM_MAX_MAP_COUNT}); persistiria ${alvo} em ${arquivo}${C_RESET}"
+        else
+            _log "    ${C_DIM}[dry-run] vm.max_map_count: ${atual} → ${alvo} e ${arquivo}${C_RESET}"
+        fi
         return 0
     fi
 
     if [[ "$atual" -lt "$VM_MAX_MAP_COUNT" ]]; then
-        run sysctl -w "vm.max_map_count=${VM_MAX_MAP_COUNT}"
-        ok "vm.max_map_count: ${atual} → ${VM_MAX_MAP_COUNT}"
+        run sysctl -w "vm.max_map_count=${alvo}"
+        ok "vm.max_map_count: ${atual} → ${alvo}"
     else
-        ok "vm.max_map_count já em ${atual}"
+        ok "vm.max_map_count já em ${atual} (mínimo exigido: ${VM_MAX_MAP_COUNT})"
     fi
 
     # Reescrever o arquivo inteiro, e não acrescentar: uma execução repetida
@@ -1051,10 +1064,11 @@ configure_sysctl() {
     {
         printf '# GERADO por infra-setup.sh — não editar à mão.\n'
         printf '# O OpenSearch usa mmap para os segmentos do Lucene; o default do\n'
-        printf '# Debian (65530) o faz morrer no bootstrap check.\n'
-        printf 'vm.max_map_count=%s\n' "$VM_MAX_MAP_COUNT"
+        printf '# Debian (65530) o faz morrer no bootstrap check. O mínimo que\n'
+        printf '# exigimos é %s; um valor maior já presente no host é PRESERVADO.\n' "$VM_MAX_MAP_COUNT"
+        printf 'vm.max_map_count=%s\n' "$alvo"
     } > "$arquivo"
-    ok "persistido em ${arquivo}"
+    ok "persistido em ${arquivo}: ${alvo}"
 }
 
 install_docker() {

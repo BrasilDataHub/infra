@@ -317,5 +317,27 @@ else
     nok "sem etapa de sysctl — o OpenSearch morre no bootstrap check"
 fi
 
+# Encontrada uma maquina real com vm.max_map_count=1048576 — quatro vezes o
+# minimo do OpenSearch. Persistir 262144 por cima rebaixaria no proximo boot
+# um valor que outro servico pode depender, e o sintoma apareceria longe daqui.
+(
+    carregar
+    VM_MAX_MAP_COUNT=262144
+    atual=1048576
+    alvo="$VM_MAX_MAP_COUNT"
+    [[ "$atual" -gt "$alvo" ]] && alvo="$atual"
+    printf '%s' "$alvo"
+) > "$TMP/sysctl1"
+if [[ "$(cat "$TMP/sysctl1")" == "1048576" ]]; then
+    ok "um valor de max_map_count MAIOR que o exigido e preservado"
+else
+    nok "rebaixaria para $(cat "$TMP/sysctl1")"
+fi
+if grep -q 'NUNCA rebaixar' "$RAIZ/infra-setup.sh" && grep -qF 'alvo="$atual"' "$RAIZ/infra-setup.sh"; then
+    ok "a guarda de nao-rebaixamento esta no script, nao so no teste"
+else
+    nok "o script nao preserva valor maior"
+fi
+
 printf '\n  %d passaram, %d falharam\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
