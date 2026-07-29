@@ -1,0 +1,175 @@
+{
+  "uid": "bdh-meilisearch",
+  "title": "Meilisearch — busca (em substituição pelo OpenSearch)",
+  "tags": ["brasildatahub", "meilisearch", "busca"],
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "browser",
+  "annotations": { "list": [] },
+  "templating": { "list": [] },
+  "links": [
+    {
+      "type": "link",
+      "title": "OpenSearch — o motor que substitui este",
+      "url": "/d/bdh-opensearch/",
+      "icon": "external link",
+      "targetBlank": true
+    },
+    {
+      "type": "link",
+      "title": "Visão geral",
+      "url": "/d/bdh-visao-geral/",
+      "icon": "external link",
+      "targetBlank": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Estado do serviço",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Meilisearch no ar",
+      "description": "Este painel existe para o dashboard se explicar quando está vazio. O Meilisearch é opcional na plataforma e está em substituição pelo OpenSearch: num host que não o instalou, o setup.sh não escreve targets/meilisearch.json, o job fica sem alvo e NENHUMA série meilisearch_* existe. Isso não é falha de coleta — é o serviço não estar lá.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=\"meilisearch\"}",
+          "legendFormat": "{{host}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Meilisearch não está instalado neste host",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "fora do ar", "color": "red", "index": 0 },
+                "1": { "text": "no ar", "color": "green", "index": 1 }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Fila de tarefas e indexação",
+      "description": "meilisearch_is_indexing em 1 durante horas é normal numa carga grande; o que importa é a fila drenar depois.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 5, "w": 18, "x": 6, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "meilisearch_task_queue_used_size",
+          "legendFormat": "tarefas na fila — {{host}}"
+        },
+        {
+          "refId": "B",
+          "expr": "meilisearch_is_indexing",
+          "legendFormat": "indexando — {{host}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      }
+    },
+    {
+      "id": 4,
+      "type": "row",
+      "title": "Busca — o que o usuário sente",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Latência p95 por rota",
+      "description": "A quebra por rota é o que separa uma busca lenta de um autocomplete lento — os dois têm orçamentos de tempo muito diferentes.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, path) (rate(meilisearch_http_response_time_seconds_bucket[5m])))",
+          "legendFormat": "{{path}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Requisições por segundo, por rota",
+      "description": "O par da latência: p95 subindo com carga estável é degradação do motor; subindo junto com a carga é dimensionamento.",
+      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (path) (rate(meilisearch_http_response_time_seconds_count[5m]))",
+          "legendFormat": "{{path}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      }
+    }
+  ]
+}
