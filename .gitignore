@@ -7,3 +7,7 @@
 # `targets/README.md` é versionado; o resto do diretório, não.
 monitoring/targets/*.json
 monitoring/secrets/
+
+# Ficha da infraestrutura: contém IPs, senhas e chaves dos servidores em uso.
+# ESTE REPOSITÓRIO É PÚBLICO no GitHub — o arquivo nunca deve ser versionado.
+INFRAESTRUTURA.md
