@@ -100,6 +100,7 @@ VM_MAX_MAP_COUNT="262144"
 METRICS_ENABLED="false"
 METRICS_ONLY="false"             # --metrics-only: acrescenta métricas SEM recriar os serviços
 UPDATE_MODE="false"              # --update / --add-service: herda o estado e reaplica
+SOMENTE_MONITORING="false"       # --services monitoring: host só de observabilidade
 ADD_SERVICE=""                   # serviço a acrescentar sem tocar nos demais
 MONITORING_ENABLED="true"        # --no-monitoring: só exporters, Prometheus alhures
 METRICS_PROFILE="auto"
@@ -667,10 +668,34 @@ validate_and_prompt() {
     for s in "${SERVICES[@]}"; do
         case "$s" in
             postgres|redis|meilisearch|opensearch|pgbouncer) ;;
-            *) die "serviço desconhecido: '$s' (use postgres, redis, meilisearch, opensearch ou pgbouncer)" ;;
+            # `monitoring` em --services provisiona um host SÓ de
+            # observabilidade — o desenho que este roadmap adota (Prometheus no
+            # bdh-apps, dados no bdh-data). Ele não entra no array SERVICES
+            # (ver logo abaixo): tem layout próprio, não tem volume de dados de
+            # serviço e o gerador de override de bind assumiria um.
+            monitoring)
+                METRICS_ENABLED="true"
+                MONITORING_ENABLED="true"
+                SOMENTE_MONITORING="true"
+                ;;
+            *) die "serviço desconhecido: '$s' (use postgres, redis, meilisearch, opensearch, pgbouncer ou monitoring)" ;;
         esac
     done
-    [[ ${#SERVICES[@]} -eq 0 ]] && die "nenhum serviço selecionado"
+    # `monitoring` sai do array: ele é provisionado por setup_metrics(), não
+    # pelo laço de serviços de dados.
+    if [[ "$SOMENTE_MONITORING" == "true" ]]; then
+        local restantes=()
+        for s in "${SERVICES[@]}"; do
+            [[ "$s" == "monitoring" ]] || restantes+=("$s")
+        done
+        SERVICES=("${restantes[@]+"${restantes[@]}"}")
+    fi
+
+    # Um host só de observabilidade é legítimo e tem ZERO serviços de dados —
+    # a checagem original o rejeitaria.
+    if [[ ${#SERVICES[@]} -eq 0 && "$SOMENTE_MONITORING" != "true" ]]; then
+        die "nenhum serviço selecionado"
+    fi
 
     # --- dimensionamento coordenado ------------------------------------------
     # Os VIZINHOS são resolvidos primeiro e o Postgres fica com a memória que
@@ -1348,7 +1373,38 @@ write_env_files() {
                         "$GRAFANA_ADMIN_PASSWORD" "$GRAFANA_PORT" "$PROMETHEUS_PORT"
                 fi
             fi
-        } > "$WORKDIR/secrets/credentials.env"
+        } > "$WORKDIR/secrets/credentials.env.novo"
+
+        # MERGE, e não sobrescrita. O arquivo era reescrito com as credenciais
+        # apenas dos serviços DESTA execução: um `--add-service opensearch` num
+        # host que já tinha Postgres e Redis truncava as senhas dos dois, e o
+        # operador só descobria ao precisar delas — quando `bdh creds --show`
+        # devolvesse metade do que devolvia antes.
+        #
+        # A chave da linha nova vence a antiga; o que não foi regerado sobrevive.
+        if [[ -f "$WORKDIR/secrets/credentials.env" ]]; then
+            local chaves_novas
+            chaves_novas="$(grep -oE '^[A-Z][A-Z0-9_]*=' "$WORKDIR/secrets/credentials.env.novo" || true)"
+            {
+                cat "$WORKDIR/secrets/credentials.env.novo"
+                printf '\n# --- preservadas de execuções anteriores ---\n'
+                while IFS= read -r linha; do
+                    case "$linha" in
+                        ''|'#'*) continue ;;
+                    esac
+                    local chave="${linha%%=*}="
+                    case "$chaves_novas" in
+                        *"$chave"*) continue ;;
+                    esac
+                    printf '%s\n' "$linha"
+                done < "$WORKDIR/secrets/credentials.env"
+            } > "$WORKDIR/secrets/credentials.env.merge"
+            mv "$WORKDIR/secrets/credentials.env.merge" "$WORKDIR/secrets/credentials.env"
+            rm -f "$WORKDIR/secrets/credentials.env.novo"
+        else
+            mv "$WORKDIR/secrets/credentials.env.novo" "$WORKDIR/secrets/credentials.env"
+        fi
+
         chmod 600 "$WORKDIR/secrets/credentials.env"
         ok "credenciais em $WORKDIR/secrets/credentials.env (chmod 600)"
 
@@ -1669,6 +1725,14 @@ configure_firewall() {
         return 0
     fi
 
+    # RECONSTRUÇÃO A PARTIR DO ESTADO. Com `ALLOW_FROM` herdado do
+    # `.setup-state` (load_state) e a chain vazia — o cenário que uma execução
+    # anterior sem a flag produzia —, chegar aqui é o que a repovoa. Antes, o
+    # firewall só voltava se alguém repetisse a flag de cor.
+    if ! iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j DROP'; then
+        info "chain DOCKER-USER vazia: reconstruindo a partir de ALLOW_FROM=${ALLOW_FROM}"
+    fi
+
     # Daqui para baixo há `ALLOW_FROM`, então esvaziar é seguro: a chain é
     # reconstruída logo abaixo, no mesmo bloco. `ufw reload` sozinho não
     # bastaria — ele reaplica o arquivo, e as regras já inseridas continuariam
@@ -1730,11 +1794,12 @@ bdh — serviços de dados da BrasilDataHub
   bdh logs <serviço> [-f]  logs do serviço
   bdh up|down|restart <serviço>
   bdh verify [serviço]     verificação pós-deploy (/dev/shm, memória, conf)
+  bdh pull [serviço]       puxa a imagem nova da MESMA tag e recria só o que mudou
   bdh metrics              estado dos alvos do Prometheus
   bdh creds [--show]       caminho (ou conteúdo) das credenciais
   bdh path <serviço>       diretório do serviço
 
-Serviços: postgres, redis, meilisearch, monitoring
+Serviços: postgres, redis, meilisearch, opensearch, pgbouncer, monitoring
 USAGE
 }
 
@@ -1831,6 +1896,31 @@ cmd_status() {
     _t 3 docker volume ls --filter name=bdh_ --format '  {{.Name}}' 2>/dev/null || true
 }
 
+cmd_pull() {
+    # Atualizar a imagem de um serviço era o único caminho não coberto: as tags
+    # nos composes são fixas (`:17`, `:7`), então `docker compose pull` traz a
+    # versão nova daquela tag maior — e sem um comando, isso virava
+    # `docker compose -f ... -f ... pull` digitado à mão, com os overlays certos
+    # e na ordem certa.
+    local alvos svc
+    if [[ -n "$1" ]]; then
+        alvos="$1"
+    else
+        alvos="$(docker ps --format '{{.Label "org.brasildatahub.service"}}' \
+                 | grep -vE '^$|exporter|cadvisor|monitoring-' | sort -u)"
+    fi
+
+    for svc in $alvos; do
+        [[ -d "$(svc_dir "$svc")" ]] || { echo "  ! $svc não está instalado aqui" >&2; continue; }
+        echo "==> $svc"
+        compose "$svc" pull
+        # `up -d` sem `--force-recreate`: o Compose recria SÓ o que mudou. Num
+        # banco de centenas de GB, um recreate desnecessário é downtime e page
+        # cache frio.
+        compose "$svc" up -d
+    done
+}
+
 cmd_verify() {
     local svc="${1:-postgres}" cid
     cid="$(docker ps -q --filter "label=$LABEL=$svc" | head -1)"
@@ -1879,6 +1969,7 @@ case "${1:-status}" in
     down) compose "${2:?serviço}" down ;;      # sem -v: nunca apaga volume
     restart) compose "${2:?serviço}" restart ;;
     verify) cmd_verify "${2:-postgres}" ;;
+    pull) cmd_pull "${2:-}" ;;
     metrics) cmd_metrics ;;
     creds)
         if [[ "${2:-}" == "--show" ]]; then cat "$BDH_ROOT/secrets/credentials.env"

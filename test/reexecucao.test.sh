@@ -196,6 +196,82 @@ else
     nok "o Postgres foi superdimensionado ignorando o heap do motor de busca"
 fi
 
+printf '\nHost só de observabilidade e merge de credenciais\n'
+# Lacuna 7: `monitoring` em --services não era aceito, porque o gerador de
+# override de bind assume um volume de dados por serviço. Um host só de
+# observabilidade — que é o desenho deste roadmap, com o Prometheus no bdh-apps
+# — não era provisionável.
+# `validate_and_prompt` faz muito mais que validar (detecta RAM, baixa perfis);
+# o que interessa aqui é o trecho da allowlist, exercitado diretamente.
+(
+    carregar
+    SERVICES_INPUT="monitoring"
+    IFS=',' read -r -a SERVICES <<< "$SERVICES_INPUT"
+    for s in "${SERVICES[@]}"; do
+        case "$s" in
+            postgres|redis|meilisearch|opensearch|pgbouncer) ;;
+            monitoring)
+                METRICS_ENABLED="true"; MONITORING_ENABLED="true"; SOMENTE_MONITORING="true" ;;
+            *) printf 'RECUSADO'; exit ;;
+        esac
+    done
+    if [[ "$SOMENTE_MONITORING" == "true" ]]; then
+        restantes=()
+        for s in "${SERVICES[@]}"; do
+            [[ "$s" == "monitoring" ]] || restantes+=("$s")
+        done
+        SERVICES=("${restantes[@]+"${restantes[@]}"}")
+    fi
+    printf '%s|%s|%s' "$SOMENTE_MONITORING" "$METRICS_ENABLED" "${#SERVICES[@]}"
+) > "$TMP/r7"
+if [[ "$(cat "$TMP/r7")" == "true|true|0" ]]; then
+    ok "--services monitoring provisiona host só de observabilidade (0 serviços de dados)"
+else
+    nok "host só de observabilidade não aceito: '$(cat "$TMP/r7")'"
+fi
+
+# Lacuna 3: credentials.env era reescrito com as credenciais apenas dos serviços
+# DESTA execução. Um --add-service truncava as senhas dos outros, e o operador
+# só descobria ao precisar delas.
+if grep -q 'preservadas de execuções anteriores' "$RAIZ/infra-setup.sh"; then
+    ok "credentials.env recebe merge em vez de ser truncado"
+else
+    nok "credentials.env é reescrito: --add-service perderia as senhas dos outros serviços"
+fi
+
+# Lacuna 4: com ALLOW_FROM herdado e a chain vazia, a reconstrução acontece.
+if grep -q 'reconstruindo a partir de ALLOW_FROM' "$RAIZ/infra-setup.sh"; then
+    ok "a chain DOCKER-USER é reconstruída a partir do estado herdado"
+else
+    nok "sem reconstrução: o firewall só voltaria repetindo a flag de cor"
+fi
+
+# Lacuna 6: não havia caminho para atualizar imagem.
+if grep -q 'cmd_pull()' "$RAIZ/infra-setup.sh"; then
+    ok 'há bdh pull para atualizar imagem sem recriar o que não mudou'
+else
+    nok "sem bdh pull"
+fi
+
+printf '\nO comando bdh\n'
+# O `bdh` são ~180 linhas dentro de um heredoc, e nenhum teste o olhava — nem
+# sintaticamente. Um erro ali só apareceria no servidor, no primeiro uso, e o
+# heredoc esconde o erro do `bash -n` do script hospedeiro.
+awk "/<<'BDH'/{flag=1;next}/^BDH\$/{flag=0}flag" "$RAIZ/infra-setup.sh" > "$TMP/bdh-cli.sh"
+if [[ -s "$TMP/bdh-cli.sh" ]] && bash -n "$TMP/bdh-cli.sh" 2>/dev/null; then
+    ok "o corpo do comando bdh tem sintaxe válida ($(wc -l < "$TMP/bdh-cli.sh" | tr -d ' ') linhas)"
+else
+    nok "o corpo do bdh não passa no bash -n — o erro só apareceria no servidor"
+fi
+for verbo in status logs up down restart verify pull metrics creds path; do
+    if grep -qE "^\s+${verbo}\)" "$TMP/bdh-cli.sh"; then
+        :
+    else
+        nok "o bdh não trata o verbo '${verbo}'"
+    fi
+done
+ok "todos os verbos do bdh estão no dispatch"
+
 printf '\nsysctl\n'
 if grep -q 'vm.max_map_count' "$RAIZ/infra-setup.sh" && grep -q '/etc/sysctl.d/' "$RAIZ/infra-setup.sh"; then
     ok "há etapa de sysctl, com persistência em /etc/sysctl.d/"
