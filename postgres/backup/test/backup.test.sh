@@ -80,6 +80,24 @@ pg1-user=postgres
 EOF
 chmod 640 "$CONF_DIR/pgbackrest.conf"
 
+# O `chown` que o README manda fazer em produção, e que este teste não fazia.
+#
+# O pgbackrest roda como `postgres` (uid 999) e lê a config por bind-mount do
+# host. Com modo 640 e dono diferente, ele não consegue ler a PRÓPRIA
+# configuração: `unable to open file '/etc/pgbackrest/pgbackrest.conf' for
+# read: [13] Permission denied`.
+#
+# No Docker Desktop do macOS o compartilhamento de arquivos mascara a
+# propriedade e isso passa despercebido; num runner Linux, onde o mapeamento de
+# uid é real, o teste falha. Foi assim que o defeito ficou verde localmente e
+# vermelho no CI.
+#
+# Só o ARQUIVO, não o diretório: o TEXTFILE_DIR é criado dentro dele mais
+# adiante, e precisa continuar gravável por quem roda o teste.
+if ! chown 999:999 "$CONF_DIR/pgbackrest.conf" 2>/dev/null; then
+    sudo chown 999:999 "$CONF_DIR/pgbackrest.conf" 2>/dev/null || true
+fi
+
 # O binário do pgBackRest tem de existir NA IMAGEM DO BANCO: quem roda o
 # archive_command é o postmaster, não o sidecar. É o erro de desenho mais fácil
 # de cometer aqui, e o sintoma seria o pg_wal enchendo em produção.
