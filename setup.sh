@@ -753,6 +753,23 @@ validate_and_prompt() {
         neighbors_gb=$(( neighbors_gb + $(neighbor_budget_gb "$MEILI_PROFILE") ))
     fi
 
+    # O OpenSearch entrou no catálogo sem entrar nesta conta. O efeito: num host
+    # que já roda Postgres e Meilisearch, `--add-service opensearch` reportava
+    # "vizinhos 7 GB" ignorando os 8 GiB do motor de busca, e o `auto` do
+    # Postgres escolhia um perfil que não cabe. O erro apareceria como OOM-kill,
+    # semanas depois — exatamente o que o comentário de `neighbor_budget_gb`
+    # dizia que esta linha existia para evitar. Faltava a linha.
+    #
+    # Não há `ask` de perfil aqui porque só existe um: o dimensionamento do
+    # OpenSearch não é função da RAM do host, é a reserva de page cache para o
+    # mmap do Lucene. A validação existe para o caso de alguém definir
+    # OPENSEARCH_PROFILE à mão com um valor que não existe.
+    if service_selected opensearch; then
+        profile_valid "$OPENSEARCH_PROFILE" "$OPENSEARCH_PROFILES" \
+            || die "perfil de OpenSearch inválido: $OPENSEARCH_PROFILE (use: $OPENSEARCH_PROFILES)"
+        neighbors_gb=$(( neighbors_gb + $(neighbor_budget_gb "$OPENSEARCH_PROFILE") ))
+    fi
+
     if service_selected postgres; then
         PG_PROFILE="$(ask "Perfil do Postgres (auto usa a RAM livre após os vizinhos)" "$PG_PROFILE")"
         if [[ "$PG_PROFILE" == "auto" ]]; then

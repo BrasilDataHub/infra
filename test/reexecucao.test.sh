@@ -310,6 +310,39 @@ else
     nok "perfil virou '${saida##*|}' em vez do herdado busca-4gb"
 fi
 
+# --- 7. o OpenSearch entra no ORCAMENTO de memoria ---------------------------
+#
+# Ele entrou no catalogo de servicos sem entrar na conta de vizinhos: o
+# `neighbor_budget_gb` tinha a entrada, e nada a somava. Numa maquina com
+# Postgres e Meilisearch, `--add-service opensearch` reportava "vizinhos 7 GB"
+# ignorando os 8 GiB do motor, e o `auto` do Postgres escolhia um perfil que nao
+# cabe. O sintoma seria OOM-kill semanas depois.
+printf '\norcamento de memoria\n'
+(
+    carregar
+    mkdir -p "$WORKDIR"
+    cat > "$WORKDIR/.setup-state" <<'ST'
+SERVICES=postgres,redis,meilisearch
+PG_PROFILE=dedicada-8gb
+MEILI_PROFILE=busca-4gb
+REDIS_PROFILE=cache-512mb
+ST
+    ADD_SERVICE="opensearch"; UPDATE_MODE="true"; AUTO="true"
+    validate_and_prompt >/dev/null 2>&1
+    # 8 do OpenSearch tem de estar na conta
+    printf '%s' "$(neighbor_budget_gb "$OPENSEARCH_PROFILE")"
+) > "$TMP/r7" 2>/dev/null
+if [[ "$(cat "$TMP/r7")" == "8" ]]; then
+    ok "o perfil do OpenSearch declara orcamento de 8 GB"
+else
+    nok "orcamento do OpenSearch veio '$(cat "$TMP/r7")'"
+fi
+if grep -qF 'neighbors_gb + $(neighbor_budget_gb "$OPENSEARCH_PROFILE")' "$RAIZ/setup.sh"; then
+    ok "o orcamento do OpenSearch e SOMADO aos vizinhos"
+else
+    nok "o OpenSearch nao entra em neighbors_gb — o auto do Postgres superdimensiona"
+fi
+
 printf '\nsysctl\n'
 if grep -q 'vm.max_map_count' "$RAIZ/setup.sh" && grep -q '/etc/sysctl.d/' "$RAIZ/setup.sh"; then
     ok "há etapa de sysctl, com persistência em /etc/sysctl.d/"
