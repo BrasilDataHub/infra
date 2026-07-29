@@ -59,11 +59,16 @@ POSTGRES_DB="dados"
 PG_PROFILE="auto"
 REDIS_PROFILE="auto"
 MEILI_PROFILE="auto"
-# Um perfil só, e não `auto`: o dimensionamento do OpenSearch não é uma função
-# da RAM do host — é a conta de 03 §3.1, que reserva 7,5 GiB de page cache para
-# o mmap do Lucene. Detectar por RAM produziria um heap grande e page cache
-# insuficiente, que é o pior dos dois mundos.
-OPENSEARCH_PROFILE="compartilhada-8gb"
+# `auto` escolhe entre DIVIDIR o host ou tê-lo inteiro — e essa é a única
+# pergunta que importa aqui. O dimensionamento do OpenSearch não é função da RAM
+# do host (é a conta de 03 §3.1, que reserva page cache para o mmap do Lucene),
+# mas É função de com quem ele divide a máquina.
+#
+# O catálogo tinha um perfil só, e aplicá-lo a um host dedicado não era
+# conservador — era quebrado: 10 GiB ociosos e o breaker `parent` recusando a
+# carga inicial. Medido em 29/07/2026, com a indexação parada em 2,46 M de
+# 72,3 M documentos.
+OPENSEARCH_PROFILE="auto"
 PROFILES_DIR=""
 ALLOW_OVERSIZED="false"
 VOLUMES_MODE="named"
@@ -256,6 +261,12 @@ OPTIONS (serviços):
                              | cache-2gb                        (default: auto)
       --meili-profile PERFIL auto | busca-512mb | busca-1gb | busca-4gb
                              | busca-16gb                       (default: auto)
+      --opensearch-profile PERFIL
+                             auto | compartilhada-8gb | dedicada-16gb
+                             (default: auto). 'auto' NÃO olha a RAM: olha COM
+                             QUEM o motor divide o host. Sozinho numa máquina de
+                             14 GiB ou mais, `dedicada-16gb`; ao lado de
+                             Postgres, Redis ou Meilisearch, `compartilhada-8gb`
       --profiles-dir PATH    Lê os perfis de uma cópia local do repositório em
                              vez de baixá-los (ex.: um clone ou fork)
       --allow-oversized-profile
@@ -404,6 +415,7 @@ while [[ $# -gt 0 ]]; do
         --pg-profile) PG_PROFILE="$2"; _explicita PG_PROFILE; shift 2 ;;
         --redis-profile) REDIS_PROFILE="$2"; _explicita REDIS_PROFILE; shift 2 ;;
         --meili-profile|--meilisearch-profile) MEILI_PROFILE="$2"; _explicita MEILI_PROFILE; shift 2 ;;
+        --opensearch-profile) OPENSEARCH_PROFILE="$2"; _explicita OPENSEARCH_PROFILE; shift 2 ;;
         --profiles-dir) PROFILES_DIR="$2"; shift 2 ;;
         --allow-oversized-profile) ALLOW_OVERSIZED="true"; shift ;;
         --volumes) VOLUMES_MODE="$2"; shift 2 ;;
@@ -677,7 +689,40 @@ PG_PROFILES="dedicada-8gb dedicada-16gb dedicada-32gb dedicada-64gb dedicada-128
 # permite `allkeys-lru` num lado sem arriscar despejar job no outro.
 REDIS_PROFILES="cache-256mb cache-512mb cache-768mb cache-1gb cache-2gb fila-256mb"
 MEILI_PROFILES="busca-512mb busca-1gb busca-4gb busca-16gb"
-OPENSEARCH_PROFILES="compartilhada-8gb"
+OPENSEARCH_PROFILES="compartilhada-8gb dedicada-16gb"
+
+# O OpenSearch divide este host com outro serviço de dados?
+#
+# É a pergunta que separa os dois perfis. `compartilhada-8gb` reserva 7,5 GiB de
+# page cache para o Postgres vizinho; `dedicada-16gb` usa a máquina inteira, com
+# 5 GiB de heap — e é a diferença entre a carga inicial passar ou o breaker
+# `parent` rejeitá-la.
+#
+# `pgbouncer` e `monitoring` não contam como vizinho de peso: o pooler cabe em
+# 128 MiB e os exporters em ~200 MiB. O que muda a conta é Postgres, Redis ou
+# Meilisearch dividindo a RAM.
+# O argumento é a RAM em GiB e existe para os testes — sem ele, lê a da máquina.
+# É o mesmo contrato de detect_pg_profile e dos demais: um teste que dependa da
+# RAM de quem o roda passa no laptop do autor e falha na CI.
+# shellcheck disable=SC2120  # o argumento é opcional
+detect_opensearch_profile() {
+    local s
+    for s in "${SERVICES[@]+"${SERVICES[@]}"}"; do
+        case "$s" in
+            postgres|redis|meilisearch) printf 'compartilhada-8gb'; return 0 ;;
+        esac
+    done
+    # Sozinho no host — mas só vale a pena se a máquina tiver porte para isso.
+    # Abaixo de 14 GiB, `dedicada-16gb` pediria 10 GiB de limite numa máquina
+    # que não os tem, e o container não subiria.
+    local mem="${1:-}"
+    [[ -z "$mem" ]] && mem="$(available_mem_gb)"
+    if (( mem >= 14 )); then
+        printf 'dedicada-16gb'
+    else
+        printf 'compartilhada-8gb'
+    fi
+}
 METRICS_PROFILES="metricas-512mb metricas-2gb metricas-8gb"
 
 # O MAIOR perfil cujo limite de container cabe na memória informada. Existe
@@ -770,6 +815,13 @@ neighbor_budget_gb() {
         # 10 GiB) ignorando que 8 GiB já são do motor de busca. O erro aparece
         # como OOM-kill, semanas depois.
         compartilhada-8gb) printf '8' ;;
+        # O perfil dedicado só é escolhido quando o motor está SOZINHO no host,
+        # então na prática ele nunca entra nesta soma. A linha existe para o caso
+        # de alguém fixá-lo à mão ao lado de outro serviço: sem ela,
+        # `neighbor_budget_gb` devolveria 0 e o `auto` do Postgres
+        # superdimensionaria o banco em 10 GiB — o erro apareceria como OOM-kill,
+        # semanas depois. É exatamente o que já aconteceu com o perfil anterior.
+        dedicada-16gb) printf '10' ;;
         # Observabilidade — Prometheus + Grafana + node exporter + exporters.
         # O cAdvisor entra à parte, em metrics_budget_gb().
         metricas-512mb) printf '2' ;;
@@ -978,8 +1030,9 @@ validate_and_prompt() {
     # mmap do Lucene. A validação existe para o caso de alguém definir
     # OPENSEARCH_PROFILE à mão com um valor que não existe.
     if service_selected opensearch; then
+        [[ "$OPENSEARCH_PROFILE" == "auto" ]] && OPENSEARCH_PROFILE="$(detect_opensearch_profile)"
         profile_valid "$OPENSEARCH_PROFILE" "$OPENSEARCH_PROFILES" \
-            || die "perfil de OpenSearch inválido: $OPENSEARCH_PROFILE (use: $OPENSEARCH_PROFILES)"
+            || die "perfil de OpenSearch inválido: $OPENSEARCH_PROFILE (use: auto $OPENSEARCH_PROFILES)"
         neighbors_gb=$(( neighbors_gb + $(neighbor_budget_gb "$OPENSEARCH_PROFILE") ))
     fi
 
@@ -1157,6 +1210,7 @@ validate_and_prompt() {
     if service_selected postgres; then info "perfil PG ...... $PG_PROFILE"; fi
     if service_selected redis; then info "perfil Redis ... $REDIS_PROFILE"; fi
     if service_selected meilisearch; then info "perfil Meili ... $MEILI_PROFILE"; fi
+    if service_selected opensearch; then info "perfil OpenSearch $OPENSEARCH_PROFILE"; fi
     if [[ "$METRICS_ENABLED" == "true" ]]; then info "perfil métricas  $METRICS_PROFILE"; fi
     # O orçamento aparece explícito para que a decisão do 'auto' fique auditável
     # no log de provisionamento, e não só no comportamento.
@@ -1211,6 +1265,7 @@ load_state() {
             REDIS_PROFILE)    foi_explicita REDIS_PROFILE   || REDIS_PROFILE="$valor" ;;
             MEILI_PROFILE)    foi_explicita MEILI_PROFILE   || MEILI_PROFILE="$valor" ;;
             METRICS_PROFILE)  foi_explicita METRICS_PROFILE || METRICS_PROFILE="$valor" ;;
+            OPENSEARCH_PROFILE) foi_explicita OPENSEARCH_PROFILE || OPENSEARCH_PROFILE="$valor" ;;
             # `METRICS_ENABLED` só é herdado quando LIGADO: desligar observabilidade
             # é uma decisão que precisa ser tomada, nunca herdada de um estado antigo.
             METRICS_ENABLED)  [[ "$valor" == "true" ]] && METRICS_ENABLED="true" ;;
@@ -1989,6 +2044,7 @@ write_env_files() {
             if service_selected postgres; then printf 'PG_PROFILE=%s\n' "$PG_PROFILE"; fi
             if service_selected redis; then printf 'REDIS_PROFILE=%s\n' "$REDIS_PROFILE"; fi
             if service_selected meilisearch; then printf 'MEILI_PROFILE=%s\n' "$MEILI_PROFILE"; fi
+            if service_selected opensearch; then printf 'OPENSEARCH_PROFILE=%s\n' "$OPENSEARCH_PROFILE"; fi
             printf 'METRICS_ENABLED=%s\n' "$METRICS_ENABLED"
             if [[ "$METRICS_ENABLED" == "true" ]]; then
                 printf 'METRICS_PROFILE=%s\n' "$METRICS_PROFILE"

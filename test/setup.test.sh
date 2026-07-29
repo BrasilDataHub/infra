@@ -145,7 +145,53 @@ fi
 check "dedicada-32gb cabe numa máquina de 30 GB com 1 GB de vizinhos" "cabe" \
     "$( (( $(profile_budget_gb dedicada-32gb) * 87 / 100 + 1 <= 30 )) && echo cabe || echo "nao cabe" )"
 
+printf '\nPerfil do OpenSearch — dedicado x compartilhado\n'
+# Até 29/07/2026 havia um perfil só, e ele pressupõe host DIVIDIDO com o
+# Postgres. Aplicado a um host dedicado não era conservador, era quebrado: 10
+# GiB ociosos e o breaker `parent` (70% de 4 GiB) recusando a carga inicial —
+# a indexação parou em 2,46 M de 72,3 M documentos, sem erro, só esperando.
+check "os dois perfis estão no catálogo" "ok" \
+    "$(profile_valid dedicada-16gb "$OPENSEARCH_PROFILES" && profile_valid compartilhada-8gb "$OPENSEARCH_PROFILES" && echo ok)"
+check "o arquivo do perfil dedicado existe" "ok" \
+    "$([ -f "$REPO_ROOT/opensearch/profiles/dedicada-16gb.env" ] && echo ok)"
+check "o dedicado dá mais heap que o compartilhado" "ok" \
+    "$(awk -F'-Xmx' '/^OS_JAVA_OPTS/{print $2+0}' "$REPO_ROOT/opensearch/profiles/dedicada-16gb.env" > /tmp/.d
+       awk -F'-Xmx' '/^OS_JAVA_OPTS/{print $2+0}' "$REPO_ROOT/opensearch/profiles/compartilhada-8gb.env" > /tmp/.c
+       [ "$(cat /tmp/.d)" -gt "$(cat /tmp/.c)" ] && echo ok)"
+
+# `auto` olha COM QUEM divide o host, não a RAM: é a única pergunta que separa
+# os dois perfis.
+# A RAM vai por argumento: um teste que dependa da memória de quem o roda passa
+# no laptop do autor e falha na CI.
+SERVICES=(postgres redis opensearch)
+check "ao lado do Postgres → compartilhada"  "compartilhada-8gb" "$(detect_opensearch_profile 16)"
+SERVICES=(opensearch redis)
+check "ao lado do Redis → compartilhada"     "compartilhada-8gb" "$(detect_opensearch_profile 16)"
+SERVICES=(opensearch pgbouncer)
+# pgbouncer cabe em 128 MiB e não muda a conta de memória do host.
+check "com pgbouncer não conta como vizinho"  "dedicada-16gb"    "$(detect_opensearch_profile 16)"
+SERVICES=(opensearch)
+check "sozinho no host → dedicada"            "dedicada-16gb"    "$(detect_opensearch_profile 16)"
+# Sozinho, mas numa máquina pequena: `dedicada-16gb` pediria 10 GiB de limite e
+# o container não subiria.
+check "sozinho em máquina de 8 GiB → compartilhada" "compartilhada-8gb" "$(detect_opensearch_profile 8)"
+check "sozinho em máquina de 30 GiB → dedicada"     "dedicada-16gb"     "$(detect_opensearch_profile 30)"
+
+# As configurações de ÍNDICE não podem vir do perfil do container: o OpenSearch
+# não as aceita em opensearch.yml. Havia um OS_MERGE_THREADS que ninguém lia.
+if grep -qE '^OS_MERGE_THREADS=' "$REPO_ROOT"/opensearch/profiles/*.env; then
+    fail "OS_MERGE_THREADS voltou ao perfil — nenhum lugar o lê (é setting de índice)"
+else
+    pass "o perfil não declara settings de índice que ninguém aplica"
+fi
+check "o merge scheduler vive no mapping versionado" "1" \
+    "$(python3 -c "
+import json
+m = json.load(open('$REPO_ROOT/opensearch/index/busca_estabelecimento.json'))
+print(m['settings']['index']['merge']['scheduler']['max_thread_count'])")"
+
 printf '\nDetecção de perfil dos vizinhos pela RAM\n'
+
 check "8 GB  → cache-256mb"   "cache-256mb"  "$(detect_redis_profile 8)"
 check "13 GB → cache-256mb"   "cache-256mb"  "$(detect_redis_profile 13)"
 check "14 GB → cache-512mb"   "cache-512mb"  "$(detect_redis_profile 14)"

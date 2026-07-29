@@ -9,7 +9,7 @@
       "translog": {
         "durability": "async",
         "sync_interval": "30s",
-        "flush_threshold_size": "1gb"
+        "flush_threshold_size": "512mb"
       },
       "merge": {
         "policy": {

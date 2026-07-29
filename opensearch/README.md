@@ -132,7 +132,7 @@ Removendo-o, `q=COMERCIO DE ALIMENTOS LTDA` custa o mesmo que sem o `LTDA`.
 | Situação | O que fazer |
 |---|---|
 | `flood_stage` atingido (disco > 90%) | Os índices ficam **read-only e não voltam sozinhos** quando o disco esvazia: `PUT /_all/_settings {"index.blocks.read_only_allow_delete": null}` depois de liberar espaço |
-| Janela de carga | Subir `merge.scheduler.max_thread_count` para 4 e `refresh_interval` para `-1`; devolver a 1 e `30s` no fim |
+| Janela de carga | Subir `merge.scheduler.max_thread_count` para 4, `refresh_interval` para `-1` e o breaker `parent` para 85%; devolver a 1, `30s` e 70% no fim |
 | Divergência de contagem com o Postgres | **Não mova o alias.** O índice N−1 continua servindo, e é por isso que ele é mantido por 7 dias |
 | Editar sinônimos | `POST /busca_estabelecimento/_reload_search_analyzers` — sem reindexar |
 
@@ -155,3 +155,57 @@ bash opensearch/test/opensearch.test.sh
 
 Sobe um nó de verdade, cria o índice com o mapping versionado e exercita os
 analisadores com texto real de razão social. 17 asserções.
+
+## Perfis
+
+| Perfil | Máquina-alvo | Limite | Heap | Page cache livre |
+|---|---|---|---|---|
+| `compartilhada-8gb` | host de 31 GiB **dividido** com o PostgreSQL | 8 GiB | 4 GiB | 7,5 GiB |
+| `dedicada-16gb` | host de 15,6 GiB **só** do motor de busca | 10 GiB | 5 GiB | 4,1 GiB |
+
+O `setup.sh` escolhe sozinho (`--opensearch-profile auto`, o default), e a
+pergunta que ele faz **não é o tamanho da máquina — é com quem o motor divide
+o host**. Ao lado de Postgres, Redis ou Meilisearch, `compartilhada-8gb`;
+sozinho numa máquina de 14 GiB ou mais, `dedicada-16gb`.
+
+### Por que o perfil errado não é só conservador
+
+Aplicar `compartilhada-8gb` a um host dedicado deixa 10 GiB ociosos **e** faz o
+breaker `parent` (70% de 4 GiB = 2,8 GiB) recusar a carga inicial. Medido em
+29/07/2026, indexando os 72,3 M de estabelecimentos: em repouso o motor já
+ocupava 1,8 GiB de heap, o pico de um lote não cabia no que sobrava, e a
+indexação **parou em 2,46 M documentos** — HTTP 429 contínuo, CPU do motor em
+0,5%, sem erro nenhum no log do serviço. Só esperando.
+
+### A janela de carga, na ordem que importa
+
+```bash
+# ANTES da carga
+curl -X PUT "$OS/_cluster/settings" -H 'Content-Type: application/json' \
+  -d '{"transient":{"indices.breaker.total.limit":"85%"}}'
+curl -X PUT "$OS/<indice>/_settings" -H 'Content-Type: application/json' \
+  -d '{"index":{"refresh_interval":"-1","merge.scheduler.max_thread_count":4}}'
+
+# DEPOIS — e isto não é opcional
+curl -X PUT "$OS/<indice>/_settings" -H 'Content-Type: application/json' \
+  -d '{"index":{"refresh_interval":"30s","merge.scheduler.max_thread_count":1}}'
+```
+
+O breaker vai como `transient` de propósito: um restart devolve o valor de
+regime sozinho. Já o `refresh_interval` é do índice e **persiste** — um índice
+esquecido em `-1` não atualiza para busca nunca mais, e o sintoma chega como
+"o site não vê o dado novo", longe daqui.
+
+Efeito medido do breaker em 85%: a indexação passou de **8,6 mil para 30,5 mil
+documentos por segundo**.
+
+### O que NÃO vai no perfil
+
+`merge.scheduler`, `refresh_interval` e `translog.*` são settings de **índice**,
+e o OpenSearch não os aceita em `opensearch.yml` — que é no que uma variável de
+ambiente do container se transforma. Eles vivem em
+[`index/busca_estabelecimento.json`](index/busca_estabelecimento.json).
+
+Havia um `OS_MERGE_THREADS=1` no perfil que **nenhum lugar lia**: o compose não
+o referencia e o motor não o aceitaria. O valor real sempre veio do mapping; a
+variável só dava a impressão de configurar algo.
