@@ -15,10 +15,14 @@ evaluation_interval: 1m
 
 tests:
   # --- coleta ---------------------------------------------------------------
+  # O rótulo `host` sai do arquivo de alvos (setup.sh o escreve em cada um) e
+  # está presente em todas as séries deste bloco de propósito: é ele que faz o
+  # alerta dizer de QUAL máquina veio, e a ausência dele foi o que manteve os
+  # painéis e as notificações mudos sobre isso até 29/07/2026.
   - interval: 1m
     name: "alvo fora do ar dispara depois de 5m, não antes"
     input_series:
-      - series: 'up{job="postgres", instance="postgres-exporter:9187"}'
+      - series: 'up{job="postgres", instance="postgres-exporter:9187", host="bdh-data"}'
         values: "1 1 0 0 0 0 0 0 0 0"
     alert_rule_test:
       # 4 minutos fora: ainda não alerta (evita ruído de scrape que estoura o
@@ -33,18 +37,71 @@ tests:
               severity: critical
               job: postgres
               instance: postgres-exporter:9187
+              host: bdh-data
             exp_annotations:
-              summary: "Alvo postgres não responde há 5 minutos"
-              description: "O Prometheus não consegue coletar de postgres-exporter:9187 (job postgres). Verifique com `bdh logs <serviço>` e `bdh metrics`."
+              summary: "Alvo postgres do servidor bdh-data não responde há 5 minutos"
+              description: "O Prometheus não consegue coletar de postgres-exporter:9187 (job postgres, servidor bdh-data). Verifique com `bdh logs <serviço>` e `bdh metrics`."
 
   - interval: 1m
     name: "scrape instável por 2 minutos não gera alerta"
     input_series:
-      - series: 'up{job="postgres", instance="postgres-exporter:9187"}'
+      - series: 'up{job="postgres", instance="postgres-exporter:9187", host="bdh-data"}'
         values: "1 1 0 0 1 1 1 1"
     alert_rule_test:
       - eval_time: 8m
         alertname: AlvoForaDoAr
+        exp_alerts: []
+
+  # A máquina inteira fora é um incidente diferente de um exporter fora: o
+  # AlvoForaDoAr entregaria N notificações, uma por job, e nenhuma delas diria
+  # que a causa é comum. O `sum by (host)` colapsa isso num alerta só.
+  - interval: 1m
+    name: "servidor inteiro sem coleta dispara um alerta só, não um por job"
+    input_series:
+      - series: 'up{job="postgres", instance="10.0.1.10:9187", host="bdh-data"}'
+        values: "1 1 0 0 0 0 0 0 0 0"
+      - series: 'up{job="node", instance="10.0.1.10:9100", host="bdh-data"}'
+        values: "1 1 0 0 0 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ServidorSemColeta
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ServidorSemColeta
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: bdh-data
+            exp_annotations:
+              summary: "Nenhum alvo do servidor bdh-data responde"
+              description: "Todos os coletores desta máquina estão fora do ar ao mesmo tempo — o que costuma ser a máquina, o firewall ou a rota privada, não os serviços. Confira `bdh metrics` no host do Prometheus."
+
+  # A distinção que justifica a regra existir: com UM alvo ainda respondendo, a
+  # máquina está de pé e quem deve falar é o AlvoForaDoAr, não este alerta.
+  - interval: 1m
+    name: "um exporter fora, com o resto do servidor no ar, NÃO é servidor sem coleta"
+    input_series:
+      - series: 'up{job="postgres", instance="10.0.1.10:9187", host="bdh-data"}'
+        values: "1 1 0 0 0 0 0 0 0 0"
+      - series: 'up{job="node", instance="10.0.1.10:9100", host="bdh-data"}'
+        values: "1+0x10"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ServidorSemColeta
+        exp_alerts: []
+
+  # O blackbox sonda URLs, não máquinas, e por isso seus alvos ficam sem `host`.
+  # Sem o `host!=""` da expressão, todos eles cairiam num grupo de rótulo vazio
+  # e uma sonda falhando viraria "servidor sem coleta" de um servidor que não
+  # existe.
+  - interval: 1m
+    name: "alvo sem rótulo host (blackbox) não vira um servidor fantasma"
+    input_series:
+      - series: 'up{job="blackbox", instance="https://exemplo.br/"}'
+        values: "0+0x10"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ServidorSemColeta
         exp_alerts: []
 
   # --- postgres -------------------------------------------------------------

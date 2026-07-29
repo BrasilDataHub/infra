@@ -28,10 +28,26 @@ geral e em `bdh metrics`, mas não notificam ninguém.
 |---|---|---|
 | `AlvoForaDoAr` | `up == 0` por 5 min | 5 min e não 1: sob ETL com IO saturado um scrape isolado estoura o timeout, e alertar nisso treina a operação a ignorar |
 | `JobSemAlvo` | `absent(up{job=...})` por 15 min | pega o caso que o `up == 0` **nunca** pegaria: o arquivo de target sumiu, não há série nenhuma para avaliar, e a monitoração daquele serviço está desligada sem ninguém ter pedido |
+| `ServidorSemColeta` | `sum by (host) (up{host!=""}) == 0` por 5 min | quando a máquina inteira some, o `AlvoForaDoAr` entrega uma notificação por job e nenhuma delas diz que a causa é comum. Aqui é um alerta só, e o suspeito é a máquina, o firewall ou a rota privada — não os serviços |
 
-Os dois juntos são o que evita o modo de falha mais insidioso desta stack:
+Os três juntos são o que evita o modo de falha mais insidioso desta stack:
 falha de monitoramento é silenciosa por construção, porque o sistema que avisaria
 é o que caiu.
+
+O `sum by (host)` funciona onde um `count(up == 1) == 0` falharia: com todos os
+alvos em zero a série **continua existindo** com valor 0, então o grupo não some
+e a comparação avalia. O `host!=""` exclui o `blackbox`, cujos alvos são URLs e
+não máquinas — sem ele, uma sonda falhando viraria "servidor sem coleta" de um
+servidor que não existe.
+
+### De qual máquina veio o alerta
+
+Todo alerta com série carrega `{{ $labels.host }}`, que vem do **arquivo de
+alvos** (o `setup.sh` escreve `labels.host` em cada um). Não confunda com o
+`external_labels: host` do `prometheus.yml`: aquele só é aplicado a rótulos
+*ausentes* na saída, então o nome real da máquina vence, e o nome do monitor
+sobra como reserva para os alertas de `absent()` — que não têm série nenhuma de
+onde herdar rótulo.
 
 ### Host
 

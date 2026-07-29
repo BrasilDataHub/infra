@@ -18,14 +18,36 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Alvo {{ $labels.job }} não responde há 5 minutos"
+          summary: "Alvo {{ $labels.job }} do servidor {{ $labels.host }} não responde há 5 minutos"
           description: >-
             O Prometheus não consegue coletar de {{ $labels.instance }}
-            (job {{ $labels.job }}). Verifique com `bdh logs <serviço>` e
-            `bdh metrics`.
+            (job {{ $labels.job }}, servidor {{ $labels.host }}). Verifique com
+            `bdh logs <serviço>` e `bdh metrics`.
       # 5m e não 1m: sob ETL com IO saturado, um scrape pode estourar o
       # scrape_timeout de 10s isoladamente. Alertar em cima disso geraria ruído
       # constante e treinaria a operação a ignorar o alerta.
+      #
+      # O `host` vem do ARQUIVO DE ALVOS (setup.sh o escreve em cada um), não
+      # dos external_labels: estes só são aplicados a rótulos AUSENTES na saída,
+      # então o nome real da máquina vence e o do monitor fica como reserva para
+      # os alertas de `absent()`, que não têm série nenhuma de onde herdar.
+
+      - alert: ServidorSemColeta
+        # `sum by (host)` e não `count(up == 1) == 0`: quando todos os alvos de
+        # uma máquina estão em 0, a série CONTINUA existindo com valor 0 — o
+        # grupo não some e a comparação avalia. É o que distingue "um exporter
+        # caiu" de "a máquina (ou a rede privada até ela) caiu inteira", e o
+        # segundo caso é o que o AlvoForaDoAr entrega como N alertas separados.
+        expr: sum by (host) (up{host!=""}) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Nenhum alvo do servidor {{ $labels.host }} responde"
+          description: >-
+            Todos os coletores desta máquina estão fora do ar ao mesmo tempo —
+            o que costuma ser a máquina, o firewall ou a rota privada, não os
+            serviços. Confira `bdh metrics` no host do Prometheus.
 
       - alert: JobSemAlvo
         # Vale para os jobs que o deploy declarou. Se o arquivo de target sumir,
@@ -81,7 +103,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Menos de 15% livres em {{ $labels.mountpoint }}"
+          summary: "Menos de 15% livres em {{ $labels.mountpoint }} ({{ $labels.host }})"
           description: >-
             Este é o modo de falha mais perigoso da stack: o volume do Prometheus
             e o do Postgres dividem o mesmo NVMe, então uma explosão de
@@ -99,7 +121,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "{{ $labels.mountpoint }} deve encher em menos de 24h"
+          summary: "{{ $labels.mountpoint }} de {{ $labels.host }} deve encher em menos de 24h"
 
       - alert: MemoriaDoHostCritica
         expr: |
@@ -108,7 +130,7 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Menos de 10% de memória disponível no host"
+          summary: "Menos de 10% de memória disponível em {{ $labels.host }}"
           description: >-
             Verifique a soma dos limites dos containers contra a RAM real —
             a fórmula de coexistência está em postgres/docs/perfis.md, e a stack
@@ -129,7 +151,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Processos parados por pressão de memória mais de 5% do tempo"
+          summary: "Processos de {{ $labels.host }} parados por pressão de memória mais de 5% do tempo"
           description: >-
             O kernel está descartando page cache para atender alocações. Num
             host em que a saturação medida é de page cache, isto se traduz
@@ -145,7 +167,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Processos parados esperando IO mais de 30% do tempo"
+          summary: "Processos de {{ $labels.host }} parados esperando IO mais de 30% do tempo"
 
   - name: containers
     rules:
