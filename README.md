@@ -349,7 +349,7 @@ Cada alvo é escrito com o rótulo `host`, o nome da máquina de onde a série v
 inventário de quais servidores existem e o que cada um roda, mais uma seção que
 se repete por servidor. Em all-in-one vira um bloco; com os serviços espalhados,
 um bloco por máquina. Para coleta remota, `--metrics-scrape` aceita o nome depois
-do endereço (`postgres=152.53.36.62:9187@bdh-data`), e o host observado imprime a
+do endereço (`postgres=10.0.0.5:9187@bdh-data`), e o host observado imprime a
 linha pronta para colar.
 
 A monitoração consome ~2 GB de RAM (~3 GB com o cAdvisor), que entram na

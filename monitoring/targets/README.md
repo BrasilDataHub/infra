@@ -87,36 +87,46 @@ bdh metrics
 
 ## Quando o Prometheus está em OUTRO host
 
-É o caso desta operação: o Prometheus e o Grafana vivem no `bdh-apps`, e
-Postgres, Redis e o motor de busca ficam no `bdh-data` (a justificativa está em
-`03-arquitetura-de-busca.md` §3.2). **Não há rede privada entre os dois** — eles
-se falam por IP público, em blocos /22 diferentes.
+O módulo suporta os dois extremos e o meio entre eles, porque a topologia muda
+com o orçamento e com o momento:
 
-Isso torna o firewall a única proteção real: `/metrics` não tem autenticação
-nenhuma, e o do Postgres entrega `pg_settings_*` inteiro. As regras precisam ser
-restritas ao IP do par (`--allow-from`), nunca abertas ao mundo, e a sonda
-`PortaDeDadosAlcancavelDeFora` existe para pegar a regressão dessa regra.
+| Cenário | Como fica |
+|---|---|
+| **All-in-one** | serviços e Prometheus no mesmo host; os alvos são nomes de serviço Compose, nada publica porta. É o default |
+| **Um host por serviço** | cada host publica seus exporters (`--metrics-publish`), e um host coleta todos (`--metrics-scrape`) |
+| **Misto / sob demanda** | um host tem Postgres local e coleta um motor de busca remoto. O glob `<job>*.json` permite alvo local e remoto no mesmo job |
+
+Nada aqui pressupõe uma máquina específica. O que muda entre os cenários é só
+onde os arquivos de alvo apontam.
+
+**Se não houver rede privada entre os hosts**, o firewall passa a ser a única
+proteção: `/metrics` não tem autenticação nenhuma, e o do Postgres entrega
+`pg_settings_*` inteiro. As regras precisam ser restritas ao IP do par
+(`--allow-from`), nunca abertas ao mundo, e a sonda
+`PortaDeDadosAlcancavelDeFora` existe para pegar a regressão dessa regra. Com
+rede privada, aponte `METRICS_BIND_IP` e os alvos para o **IP privado** — é o
+arranjo preferível, e o único em que a coleta não trafega pela internet.
 
 O nome de serviço Compose só resolve dentro do host. Então, para os alvos
 remotos, o arquivo usa `IP:porta`:
 
 ```json
-[{"targets": ["152.53.36.62:9187"], "labels": {"host": "bdh-data"}}]
+[{"targets": ["10.0.0.5:9187"], "labels": {"host": "host-de-dados"}}]
 ```
 
 Quem escreve isso é o `setup.sh`, a partir do `--metrics-scrape`, que aceita um
 apelido depois do endereço:
 
 ```bash
-# no bdh-apps
+# no host que roda o Prometheus
 bash setup.sh --update --metrics-scrape \
-  postgres=152.53.36.62:9187@bdh-data,redis=152.53.36.62:9121@bdh-data,\
-node=152.53.36.62:9100@bdh-data
+  postgres=10.0.0.5:9187@host-de-dados,redis=10.0.0.5:9121@host-de-dados,\
+node=10.0.0.5:9100@host-de-dados
 ```
 
 O apelido vira o rótulo `host`. Sem ele, o rótulo cai para o endereço — funciona,
-mas os painéis passam a mostrar `152.53.36.62` no lugar de `bdh-data`. IPv6 exige
-colchetes: `node=[fe80::1]:9100@bdh-x`.
+mas os painéis passam a mostrar `10.0.0.5` no lugar de um nome. IPv6 exige
+colchetes: `node=[fe80::1]:9100@host-de-dados`.
 
 **Use o hostname real da máquina como apelido.** O host observado imprime a linha
 pronta para colar quando roda com `--metrics-publish` — ele conhece o próprio

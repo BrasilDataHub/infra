@@ -520,9 +520,11 @@ fi
 
 printf '\nObservabilidade: coleta remota\n'
 # A regra "exporter não publica porta" (verificada acima) vale para o caso em
-# que Prometheus e serviço dividem host. Esta operação é a exceção: Prometheus
-# no bdh-apps, dados no bdh-data, sem rede privada. A exceção vive em arquivos
-# SEPARADOS, e o que se afirma aqui é que ela continua exigindo uma decisão.
+# que Prometheus e serviço dividem host — o all-in-one, que é o default. Quando
+# eles ficam em máquinas diferentes, a exceção vive em arquivos SEPARADOS, e o
+# que se afirma aqui é que ela continua exigindo uma decisão explícita: qual
+# interface publicar. A topologia concreta varia com o orçamento e o momento, e
+# nenhum teste deve depender de uma.
 for svc in postgres redis; do
     f="$REPO_ROOT/$svc/docker-compose.metrics-remote.yml"
     if [[ ! -f "$f" ]]; then fail "FALTA $svc/docker-compose.metrics-remote.yml"; continue; fi

@@ -13,11 +13,15 @@
 # para o caso em que Prometheus e serviço vivem na mesma máquina, alcançáveis
 # pela rede `bdh_metrics`.
 #
-# Não é o caso desta operação. O Prometheus vai no `bdh-apps` e o Postgres,
-# o Redis e o motor de busca ficam no `bdh-data` (03 §3.2: em `bdh-data` cada
-# GiB de page cache vale menos amplificação de leitura, e o monitor não deve
-# morrer junto com o monitorado). Não há rede privada entre os dois hosts —
-# eles se falam por IP público, em /22 diferentes.
+# Este arquivo é para o caso oposto: Prometheus numa máquina, serviços em outra.
+# A razão de separá-los é que cada GiB de page cache no host de dados vale menos
+# amplificação de leitura, e o monitor não deve morrer junto com o monitorado.
+#
+# A topologia concreta varia — all-in-one, um host por serviço, ou um híbrido,
+# conforme o orçamento e o momento. O que este overlay resolve é comum a todas:
+# sem rede privada, a coleta trafega pela internet e o firewall restrito ao IP
+# do par passa a ser a única proteção; com rede privada, publique na interface
+# privada e nada disso sai da rede.
 #
 # Então a porta precisa ser publicada, e a proteção passa a ser o FIREWALL
 # (item 8 do roadmap: ufw + DOCKER-USER restritos ao IP do par). Manter isso

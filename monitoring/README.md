@@ -86,15 +86,21 @@ endereço não depende do nome do projeto.
 
 ### Quando o Prometheus fica em outro host
 
-Nesta operação ele fica: Prometheus e Grafana no `bdh-apps`, e Postgres, Redis e
-o motor de busca no `bdh-data`. **Não há rede privada entre os dois** — eles se
-falam por IP público, em blocos /22 diferentes. O nome de serviço Compose não
-atravessa hosts, então os exporters remotos precisam publicar porta — o que os
-overlays `*/docker-compose.metrics-remote.yml` e `docker-compose.remote.yml`
-fazem, com `METRICS_BIND_IP` **obrigatória e sem default**. Sem rede privada, a
-proteção é inteiramente o firewall restrito ao IP do par (`--allow-from`), e a
-sonda `PortaDeDadosAlcancavelDeFora` existe para pegar a regressão dessa regra.
-Detalhes em [`targets/`](targets/README.md).
+O nome de serviço Compose não atravessa hosts, então os exporters remotos
+precisam publicar porta — o que os overlays `*/docker-compose.metrics-remote.yml`
+e `docker-compose.remote.yml` fazem, com `METRICS_BIND_IP` **obrigatória e sem
+default**.
+
+Com rede privada entre as máquinas, aponte `METRICS_BIND_IP` e os alvos para o IP
+privado: é o arranjo preferível, e o único em que a coleta não trafega pela
+internet. **Sem rede privada**, a proteção é inteiramente o firewall restrito ao
+IP do par (`--allow-from`) — `/metrics` não tem autenticação, e o do Postgres
+entrega `pg_settings_*` inteiro. A sonda `PortaDeDadosAlcancavelDeFora` existe
+para pegar a regressão dessa regra.
+
+Isto vale para qualquer arranjo: um host por serviço, um híbrido com parte local
+e parte remota, ou um host de observabilidade dedicado (`--services monitoring`).
+Detalhes e os cenários em [`targets/`](targets/README.md).
 
 A rede é declarada **sem `external: true`**, e isso é deliberado. Com `external`,
 um `docker network prune` com os containers parados faria o `docker compose up`
@@ -373,7 +379,7 @@ explícita sobrescreve o estado salvo, e omiti-la herda o valor antigo (sem
 apelido):
 
 ```bash
-bash setup.sh --update --metrics-scrape postgres=152.53.36.62:9187@bdh-data,...
+bash setup.sh --update --metrics-scrape postgres=10.0.0.5:9187@bdh-data,...
 ```
 
 Acrescentar um rótulo **encerra as séries antigas e cria novas**. Não há perda de
