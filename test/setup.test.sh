@@ -555,6 +555,49 @@ fi
 check "label 'monitoring' aparece uma única vez" "1" \
     "$(grep -cE 'org\.brasildatahub\.service: monitoring$' "$mon")"
 
+printf '\nRótulo de máquina nos alvos do Prometheus\n'
+# O `host` do alvo é o ÚNICO rótulo que diz de qual máquina a série veio: os
+# external_labels do prometheus.yml não são gravados no TSDB, então o Grafana
+# não os enxerga. Toda a seção de infraestrutura do dashboard depende disto.
+check "hostname vira rótulo" "ok" \
+    "$( [[ -n "$(host_label)" && "$(host_label)" != "desconhecido" ]] && echo ok || echo "vazio" )"
+check "aspas não quebram o JSON do alvo" "nome-quebrado" "$(host_label 'nome"quebrado')"
+check "espaço vira hífen" "com-espaco" "$(host_label 'com espaco')"
+check "argumento vazio cai no hostname" "$(hostname)" "$(host_label '')"
+
+check "endereço IPv4 sem porta" "10.0.1.10" "$(endereco_sem_porta '10.0.1.10:9187')"
+check "endereço IPv6 sem porta e sem colchetes" "fe80::1" "$(endereco_sem_porta '[fe80::1]:9100')"
+check "nome DNS sem porta" "bdh-data" "$(endereco_sem_porta 'bdh-data:9100')"
+check "endereço sem porta nenhuma" "bdh-data" "$(endereco_sem_porta 'bdh-data')"
+
+check "apelido vira o rótulo host" \
+    '[{"targets":["10.0.1.10:9100"],"labels":{"host":"bdh-data"}}]' \
+    "$(alvos_remotos_json node 'node=10.0.1.10:9100@bdh-data')"
+# Retrocompatibilidade: quem já tinha --metrics-scrape sem apelido continua
+# funcionando, e o rótulo cai para o endereço em vez de ficar ausente.
+check "sem apelido, o rótulo cai para o endereço" \
+    '[{"targets":["10.0.1.10:9100"],"labels":{"host":"10.0.1.10"}}]' \
+    "$(alvos_remotos_json node 'node=10.0.1.10:9100')"
+check "IPv6 entre colchetes preserva o endereço" \
+    '[{"targets":["[fe80::1]:9100"],"labels":{"host":"bdh-x"}}]' \
+    "$(alvos_remotos_json node 'node=[fe80::1]:9100@bdh-x')"
+# Um objeto POR ALVO, e não um objeto com N targets: cada alvo pode estar numa
+# máquina diferente, e o rótulo é por objeto. Era este o defeito do formato
+# antigo — dois hosts no mesmo job compartilhariam um rótulo só.
+check "dois alvos do mesmo job viram dois objetos" \
+    '[{"targets":["10.0.1.10:9100"],"labels":{"host":"bdh-data"}},{"targets":["10.0.1.11:9100"],"labels":{"host":"bdh-search"}}]' \
+    "$(alvos_remotos_json node 'node=10.0.1.10:9100@bdh-data,node=10.0.1.11:9100@bdh-search')"
+check "job sem alvo na lista falha (nada a escrever)" "1" \
+    "$(alvos_remotos_json postgres 'redis=10.0.1.12:9121' >/dev/null; echo $?)"
+check "job filtra só os seus alvos" \
+    '[{"targets":["10.0.1.12:9121"],"labels":{"host":"bdh-cache"}}]' \
+    "$(alvos_remotos_json redis 'node=10.0.1.10:9100@bdh-data,redis=10.0.1.12:9121@bdh-cache')"
+
+check "os alvos locais levam labels.host" "ok" \
+    "$(grep -q '"labels":{"host":"%s"}' "$REPO_ROOT/setup.sh" && echo ok || echo 'alvo local sem rótulo')"
+check "usage() documenta o @apelido" "ok" \
+    "$(usage | grep -q 'job=host:porta\[@apelido\]' && echo ok)"
+
 printf '\nAjuda\n'
 check "usage() cita a recusa de perfil grande demais" "ok" "$(usage | grep -q -- '--allow-oversized-profile' && echo ok)"
 check "usage() cita --metrics" "ok" "$(usage | grep -q -- '--metrics ' && echo ok)"

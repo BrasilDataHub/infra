@@ -173,6 +173,59 @@ BIN_DIR=""
 # `date -Is` é GNU; o BSD date do macOS não aceita.
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# --- rótulo de máquina dos alvos ---------------------------------------------
+# O Prometheus tem `external_labels: host`, mas eles NÃO são gravados no TSDB:
+# entram só em remote_write, federação e nos alertas enviados ao Alertmanager.
+# Toda consulta do Grafana é cega para eles. Quem faz um painel saber de qual
+# máquina veio a série é o rótulo escrito no ARQUIVO DE ALVOS — e era
+# exatamente ele que faltava: até 29/07/2026 o `min(node_filesystem_avail...)`
+# da visão geral misturava quatro servidores e mostrava o pior sem dizer qual.
+#
+# Deliberadamente `hostname` cru, sem normalizar: no Linux `hostname` e
+# `uname -n` leem o MESMO nodename do kernel, então o `host` escrito aqui é
+# byte a byte igual ao `nodename` que o node_exporter publica em
+# node_uname_info. É essa igualdade que permite cruzar as duas fontes —
+# métricas de SERVIÇO só têm `host`, métricas de MÁQUINA têm os dois — e é o
+# que faz o link do dashboard abrir no servidor certo. Normalizar (minúsculas,
+# cortar domínio) quebraria a igualdade em silêncio.
+host_label() {
+    local n="${1-}"
+    [[ -z "$n" ]] && n="$(hostname 2>/dev/null || true)"
+    # Valor de rótulo aceita qualquer UTF-8; o que não pode é quebrar o JSON.
+    n="${n//[\"\\]/-}"; n="${n//[[:space:]]/-}"
+    printf '%s' "${n:-desconhecido}"
+}
+
+# Endereço sem a porta — é o rótulo de fallback quando não há apelido.
+endereco_sem_porta() {
+    case "$1" in
+        \[*\]:*) local a="${1%]:*}"; printf '%s' "${a#[}" ;;
+        *:*)     printf '%s' "${1%:*}" ;;
+        *)       printf '%s' "$1" ;;
+    esac
+}
+
+# JSON de file_sd dos alvos remotos de UM job, a partir do formato de
+# --metrics-scrape (`job=endereço[@apelido]`, separados por vírgula).
+#
+# Um objeto POR ALVO, e não um objeto com N targets como antes: cada alvo pode
+# estar numa máquina diferente, e o rótulo é por objeto. O `@` é separador
+# seguro porque não ocorre em IPv4, nome DNS nem IPv6 entre colchetes.
+alvos_remotos_json() {   # $1 = job   $2 = lista no formato de --metrics-scrape
+    local job="$1" par destino apelido saida=""
+    local -a pares=(); IFS=',' read -r -a pares <<< "$2"
+    for par in "${pares[@]}"; do
+        [[ "$par" == "$job="* ]] || continue
+        destino="${par#*=}"; apelido=""
+        case "$destino" in *@*) apelido="${destino##*@}"; destino="${destino%@*}" ;; esac
+        [[ -z "$apelido" ]] && apelido="$(endereco_sem_porta "$destino")"
+        saida="${saida}${saida:+,}$(printf '{"targets":["%s"],"labels":{"host":"%s"}}' \
+                 "$destino" "$(host_label "$apelido")")"
+    done
+    [[ -z "$saida" ]] && return 1
+    printf '[%s]' "$saida"
+}
+
 # --- saída -------------------------------------------------------------------
 if [[ -t 1 ]]; then
     C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
@@ -321,11 +374,17 @@ OPTIONS (observabilidade — desligada por default):
                              pg_settings_* inteiro. Implica --metrics e
                              --no-monitoring.
       --metrics-scrape LISTA No host do PROMETHEUS. Alvos remotos, no formato
-                             job=host:porta separados por vírgula. Jobs aceitos:
+                             job=host:porta[@apelido] separados por vírgula. O
+                             apelido é o NOME da máquina e vira o rótulo `host`
+                             das séries — use o hostname dela (o próprio host
+                             observado imprime a linha pronta ao rodar com
+                             --metrics-publish). Sem apelido, o rótulo cai para
+                             o endereço. IPv6 exige colchetes. Jobs aceitos:
                              postgres, redis, node, opensearch, meilisearch,
                              cadvisor. Ex.:
-                               --metrics-scrape postgres=10.0.1.2:9187,\
-                             node=10.0.1.2:9100,opensearch=10.0.1.4:9200
+                               --metrics-scrape postgres=10.0.1.10:9187@bdh-data,\
+                             node=10.0.1.10:9100@bdh-data,\
+                             opensearch=10.0.1.11:9200@bdh-search
       --metrics-bind-ip IP   Interface do Grafana e do Prometheus
                              (default: 127.0.0.1 — use um túnel SSH)
 
@@ -1879,7 +1938,7 @@ write_env_files() {
             printf '# Grafana e Alertmanager vivem no host de monitoração.\n'
             printf 'COMPOSE_PROFILES=node\n'
             printf 'METRICS_BIND_IP=%s\n' "$METRICS_PUBLISH_IP"
-            printf 'MON_HOSTNAME=%s\n' "$(hostname)"
+            printf 'MON_HOSTNAME=%s\n' "$(host_label)"
             printf 'METRICS_NETWORK=%s\n' "$METRICS_NETWORK"
             # Só para satisfazer a interpolação — o Grafana não sobe aqui.
             printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$GRAFANA_ADMIN_PASSWORD"
@@ -1903,7 +1962,7 @@ write_env_files() {
             cat "$profile_metrics"
             printf '\n# --- deploy (gerado por setup.sh em %s) ---\n' "$(now_iso)"
             printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$GRAFANA_ADMIN_PASSWORD"
-            printf 'MON_HOSTNAME=%s\n' "$(hostname)"
+            printf 'MON_HOSTNAME=%s\n' "$(host_label)"
             printf 'MONITORING_BIND_IP=%s\n' "$MONITORING_BIND_IP"
             printf 'PROMETHEUS_PORT=%s\nGRAFANA_PORT=%s\n' "$PROMETHEUS_PORT" "$GRAFANA_PORT"
             printf 'METRICS_NETWORK=%s\n' "$METRICS_NETWORK"
@@ -2195,11 +2254,16 @@ setup_metrics() {
             warn "node exporter não subiu — as métricas de HOST desta máquina"
             warn "  ficarão ausentes no Prometheus remoto ('bdh logs monitoring')"
         fi
+        # O `@apelido` vai embutido porque ESTE host sabe o próprio hostname e o
+        # host do Prometheus não. Copiando e colando, o apelido bate com o
+        # `nodename` que o node_exporter publica — que é o que faz o link do
+        # dashboard abrir na máquina certa.
+        local apelido; apelido="$(host_label)"
         info "aponte o Prometheus do outro host para:"
-        service_selected postgres && info "  --metrics-scrape postgres=${METRICS_PUBLISH_IP}:9187"
-        service_selected redis    && info "  --metrics-scrape redis=${METRICS_PUBLISH_IP}:9121"
-        service_selected opensearch && info "  --metrics-scrape opensearch=${METRICS_PUBLISH_IP}:${OPENSEARCH_PORT}"
-        info "  --metrics-scrape node=${METRICS_PUBLISH_IP}:9100"
+        service_selected postgres && info "  --metrics-scrape postgres=${METRICS_PUBLISH_IP}:9187@${apelido}"
+        service_selected redis    && info "  --metrics-scrape redis=${METRICS_PUBLISH_IP}:9121@${apelido}"
+        service_selected opensearch && info "  --metrics-scrape opensearch=${METRICS_PUBLISH_IP}:${OPENSEARCH_PORT}@${apelido}"
+        info "  --metrics-scrape node=${METRICS_PUBLISH_IP}:9100@${apelido}"
     fi
 
     [[ "$MONITORING_ENABLED" != "true" ]] && {
@@ -2221,12 +2285,22 @@ setup_metrics() {
     # nome do projeto. Um arquivo por serviço instalado — serviço ausente não
     # deixa arquivo, o glob do prometheus.yml não casa nada, e o job fica sem
     # alvo em vez de ficar `up == 0` para sempre.
+    #
+    # Todo alvo leva `labels.host` (ver host_label): é o único rótulo que diz
+    # de qual MÁQUINA a série veio, e sem ele a seção de infraestrutura do
+    # dashboard e o alerta ServidorSemColeta não têm por onde agrupar.
+    # `blackbox.json` fica de fora de propósito: lá o alvo é uma URL, não uma
+    # máquina, e um `host` mentiria sobre o que está sendo medido.
+    local hl; hl="$(host_label)"
     service_selected postgres \
-        && printf '[{"targets":["postgres-exporter:9187"]}]\n' > "$mdir/targets/postgres.json"
+        && printf '[{"targets":["postgres-exporter:9187"],"labels":{"host":"%s"}}]\n' "$hl" \
+           > "$mdir/targets/postgres.json"
     service_selected redis \
-        && printf '[{"targets":["redis-exporter:9121"]}]\n' > "$mdir/targets/redis.json"
+        && printf '[{"targets":["redis-exporter:9121"],"labels":{"host":"%s"}}]\n' "$hl" \
+           > "$mdir/targets/redis.json"
     if service_selected meilisearch && [[ -n "$MEILI_METRICS_KEY" ]]; then
-        printf '[{"targets":["meilisearch:7700"]}]\n' > "$mdir/targets/meilisearch.json"
+        printf '[{"targets":["meilisearch:7700"],"labels":{"host":"%s"}}]\n' "$hl" \
+            > "$mdir/targets/meilisearch.json"
         printf '%s' "$MEILI_METRICS_KEY" > "$mdir/secrets/meili-metrics.key"
     fi
     # O motor de busca não tem exporter: `/_prometheus/metrics` vem do plugin
@@ -2235,44 +2309,63 @@ setup_metrics() {
     # regras de opensearch.rules.yml não tinham série nenhuma para avaliar, e o
     # serviço mais novo da stack era o único invisível na observabilidade.
     service_selected opensearch \
-        && printf '[{"targets":["opensearch:9200"]}]\n' > "$mdir/targets/opensearch.json"
+        && printf '[{"targets":["opensearch:9200"],"labels":{"host":"%s"}}]\n' "$hl" \
+           > "$mdir/targets/opensearch.json"
     if [[ "$OS_FAMILY" == "linux" ]]; then
-        printf '[{"targets":["node-exporter:9100"]}]\n' > "$mdir/targets/node.json"
+        printf '[{"targets":["node-exporter:9100"],"labels":{"host":"%s"}}]\n' "$hl" \
+            > "$mdir/targets/node.json"
         [[ "$METRICS_CONTAINERS" == "true" ]] \
-            && printf '[{"targets":["cadvisor:8080"]}]\n' > "$mdir/targets/cadvisor.json"
+            && printf '[{"targets":["cadvisor:8080"],"labels":{"host":"%s"}}]\n' "$hl" \
+               > "$mdir/targets/cadvisor.json"
     fi
     # --- alvos REMOTOS (serviços em outras máquinas) --------------------------
     # Um arquivo por job, com sufixo `-remoto`: o glob do prometheus.yml é
     # `<job>*.json`, então ele casa sem que os alvos locais sejam sobrescritos —
     # um host pode ter Postgres local e OpenSearch remoto ao mesmo tempo.
     if [[ -n "$METRICS_SCRAPE" ]]; then
-        local -a pares=(); local par job alvo alvos
+        local -a pares=(); local par job destino json
         IFS=',' read -r -a pares <<< "$METRICS_SCRAPE"
         for par in "${pares[@]}"; do
             case "${par%%=*}" in
                 postgres|redis|node|opensearch|meilisearch|cadvisor|blackbox) ;;
                 *) warn "--metrics-scrape: job desconhecido em '$par' (ignorado)"; continue ;;
             esac
-            case "${par#*=}" in
-                *:[0-9]*) ;;
-                *) die "--metrics-scrape: '$par' não está no formato job=host:porta" ;;
+            destino="${par#*=}"
+            case "$destino" in *@*) destino="${destino%@*}" ;; esac
+            # O `*:[0-9]*` de antes aceitava `fe80::1` sem colchetes — que passa
+            # aqui e o Prometheus rejeita depois, com o alvo já escrito em disco.
+            [[ "$destino" =~ :[0-9]{1,5}$ ]] \
+                || die "--metrics-scrape: '$par' não está no formato job=host:porta[@apelido]"
+            case "$destino" in
+                \[*\]:*) ;;
+                *:*:*) die "--metrics-scrape: IPv6 exige colchetes — use [${destino%:*}]:${destino##*:}" ;;
             esac
         done
         for job in postgres redis node opensearch meilisearch cadvisor; do
-            alvos=""
-            for par in "${pares[@]}"; do
-                [[ "$par" == "$job="* ]] || continue
-                alvo="${par#*=}"
-                alvos="${alvos}${alvos:+,}\"${alvo}\""
-            done
-            [[ -z "$alvos" ]] && continue
-            printf '[{"targets":[%s]}]\n' "$alvos" > "$mdir/targets/${job}-remoto.json"
-            ok "alvo remoto do job $job: ${alvos//\"/}"
+            if json="$(alvos_remotos_json "$job" "$METRICS_SCRAPE")"; then
+                printf '%s\n' "$json" > "$mdir/targets/${job}-remoto.json"
+                ok "alvo remoto do job $job: $json"
+            else
+                # Sem esta remoção, tirar um job do --metrics-scrape deixava o
+                # arquivo antigo para trás e o Prometheus seguia coletando de uma
+                # máquina que não é mais monitorada — em silêncio. O `rm` só toca
+                # o sufixo `-remoto`, reservado ao script (ver targets/README.md).
+                rm -f "$mdir/targets/${job}-remoto.json"
+            fi
         done
     fi
 
     protect_metrics_key "$mdir/secrets/meili-metrics.key"
     ok "alvos escritos em $mdir/targets/"
+    if [[ "$UPDATE_MODE" == "true" ]]; then
+        # Acrescentar um rótulo ENCERRA todas as séries antigas e cria novas.
+        # Não há gap de coleta e nenhum alerta dispara à toa (AlvoForaDoAr exige
+        # `up == 0`, e a série nova nasce em 1), mas rate()/increase() que
+        # atravessam este instante dão resultado errado por uma janela.
+        info "os alvos agora levam o rótulo host=$hl"
+        info "  as séries antigas foram encerradas e recriadas: rate() e increase()"
+        info "  que cruzarem este instante ficam errados pelos próximos ~5 minutos"
+    fi
 
     # --- sobe a stack ---------------------------------------------------------
     # O `if !` é o que mantém a promessa do comentário no topo desta função: sob
@@ -2398,6 +2491,12 @@ configure_firewall() {
     if [[ -n "$METRICS_PUBLISH_IP" ]]; then
         service_selected postgres && portas_exporter+=(9187)
         service_selected redis && portas_exporter+=(9121)
+        # OpenSearch e Meilisearch não têm exporter: as métricas saem da porta do
+        # PRÓPRIO serviço. Elas ficavam de fora desta lista, então o help mandava
+        # apontar `--metrics-scrape opensearch=IP:9200` para uma porta que o ufw
+        # nunca abria — e o motor de busca aparecia como alvo fora do ar.
+        service_selected opensearch && portas_exporter+=("$OPENSEARCH_PORT")
+        service_selected meilisearch && portas_exporter+=("$MEILI_PORT")
         portas_exporter+=(9100)
         for port in "${portas_exporter[@]}"; do
             if [[ -n "$ALLOW_FROM" ]]; then
@@ -2688,15 +2787,47 @@ import json, sys
 alvos = json.load(sys.stdin)["data"]["activeTargets"]
 if not alvos:
     print("  nenhum alvo configurado — veja os arquivos em targets/")
-for t in sorted(alvos, key=lambda x: x["labels"]["job"]):
+for t in sorted(alvos, key=lambda x: (x["labels"].get("host", ""), x["labels"]["job"])):
     erro = t.get("lastError", "")
-    print("  %-14s %-34s %s%s" % (t["labels"]["job"], t["scrapeUrl"], t["health"],
-                                  "  " + erro[:60] if erro else ""))
+    print("  %-14s %-14s %-34s %s%s" % (t["labels"].get("host", "—"),
+                                        t["labels"]["job"], t["scrapeUrl"], t["health"],
+                                        "  " + erro[:60] if erro else ""))
 ' 2>/dev/null; then
         echo "  Prometheus não respondeu em 127.0.0.1:${porta}"
         echo "  (ele publica só em loopback por default — rode isto no próprio host)"
         exit 1
     fi
+
+    echo
+    echo "== servidores"
+    _t 5 curl -fsS --get "http://127.0.0.1:${porta}/api/v1/query" \
+        --data-urlencode 'query=sum by (host) (up) / count by (host) (up)' 2>/dev/null | python3 -c '
+import json, sys
+r = json.load(sys.stdin)["data"]["result"]
+if not r:
+    print("  nenhuma série tem rótulo host — reaplique com: bash setup.sh --update")
+    print("  (sem ele a seção de infraestrutura do Grafana fica vazia)")
+for x in sorted(r, key=lambda y: y["metric"].get("host", "")):
+    frac = float(x["value"][1])
+    print("  %-16s %s" % (x["metric"].get("host", "—"),
+                          "todos os alvos no ar" if frac == 1
+                          else "ATENCAO: %d%% dos alvos no ar" % round(frac * 100)))
+' 2>/dev/null || echo "  (não foi possível consultar)"
+
+    # O apelido de --metrics-scrape é digitado NESTE host, que não conhece o
+    # `uname -n` da máquina remota. Quando os dois divergem, o link do dashboard
+    # abre a máquina errada sem avisar — este é o único lugar onde isso aparece
+    # sem abrir o Grafana. A expressão é a mesma do painel da visão geral.
+    _t 5 curl -fsS --get "http://127.0.0.1:${porta}/api/v1/query" \
+        --data-urlencode 'query=count by (host, nodename, chave) (label_replace(node_uname_info, "chave", "$1", "host", "(.*)")) unless count by (host, nodename, chave) (label_replace(node_uname_info, "chave", "$1", "nodename", "(.*)"))' \
+        2>/dev/null | python3 -c '
+import json, sys
+for x in json.load(sys.stdin)["data"]["result"]:
+    m = x["metric"]
+    print("  AVISO: apelido %r nao bate com o hostname real %r"
+          % (m.get("host", ""), m.get("nodename", "")))
+    print("         o link do dashboard de host vai para a maquina errada")
+' 2>/dev/null || true
 
     echo
     echo "== alertas disparando"
