@@ -60,6 +60,10 @@ check "32 GiB não viram 1 GiB (INT_MAX do mawk)" "30" \
 check "64 GiB são lidos inteiros"   "62"  "$(printf 'MemTotal:       65787240 kB\n' | leitura_meminfo)"
 check "128 GiB são lidos inteiros"  "125" "$(printf 'MemTotal:      131841680 kB\n' | leitura_meminfo)"
 check "8 GiB são lidos inteiros"    "7"   "$(printf 'MemTotal:        8129160 kB\n' | leitura_meminfo)"
+# shellcheck disable=SC2016  # aspas simples de PROPÓSITO: isto é um padrão de
+# grep procurando o texto literal `$2 * 1024` dentro do script. Expandir aqui
+# faria o padrão virar o VALOR de $2 (vazio) e o teste aprovaria justamente a
+# linha que ele existe para proibir.
 check "o script não multiplica por 1024 dentro do awk" "ok" \
     "$(grep -qF 'printf "%d", $2 * 1024' "$REPO_ROOT/setup.sh" && echo 'ainda multiplica' || echo ok)"
 check "available_mem_gb enxerga mais de 1 GB neste host" "ok" \
