@@ -65,6 +65,38 @@ check "o script não multiplica por 1024 dentro do awk" "ok" \
 check "available_mem_gb enxerga mais de 1 GB neste host" "ok" \
     "$( (( $(available_mem_gb) > 1 )) && echo ok || echo "viu $(available_mem_gb) GB" )"
 
+printf '\nTeto de CPU do OpenSearch cabe na máquina\n'
+# O perfil traz OS_CPU_LIMIT=6 (host de 12 vCPU dividido com o Postgres). Num
+# host DEDICADO ao motor de busca, a máquina certa para 8 GiB tem 4 vCPU — e o
+# Docker RECUSA criar o container: "range of CPUs is from 0.01 to 4.00".
+check "o perfil declara o teto que exige o ajuste" "6" \
+    "$(awk -F= '/^OS_CPU_LIMIT=/{print $2}' "$REPO_ROOT/opensearch/profiles/compartilhada-8gb.env")"
+trecho_cpu="$(awk '/teto de CPU do OpenSearch/,/^    fi$/' "$REPO_ROOT/setup.sh")"
+if printf '%s\n' "$trecho_cpu" | grep -q 'os_cpu_ajustado='; then
+    pass "o setup rebaixa OS_CPU_LIMIT ao número de vCPU da máquina"
+else
+    fail "OS_CPU_LIMIT vai cru para o .env — o container não sobe em host de 4 vCPU"
+fi
+if grep -q "printf 'OS_CPU_LIMIT=%s" "$REPO_ROOT/setup.sh"; then
+    pass "a linha ajustada é escrita DEPOIS do perfil (a última vence)"
+else
+    fail "o ajuste é calculado e nunca chega ao .env"
+fi
+
+printf '\nAviso de orçamento apertado — compara o LIMITE, não o nome do perfil\n'
+# `dedicada-32gb` limita o container a 27 GB. Numa máquina dedicada de 32 GB
+# nominais (30 GiB reportados) mais 1 GB de exporters, a soma cabe — e o aviso
+# "reduza os serviços ou aumente a máquina" apontaria um problema inexistente
+# justamente no perfil que o `auto` acabou de escolher como ideal.
+trecho_orc="$(awk '/A soma total ainda pode não caber/,/fórmula de coexistência/' "$REPO_ROOT/setup.sh")"
+if printf '%s\n' "$trecho_orc" | grep -q 'limite_gb + neighbors_gb > mem_gb'; then
+    pass "o aviso de orçamento usa o limite do container"
+else
+    fail "o aviso de orçamento compara o nome do perfil — avisa em máquina que cabe"
+fi
+check "dedicada-32gb cabe numa máquina de 30 GB com 1 GB de vizinhos" "cabe" \
+    "$( (( $(profile_budget_gb dedicada-32gb) * 87 / 100 + 1 <= 30 )) && echo cabe || echo "nao cabe" )"
+
 printf '\nDetecção de perfil dos vizinhos pela RAM\n'
 check "8 GB  → cache-256mb"   "cache-256mb"  "$(detect_redis_profile 8)"
 check "13 GB → cache-256mb"   "cache-256mb"  "$(detect_redis_profile 13)"

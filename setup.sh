@@ -1017,8 +1017,17 @@ validate_and_prompt() {
         # A soma total ainda pode não caber: dedicada-8gb é o piso do catálogo,
         # então numa máquina pequena com todos os serviços não há perfil menor
         # para escolher.
-        if (( budget + neighbors_gb > mem_gb )); then
-            warn "orçamento apertado: $PG_PROFILE (~${budget} GB) + vizinhos (~${neighbors_gb} GB)"
+        #
+        # A conta usa o LIMITE DO CONTAINER, e não o número do nome do perfil —
+        # a mesma correção que a checagem de recusa acima já tinha recebido, e
+        # que faltava aqui. `dedicada-32gb` limita o container a 27 GB, então
+        # numa máquina dedicada de 32 GB nominais (30 GiB reportados) mais 1 GB
+        # de exporters a soma É 28 e CABE. Comparando o nome, o script avisava
+        # "orçamento apertado, reduza os serviços ou aumente a máquina" no caso
+        # que ele próprio acabara de escolher como ideal — e o operador, lendo
+        # isso num provisionamento novo, procura um problema que não existe.
+        if (( limite_gb + neighbors_gb > mem_gb )); then
+            warn "orçamento apertado: $PG_PROFILE (limite do container ~${limite_gb} GB) + vizinhos (~${neighbors_gb} GB)"
             warn "passam dos ${mem_gb} GB disponíveis ao Docker."
             if [[ "$PG_PROFILE" == "dedicada-8gb" ]]; then
                 warn "Este já é o menor perfil de Postgres. As saídas são reduzir os"
@@ -1615,6 +1624,36 @@ write_env_files() {
     [[ -z "$PG_METRICS_PASSWORD" ]] && PG_METRICS_PASSWORD="$(gen_secret)"
     [[ -z "$GRAFANA_ADMIN_PASSWORD" ]] && GRAFANA_ADMIN_PASSWORD="$(gen_secret)"
 
+    # --- teto de CPU do OpenSearch --------------------------------------------
+    # O Docker RECUSA criar o container quando `cpus` é maior que a máquina:
+    #
+    #   Error response from daemon: range of CPUs is from 0.01 to 4.00,
+    #   as there are only 4 CPUs available
+    #
+    # O perfil `compartilhada-8gb` traz OS_CPU_LIMIT=6 porque foi dimensionado
+    # para um host de 12 vCPU dividido com o Postgres. Num host DEDICADO ao
+    # motor de busca — que é o desenho distribuído —, a máquina certa para 8 GiB
+    # de limite tem 4 vCPU, e ali o perfil simplesmente não sobe. O erro fala de
+    # "CPUs available" e não de perfil, então quem lê procura no lugar errado.
+    #
+    # Rebaixar o teto é seguro e preserva a intenção: ele existe para impedir
+    # que um merge de 6 shards consuma a máquina inteira, e numa máquina de 4
+    # vCPU o teto de 4 é o mesmo que "toda a máquina" — a proteção volta a valer
+    # sozinha assim que o host crescer.
+    local os_cpu_ajustado=""
+    if service_selected opensearch && [[ "$DRY_RUN" != "true" ]]; then
+        local vcpus teto_perfil
+        vcpus="$(docker info -f '{{.NCPU}}' 2>/dev/null || true)"
+        case "$vcpus" in ''|*[!0-9]*) vcpus="$(nproc 2>/dev/null || printf '0')" ;; esac
+        teto_perfil="$(fetch_profile opensearch | awk -F= '/^OS_CPU_LIMIT=/{gsub(/[^0-9.]/,"",$2); print $2; exit}')"
+        if [[ -n "$teto_perfil" ]] && (( vcpus > 0 )) \
+           && awk "BEGIN{exit !($teto_perfil > $vcpus)}"; then
+            os_cpu_ajustado="$vcpus"
+            warn "OS_CPU_LIMIT do perfil é ${teto_perfil}, e a máquina tem ${vcpus} vCPU."
+            warn "  Ajustado para ${vcpus} — o Docker recusaria criar o container."
+        fi
+    fi
+
     # Para onde o pooler aponta. Resolvido AQUI, e não no parser, porque o
     # gateway da bridge só existe depois de install_docker().
     if service_selected pgbouncer && [[ -z "$PGBOUNCER_DB_HOST" && "$DRY_RUN" != "true" ]]; then
@@ -1667,6 +1706,12 @@ write_env_files() {
             # com `--bind-ip 10.0.0.5` justamente para evitar isso.
             opensearch)
                 printf 'BIND_IP=%s\nOPENSEARCH_PORT=%s\n' "$BIND_IP" "$OPENSEARCH_PORT"
+                # Vem DEPOIS do perfil de propósito: numa lista de env_file a
+                # última definição vence, então esta linha rebaixa o teto sem
+                # editar o arquivo versionado.
+                if [[ -n "$os_cpu_ajustado" ]]; then
+                    printf 'OS_CPU_LIMIT=%s\n' "$os_cpu_ajustado"
+                fi
                 ;;
             # Sem este bloco o PgBouncer NÃO SUBIA: as quatro PGB_* do compose
             # são `${VAR:?}`, então o `up` falhava com "defina PGB_DB_HOST" —
