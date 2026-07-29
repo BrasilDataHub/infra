@@ -7,7 +7,7 @@
 # NVMe local) estão documentados em docs/perfis.md; nenhum rebuild é
 # necessário para retunar.
 #
-# A configuração da instância vive AQUI (repositório infra) — schema, DDL e
+# A configuração da instância vive AQUI (repositório plataforma) — schema, DDL e
 # índices continuam no repositório de ETL de cada projeto.
 #
 # Os scripts de initdb/ só executam na PRIMEIRA inicialização (volume vazio).

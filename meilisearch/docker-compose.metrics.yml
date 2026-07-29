@@ -23,7 +23,7 @@
 # alcance sobre os dashboards e os alertas.
 #
 # AUTENTICAÇÃO: /metrics exige uma chave com a ação `metrics.get` e responde 401
-# sem ela. A master key NUNCA é usada para scrape — o `infra-setup.sh --metrics`
+# sem ela. A master key NUNCA é usada para scrape — o `setup.sh --metrics`
 # cria uma chave escopada (uid fixo, idempotente) e a grava em
 # services/monitoring/secrets/meili-metrics.key. O passo manual equivalente está
 # no README deste diretório.

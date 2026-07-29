@@ -3,7 +3,7 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.metrics.yml up -d
 #
-# O `infra-setup.sh --metrics` e o `bdh` passam os dois -f sozinhos. Num
+# O `setup.sh --metrics` e o `bdh` passam os dois -f sozinhos. Num
 # `docker compose` à mão, PASSE OS DOIS: com apenas o compose base, o exporter
 # fica fora do conjunto gerenciado e um `--remove-orphans` o removeria.
 #

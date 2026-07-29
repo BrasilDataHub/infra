@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Testes de infra-setup.sh — carregam o script como biblioteca
+# Testes de setup.sh — carregam o script como biblioteca
 # (BDH_SETUP_LIB_ONLY=1) e exercitam a lógica que decide o que vai para o
 # servidor. A parte mais importante valida os ARQUIVOS DE PERFIL
 # (postgres/profiles/, redis/profiles/, meilisearch/profiles/): eles são a única
 # fonte dos valores de tuning, usada tanto pelo script quanto por quem segue a
 # documentação, então precisam estar íntegros e coerentes com o guia.
 #
-#   bash test/infra-setup.test.sh
+#   bash test/setup.test.sh
 #
 # WORKDIR, DATA_DIR e *_DATA_DIR parecem não usadas para o shellcheck, mas são
 # lidas pelas funções carregadas do script — daí o disable abaixo.
@@ -29,8 +29,8 @@ pass() { printf '  ✓ %s\n' "$1"; PASS=$((PASS + 1)); }
 fail() { printf '  ✗ %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
 # shellcheck source-path=SCRIPTDIR/..
-# shellcheck source=infra-setup.sh
-BDH_SETUP_LIB_ONLY=1 . "$REPO_ROOT/infra-setup.sh"
+# shellcheck source=setup.sh
+BDH_SETUP_LIB_ONLY=1 . "$REPO_ROOT/setup.sh"
 # O script carregado ativa `set -e` e um trap ERR; nos testes queremos avaliar
 # falhas em vez de abortar no primeiro comando que retorna != 0.
 set +e
@@ -287,7 +287,7 @@ for svc in postgres redis meilisearch; do
         pass "$svc: overlay não publica porta"
     fi
 
-    # Label PRÓPRIA: infra-setup.sh e `bdh verify` filtram containers por
+    # Label PRÓPRIA: setup.sh e `bdh verify` filtram containers por
     # `label=org.brasildatahub.service=<svc> | head -1`. Com a label colidindo, o
     # `bdh verify postgres` inspecionaria o exporter.
     if grep -qE "org\.brasildatahub\.service: $svc\$" "$f"; then
@@ -323,7 +323,7 @@ printf '\nFirewall: nunca esvaziar sem repovoar\n'
 # firewall dos containers era apagado e não reconstruído, e as três portas de
 # dados voltavam a aceitar conexão de qualquer origem. Em silêncio: `ufw status`
 # segue `active`, porque a DOCKER-USER não aparece ali.
-trecho_fw="$(awk '/^configure_firewall\(\)/,/^}/' "$REPO_ROOT/infra-setup.sh")"
+trecho_fw="$(awk '/^configure_firewall\(\)/,/^}/' "$REPO_ROOT/setup.sh")"
 linha_flush="$(printf '%s\n' "$trecho_fw" | grep -n 'iptables -F DOCKER-USER' | head -1 | cut -d: -f1)"
 linha_guarda="$(printf '%s\n' "$trecho_fw" | grep -n 'if \[\[ -z "\$ALLOW_FROM" \]\]' | tail -1 | cut -d: -f1)"
 if [[ -n "$linha_flush" && -n "$linha_guarda" && "$linha_guarda" -lt "$linha_flush" ]]; then

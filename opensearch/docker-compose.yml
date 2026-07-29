@@ -7,7 +7,7 @@
 #   sysctl -w vm.max_map_count=262144
 #   echo 'vm.max_map_count=262144' > /etc/sysctl.d/99-opensearch.conf
 #
-# O `infra-setup.sh` não tinha etapa de sysctl até este roadmap (05 §5.2, item
+# O `setup.sh` não tinha etapa de sysctl até este roadmap (05 §5.2, item
 # 5). Sem ele o container sobe e MORRE no bootstrap check, com uma mensagem que
 # fala de `vm.max_map_count` e não de OpenSearch.
 #

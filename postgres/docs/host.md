@@ -188,7 +188,7 @@ volumes:
 
 O volume continua se chamando `bdh_pg_data`, então backup, `bdh status` e a
 documentação seguem valendo. É exatamente o que o
-[`infra-setup.sh`](../../README.md#setup-automatizado-de-vps) gera no modo
+[`setup.sh`](../../README.md#setup-automatizado-de-vps) gera no modo
 `--volumes bind`.
 
 > Para conferir o backing, olhe `Options`, não `Mountpoint` — este último segue
@@ -231,7 +231,7 @@ consequências que vale conhecer:
   varridas continuamente na internet;
 - o **Redis não faz TLS**: fora de rede confiável, a senha e os dados trafegam em
   claro. O Postgres suporta TLS, mas a imagem não o habilita por default;
-- senhas precisam ser longas e aleatórias — o `infra-setup.sh` gera 32 bytes.
+- senhas precisam ser longas e aleatórias — o `setup.sh` gera 32 bytes.
 
 Três formas de reduzir a exposição, quando desejado:
 
@@ -266,7 +266,7 @@ iptables -I DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
 
 Para persistir no boot, coloque as mesmas regras num bloco `*filter` no fim de
 `/etc/ufw/after.rules` (o ufw as reaplica no `reload` e no boot) — é o que o
-[`infra-setup.sh`](../../README.md#setup-automatizado-de-vps) faz com
+[`setup.sh`](../../README.md#setup-automatizado-de-vps) faz com
 `--allow-from`. Duas notas:
 
 - **remover as regras do arquivo não as remove do kernel**: faça

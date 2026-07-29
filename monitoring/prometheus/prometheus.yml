@@ -4,7 +4,7 @@
 # Por que ESTÁTICA, e não gerada no start como o postgresql.conf: o que varia
 # entre hosts aqui não é valor, são os ALVOS — e `file_sd_configs` é o mecanismo
 # nativo do Prometheus para isso, com recarga a quente e sem restart. Os alvos
-# vivem em /etc/prometheus/targets/*.json, escritos pelo infra-setup.sh no host.
+# vivem em /etc/prometheus/targets/*.json, escritos pelo setup.sh no host.
 #
 # O glob de cada job é intencional: se o serviço não foi instalado, o arquivo não
 # existe, o glob não casa nada e o job fica SEM ALVO — em vez de ficar `up == 0`
@@ -73,7 +73,7 @@ scrape_configs:
   - job_name: meilisearch
     scrape_interval: 30s
     # Chave escopada com a ação metrics.get — NUNCA a master key. O arquivo é
-    # criado pelo infra-setup.sh com chmod 600 e montado read-only. Fica fora da
+    # criado pelo setup.sh com chmod 600 e montado read-only. Fica fora da
     # imagem de propósito: segredo não se versiona.
     authorization:
       type: Bearer

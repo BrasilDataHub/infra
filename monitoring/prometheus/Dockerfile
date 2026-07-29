@@ -1,13 +1,13 @@
 # Prometheus da BrasilDataHub — ghcr.io/brasildatahub/prometheus
 #
 # Por que existe uma imagem nossa, se o Prometheus upstream serve: prometheus.yml
-# e as regras de alerta são ARQUIVOS, e o infra-setup.sh só sabe entregar um
+# e as regras de alerta são ARQUIVOS, e o setup.sh só sabe entregar um
 # docker-compose.yml e um .env por serviço. Configuração em arquivo ou viaja
 # dentro da imagem, ou exigiria uma dúzia de `curl` novos no provisionamento.
 #
 # O que NÃO está aqui, de propósito: retenção, limites de memória e os alvos.
 # Retenção e limites são do perfil (monitoring/profiles/*.env); os alvos são do
-# host (/etc/prometheus/targets/*.json, escritos pelo infra-setup.sh). Retunar a
+# host (/etc/prometheus/targets/*.json, escritos pelo setup.sh). Retunar a
 # retenção nunca deve exigir rebuild.
 #
 # Versão: 3.13 é a LTS atual (suporte até 2027-07-31). A 3.5, LTS anterior, sai

@@ -29,7 +29,7 @@ por job, então a ausência do arquivo deixa o job *sem alvo* — em vez de deix
 `up == 0` para sempre, o que envenenaria o alerta `AlvoForaDoAr`, que é o mais
 importante da stack.
 
-O `infra-setup.sh --metrics` escreve estes arquivos conforme os serviços
+O `setup.sh --metrics` escreve estes arquivos conforme os serviços
 selecionados. Para conferir o que o Prometheus enxerga:
 
 ```bash

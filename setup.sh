@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# infra-setup.sh — provisiona um VPS para rodar os serviços de dados da
+# setup.sh — provisiona um VPS para rodar os serviços de dados da
 # BrasilDataHub (PostgreSQL, Redis, Meilisearch) com Docker Compose.
 #
-#   curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh \
+#   curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/setup.sh \
 #     | sudo bash -s -- --auto
 #
 # É OPCIONAL: o fluxo de deploy documentado (postgres/docs/deploy.md) continua
@@ -48,7 +48,7 @@ _explicita()    { FLAGS_EXPLICITAS="${FLAGS_EXPLICITAS} $1"; }
 foi_explicita() { case " $FLAGS_EXPLICITAS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 # --- defaults ----------------------------------------------------------------
-REPO_SLUG="BrasilDataHub/infra"
+REPO_SLUG="BrasilDataHub/plataforma"
 REF="main"
 WORKDIR="/opt/brasildatahub"
 TIMEZONE="America/Sao_Paulo"
@@ -80,7 +80,7 @@ POSTGRES_PORT="5432"
 REDIS_PORT="6379"
 MEILI_PORT="7700"
 # O OpenSearch entra no catálogo com porta própria. Ele NÃO tem autenticação
-# (o plugin de segurança está desligado — ver infra/opensearch/README.md), então
+# (o plugin de segurança está desligado — ver plataforma/opensearch/README.md), então
 # a barreira é inteiramente o firewall: publicar esta porta sem --allow-from
 # entrega o índice inteiro.
 OPENSEARCH_PORT="9200"
@@ -167,7 +167,7 @@ notify() {
     [[ -z "$WEBHOOK_URL" ]] && return 0
     [[ "$DRY_RUN" == "true" ]] && return 0
     local payload
-    payload=$(printf '{"host":"%s","script":"infra-setup","version":"%s","status":"%s","message":"%s","timestamp":"%s"}' \
+    payload=$(printf '{"host":"%s","script":"setup","version":"%s","status":"%s","message":"%s","timestamp":"%s"}' \
         "$(hostname)" "$SCRIPT_VERSION" "$status" "${message//\"/\\\"}" "$(now_iso)")
     # Webhook nunca derruba o provisionamento.
     curl -fsS -m 5 -X POST -H 'Content-Type: application/json' -d "$payload" "$WEBHOOK_URL" >/dev/null 2>&1 || true
@@ -178,15 +178,15 @@ trap 'notify "failed" "abortado na linha $LINENO"' ERR
 # --- ajuda -------------------------------------------------------------------
 usage() {
     cat <<'HELP'
-infra-setup.sh — provisiona uma máquina para os serviços de dados da BrasilDataHub.
+setup.sh — provisiona uma máquina para os serviços de dados da BrasilDataHub.
 
 USAGE:
-    curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh \
+    curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/setup.sh \
       | sudo bash -s -- [OPTIONS]
 
     # ou, para revisar antes de executar (recomendado):
-    curl -fsSL .../infra-setup.sh -o infra-setup.sh && less infra-setup.sh
-    sudo bash infra-setup.sh [OPTIONS]
+    curl -fsSL .../setup.sh -o setup.sh && less setup.sh
+    sudo bash setup.sh [OPTIONS]
 
 PLATAFORMAS:
     Ubuntu/Debian  instala Docker, ajusta timezone, configura ufw e a mensagem
@@ -303,7 +303,7 @@ DEPOIS DE RODAR:
     bdh status                                   estado dos serviços
     bdh --help                                   demais comandos
 
-Documentação: https://github.com/BrasilDataHub/infra
+Documentação: https://github.com/BrasilDataHub/plataforma
 HELP
 }
 
@@ -1012,7 +1012,7 @@ setup_system() {
 # =============================================================================
 # Parâmetros de kernel
 # =============================================================================
-# O `infra-setup.sh` não tinha etapa de sysctl até este roadmap (05 §5.2, item
+# O `setup.sh` não tinha etapa de sysctl até este roadmap (05 §5.2, item
 # 5), e o OpenSearch não sobe sem uma: com `vm.max_map_count` no default do
 # Debian (65530), o container morre no bootstrap check com uma mensagem que fala
 # de `vm.max_map_count` e NÃO de OpenSearch — e quem lê procura o problema no
@@ -1062,7 +1062,7 @@ configure_sysctl() {
     # Reescrever o arquivo inteiro, e não acrescentar: uma execução repetida
     # deixaria a mesma linha duas vezes, e a última venceria em silêncio.
     {
-        printf '# GERADO por infra-setup.sh — não editar à mão.\n'
+        printf '# GERADO por setup.sh — não editar à mão.\n'
         printf '# O OpenSearch usa mmap para os segmentos do Lucene; o default do\n'
         printf '# Debian (65530) o faz morrer no bootstrap check. O mínimo que\n'
         printf '# exigimos é %s; um valor maior já presente no host é PRESERVADO.\n' "$VM_MAX_MAP_COUNT"
@@ -1248,7 +1248,7 @@ create_layout() {
             # O driver local com o=bind NÃO cria o diretório: sem isto o mount falha.
             if [[ "$DRY_RUN" != "true" ]]; then
                 cat > "$(service_dir "$s")/docker-compose.override.yml" <<EOF
-# Gerado por infra-setup.sh — modo --volumes bind.
+# Gerado por setup.sh — modo --volumes bind.
 # Mantém o volume nomeado, mas com os dados neste diretório do host.
 volumes:
   $(service_volume_key "$s"):
@@ -1309,7 +1309,7 @@ write_env_files() {
         # manda copiar num deploy manual.
         {
             fetch_profile "$s"
-            printf '\n# --- deploy (gerado por infra-setup.sh em %s) ---\n' "$(now_iso)"
+            printf '\n# --- deploy (gerado por setup.sh em %s) ---\n' "$(now_iso)"
             case "$s" in
             postgres)
                 printf 'POSTGRES_DB=%s\n' "$POSTGRES_DB"
@@ -1339,7 +1339,7 @@ write_env_files() {
         # que já está no .env, sem acrescentar nada.
         if [[ "$METRICS_ENABLED" == "true" && "$s" == "postgres" ]]; then
             {
-                printf '# Credencial do postgres_exporter — gerado por infra-setup.sh em %s.\n' "$(now_iso)"
+                printf '# Credencial do postgres_exporter — gerado por setup.sh em %s.\n' "$(now_iso)"
                 printf '# Separado do .env de propósito: acrescentar variáveis ao .env do\n'
                 printf '# serviço faria o Compose recriar o container do banco.\n'
                 printf 'DATA_SOURCE_PASS=%s\n' "$PG_METRICS_PASSWORD"
@@ -1363,7 +1363,7 @@ write_env_files() {
         dir="$(service_dir monitoring)"
         {
             cat "$profile_metrics"
-            printf '\n# --- deploy (gerado por infra-setup.sh em %s) ---\n' "$(now_iso)"
+            printf '\n# --- deploy (gerado por setup.sh em %s) ---\n' "$(now_iso)"
             printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$GRAFANA_ADMIN_PASSWORD"
             printf 'MON_HOSTNAME=%s\n' "$(hostname)"
             printf 'MONITORING_BIND_IP=%s\n' "$MONITORING_BIND_IP"
@@ -1383,7 +1383,7 @@ write_env_files() {
     if [[ "$DRY_RUN" != "true" ]]; then
         {
             printf '# Credenciais dos serviços de dados — BrasilDataHub\n'
-            printf '# Gerado por infra-setup.sh em %s. NÃO versione este arquivo.\n\n' "$(now_iso)"
+            printf '# Gerado por setup.sh em %s. NÃO versione este arquivo.\n\n' "$(now_iso)"
             if service_selected postgres; then
                 printf 'POSTGRES_DB=%s\nPOSTGRES_USER=postgres\nPOSTGRES_PASSWORD=%s\nDADOS_READ_PASSWORD=%s\nPOSTGRES_PORT=%s\n\n' \
                     "$POSTGRES_DB" "$POSTGRES_PASSWORD" "$DADOS_READ_PASSWORD" "$POSTGRES_PORT"
@@ -1627,7 +1627,7 @@ setup_metrics() {
     [[ "$FORCE" == "true" ]] && up_args+=(--force-recreate)
     if ! run docker compose -p monitoring "${compose_args[@]}" "${up_args[@]}"; then
         warn "monitoring não subiu — o provisionamento segue sem observabilidade."
-        warn "Veja 'bdh logs monitoring' e depois rode: bash infra-setup.sh --metrics-only"
+        warn "Veja 'bdh logs monitoring' e depois rode: bash setup.sh --metrics-only"
         notify "progress" "observabilidade falhou; provisionamento continua"
         return 0
     fi
@@ -1722,17 +1722,29 @@ configure_firewall() {
     # /etc/ufw/after.rules (que o ufw reaplica no reload e no boot).
     # ------------------------------------------------------------------
     local rules_file=/etc/ufw/after.rules
-    local begin='# BEGIN BrasilDataHub (infra-setup.sh) — restrição das portas publicadas pelo Docker'
+    local begin='# BEGIN BrasilDataHub (setup.sh) — restrição das portas publicadas pelo Docker'
     local end='# END BrasilDataHub'
+    # Prefixo ESTÁVEL para localizar o bloco de uma execução anterior. A remoção
+    # casava a linha `$begin` inteira, com `grep -qF` — e o nome do script está
+    # dentro dela. Quando este script deixou de se chamar `setup.sh`, o
+    # bloco antigo parou de casar: não seria removido, um novo seria acrescentado,
+    # e o after.rules ficaria com DOIS blocos DOCKER-USER concorrentes nas
+    # máquinas já provisionadas.
+    #
+    # Casar pelo prefixo resolve o passado e o futuro: reconhece o marcador
+    # antigo, o atual, e qualquer renomeação posterior.
+    local begin_re='^# BEGIN BrasilDataHub'
+    local end_re='^# END BrasilDataHub'
 
     if [[ "$DRY_RUN" == "true" ]]; then
         _log "    ${C_DIM}[dry-run] ajustaria a chain DOCKER-USER em $rules_file${C_RESET}"
         return 0
     fi
 
-    # Remove o bloco de uma execução anterior (idempotência).
-    if grep -qF "$begin" "$rules_file" 2>/dev/null; then
-        sed -i "/$(printf '%s' "$begin" | sed 's/[][\.*^$/]/\\&/g')/,/$(printf '%s' "$end" | sed 's/[][\.*^$/]/\\&/g')/d" "$rules_file"
+    # Remove o bloco de uma execução anterior (idempotência), seja qual for o
+    # nome do script que o escreveu.
+    if grep -qE "$begin_re" "$rules_file" 2>/dev/null; then
+        sed -i "/${begin_re}/,/${end_re}/d" "$rules_file"
     fi
 
     # A ORDEM AQUI JÁ FOI UM DEFEITO. A versão anterior esvaziava a chain e só
@@ -1804,7 +1816,7 @@ install_cli_and_motd() {
     cat > "$BIN_DIR/bdh" <<'BDH'
 #!/usr/bin/env bash
 # bdh — atalhos de operação dos serviços de dados da BrasilDataHub.
-# Instalado por infra-setup.sh. Os caminhos vêm de setup.conf (em /etc ou ~/.config).
+# Instalado por setup.sh. Os caminhos vêm de setup.conf (em /etc ou ~/.config).
 set -euo pipefail
 
 if [[ -z "${BDH_ROOT:-}" ]]; then
@@ -1842,7 +1854,7 @@ compose() {
     local dir; dir="$(svc_dir "$svc")"
     [[ -d "$dir" ]] || { echo "serviço '$svc' não provisionado em $dir" >&2; exit 1; }
     local args=(--project-directory "$dir" -f "$dir/docker-compose.yml")
-    # Mesma ordem do infra-setup.sh: base → metrics → override.
+    # Mesma ordem do setup.sh: base → metrics → override.
     [[ -f "$dir/docker-compose.metrics.yml" ]] && args+=(-f "$dir/docker-compose.metrics.yml")
     [[ -f "$dir/docker-compose.override.yml" ]] && args+=(-f "$dir/docker-compose.override.yml")
     docker compose -p "$svc" "${args[@]}" "$@"
@@ -2021,7 +2033,7 @@ BDH
     # aspas simples envolvendo todo o corpo.
     # shellcheck disable=SC2016
     local motd_body='#!/usr/bin/env bash
-# Mensagem de login — serviços de dados da BrasilDataHub (infra-setup.sh).
+# Mensagem de login — serviços de dados da BrasilDataHub (setup.sh).
 if [[ -z "${BDH_ROOT:-}" ]]; then
     BDH_ROOT="/opt/brasildatahub"
     for _conf in /etc/brasildatahub/setup.conf "$HOME/.config/brasildatahub/setup.conf"; do
@@ -2113,7 +2125,7 @@ summary() {
 # =============================================================================
 main() {
     _log ""
-    _log "${C_BOLD}infra-setup.sh v${SCRIPT_VERSION}${C_RESET} — serviços de dados da BrasilDataHub"
+    _log "${C_BOLD}setup.sh v${SCRIPT_VERSION}${C_RESET} — serviços de dados da BrasilDataHub"
     validate_and_prompt
     preflight
     setup_system
@@ -2130,7 +2142,7 @@ main() {
 }
 
 # BDH_SETUP_LIB_ONLY=1 carrega as funções sem provisionar nada — é como
-# test/infra-setup.test.sh exercita a lógica de perfis e caminhos.
+# test/setup.test.sh exercita a lógica de perfis e caminhos.
 if [[ -z "${BDH_SETUP_LIB_ONLY:-}" ]]; then
     main
 fi

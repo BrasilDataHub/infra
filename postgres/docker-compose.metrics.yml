@@ -4,7 +4,7 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.metrics.yml up -d
 #
-# O `infra-setup.sh --metrics` e o `bdh` passam os dois -f sozinhos. Num
+# O `setup.sh --metrics` e o `bdh` passam os dois -f sozinhos. Num
 # `docker compose` à mão, PASSE OS DOIS: com apenas o compose base, o exporter
 # fica fora do conjunto gerenciado e um `--remove-orphans` o removeria.
 #
@@ -55,7 +55,7 @@ services:
       # vem do .env.metrics, e `environment:` teria precedência sobre ele.
       DATA_SOURCE_URI: postgres:5432/${POSTGRES_DB:?defina POSTGRES_DB}?sslmode=disable
       DATA_SOURCE_USER: ${PG_METRICS_USER:-metrics_read}
-    # Valor PRÓPRIO, nunca `postgres`: o infra-setup.sh e o `bdh verify` fazem
+    # Valor PRÓPRIO, nunca `postgres`: o setup.sh e o `bdh verify` fazem
     # `docker ps -q --filter label=org.brasildatahub.service=postgres | head -1`.
     # Com a label colidindo, o `bdh verify postgres` rodaria `df -h /dev/shm` no
     # exporter e o wait de healthcheck observaria o container errado.

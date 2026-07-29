@@ -22,7 +22,7 @@ CONF=/etc/postgresql/postgresql.conf
 
 cat > "$CONF" <<EOF
 # ARQUIVO GERADO no start do container por generate-config.sh — não editar
-# à mão: defina as envs PG_* no deploy (ver README do infra/postgres).
+# à mão: defina as envs PG_* no deploy (ver README do plataforma/postgres).
 
 # --- Conexões ---------------------------------------------------------------
 listen_addresses = '*'

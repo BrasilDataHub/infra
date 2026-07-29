@@ -8,7 +8,7 @@
 # POR QUE ISTO EXISTE, E POR QUE É UM ARQUIVO SEPARADO
 #
 # O `docker-compose.metrics.yml` de cada serviço NÃO publica porta, e há teste
-# na CI afirmando isso (`test/infra-setup.test.sh`): o /metrics não tem
+# na CI afirmando isso (`test/setup.test.sh`): o /metrics não tem
 # autenticação nenhuma e entrega `pg_settings_*` inteiro. A regra está certa —
 # para o caso em que Prometheus e serviço vivem na mesma máquina, alcançáveis
 # pela rede `bdh_metrics`.
@@ -28,7 +28,7 @@
 #   1. `METRICS_BIND_IP` é OBRIGATÓRIA e sem default. Um default de 0.0.0.0
 #      publicaria os internos do banco na internet.
 #   2. A sonda `PortaDeDadosAlcancavelDeFora` (blackbox.rules.yml) existe para
-#      pegar a regressão do firewall — porque `infra-setup.sh --metrics-only`
+#      pegar a regressão do firewall — porque `setup.sh --metrics-only`
 #      sem `--allow-from` esvazia a chain DOCKER-USER e não a repovoa.
 # ─────────────────────────────────────────────────────────────────────────────
 

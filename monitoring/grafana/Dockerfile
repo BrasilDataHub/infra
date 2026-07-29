@@ -1,7 +1,7 @@
 # Grafana da BrasilDataHub — ghcr.io/brasildatahub/grafana
 #
 # Existe pelo mesmo motivo da imagem do Prometheus: provisioning e dashboards são
-# ARQUIVOS, e o infra-setup.sh só entrega docker-compose.yml e .env. Sem a
+# ARQUIVOS, e o setup.sh só entrega docker-compose.yml e .env. Sem a
 # imagem, o provisionamento teria que baixar uma árvore de ~8 arquivos por curl.
 #
 # Efeito colateral valioso: tira o Grafana do Docker Hub. O limite de pull

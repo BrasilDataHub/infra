@@ -123,10 +123,10 @@ numa de 128 GB. Então `--metrics-profile auto` resolve para `metricas-512mb` em
 qualquer tamanho, e sobe para `metricas-2gb` apenas com `--metrics-containers`
 (o cAdvisor sozinho dobra o volume de séries). **`metricas-8gb` nunca é
 automático**: ele existe para 5–15 hosts, um cenário multi-host que o
-`infra-setup.sh` não conhece — escolha-o à mão se for federar máquinas.
+`setup.sh` não conhece — escolha-o à mão se for federar máquinas.
 
 Cada perfil é um `.env` versionado em [`profiles/`](profiles/), o mesmo arquivo
-que o [`infra-setup.sh`](../README.md#setup-automatizado-de-vps) baixa.
+que o [`setup.sh`](../README.md#setup-automatizado-de-vps) baixa.
 
 **As duas retenções são sempre declaradas.** A de tempo sozinha não protege o
 disco: um pico de cardinalidade enche o volume — que divide o NVMe com o
@@ -135,7 +135,7 @@ stack, a ferramenta de observação derrubando o observado.
 
 Se a monitoração dividir o host com o Postgres, some ~2 GB (ou ~3 GB com
 cAdvisor) à [fórmula de coexistência](../postgres/docs/perfis.md#fórmula-de-reserva).
-O `infra-setup.sh` avisa quando o orçamento não fecha.
+O `setup.sh` avisa quando o orçamento não fecha.
 
 ## Variáveis de ambiente
 
@@ -248,11 +248,11 @@ O caminho normal é o provisionamento automatizado:
 
 ```bash
 # instalação nova, já com observabilidade
-sudo bash infra-setup.sh --auto --metrics
+sudo bash setup.sh --auto --metrics
 
 # acrescentar observabilidade a uma instalação que JÁ existe, sem recriar
 # os containers de dados
-sudo bash infra-setup.sh --metrics-only
+sudo bash setup.sh --metrics-only
 ```
 
 `--metrics-only` é o modo para ligar métricas num banco em produção: ele implica
@@ -265,7 +265,7 @@ indexação.
 À mão:
 
 ```bash
-BASE=https://raw.githubusercontent.com/BrasilDataHub/infra/main/monitoring
+BASE=https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/monitoring
 curl -fsSL "$BASE/docker-compose.yml" -o docker-compose.yml
 curl -fsSL "$BASE/profiles/metricas-512mb.env" -o .env
 
@@ -336,7 +336,7 @@ dispensa um Alertmanager e casa com o `--webhook-url` que o script já tem. Ver
 
 ## Ressalvas no macOS
 
-O `infra-setup.sh` **não liga** o node exporter nem o cAdvisor no macOS, por duas
+O `setup.sh` **não liga** o node exporter nem o cAdvisor no macOS, por duas
 razões medidas:
 
 1. eles leem o `/proc` da **VM do Docker**, não do Mac — "disco cheio" no painel

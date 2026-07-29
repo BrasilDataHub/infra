@@ -3,7 +3,7 @@
 *.local
 .DS_Store
 
-# Alvos e segredos do Prometheus são gerados no host pelo infra-setup.sh.
+# Alvos e segredos do Prometheus são gerados no host pelo setup.sh.
 # `targets/README.md` é versionado; o resto do diretório, não.
 monitoring/targets/*.json
 monitoring/secrets/

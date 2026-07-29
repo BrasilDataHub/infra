@@ -27,7 +27,7 @@ services:
       REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-512mb}
       REDIS_MAXMEMORY_POLICY: ${REDIS_MAXMEMORY_POLICY:-volatile-lru}
       REDIS_APPENDONLY: ${REDIS_APPENDONLY:-yes}
-    # consumida pelo `bdh status` e pela mensagem de login (ver infra-setup.sh)
+    # consumida pelo `bdh status` e pela mensagem de login (ver setup.sh)
     labels:
       org.brasildatahub.service: redis
     volumes:

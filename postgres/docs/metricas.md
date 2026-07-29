@@ -46,7 +46,7 @@ docker exec -i -e PG_METRICS_PASSWORD='...' \
 ```
 
 `POSTGRES_DB` e `POSTGRES_USER` não precisam ser passados: já estão no ambiente
-do container. O `infra-setup.sh --metrics` faz exatamente isso.
+do container. O `setup.sh --metrics` faz exatamente isso.
 
 Conferindo:
 

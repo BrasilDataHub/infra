@@ -35,7 +35,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
       DADOS_READ_PASSWORD: ${DADOS_READ_PASSWORD:-}
-    # consumida pelo `bdh status` e pela mensagem de login (ver infra-setup.sh)
+    # consumida pelo `bdh status` e pela mensagem de login (ver setup.sh)
     labels:
       org.brasildatahub.service: postgres
     volumes:

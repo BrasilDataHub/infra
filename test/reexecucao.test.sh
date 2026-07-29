@@ -59,7 +59,7 @@ STATE
 # função que decide, e testá-la isolada mostra QUAL valor veio de onde.
 carregar() {
     # shellcheck disable=SC1090
-    BDH_SETUP_LIB_ONLY=1 . "$RAIZ/infra-setup.sh"
+    BDH_SETUP_LIB_ONLY=1 . "$RAIZ/setup.sh"
     set +e
     trap - ERR
     WORKDIR="$TMP/workdir"
@@ -233,21 +233,21 @@ fi
 # Lacuna 3: credentials.env era reescrito com as credenciais apenas dos serviços
 # DESTA execução. Um --add-service truncava as senhas dos outros, e o operador
 # só descobria ao precisar delas.
-if grep -q 'preservadas de execuções anteriores' "$RAIZ/infra-setup.sh"; then
+if grep -q 'preservadas de execuções anteriores' "$RAIZ/setup.sh"; then
     ok "credentials.env recebe merge em vez de ser truncado"
 else
     nok "credentials.env é reescrito: --add-service perderia as senhas dos outros serviços"
 fi
 
 # Lacuna 4: com ALLOW_FROM herdado e a chain vazia, a reconstrução acontece.
-if grep -q 'reconstruindo a partir de ALLOW_FROM' "$RAIZ/infra-setup.sh"; then
+if grep -q 'reconstruindo a partir de ALLOW_FROM' "$RAIZ/setup.sh"; then
     ok "a chain DOCKER-USER é reconstruída a partir do estado herdado"
 else
     nok "sem reconstrução: o firewall só voltaria repetindo a flag de cor"
 fi
 
 # Lacuna 6: não havia caminho para atualizar imagem.
-if grep -q 'cmd_pull()' "$RAIZ/infra-setup.sh"; then
+if grep -q 'cmd_pull()' "$RAIZ/setup.sh"; then
     ok 'há bdh pull para atualizar imagem sem recriar o que não mudou'
 else
     nok "sem bdh pull"
@@ -257,7 +257,7 @@ printf '\nO comando bdh\n'
 # O `bdh` são ~180 linhas dentro de um heredoc, e nenhum teste o olhava — nem
 # sintaticamente. Um erro ali só apareceria no servidor, no primeiro uso, e o
 # heredoc esconde o erro do `bash -n` do script hospedeiro.
-awk "/<<'BDH'/{flag=1;next}/^BDH\$/{flag=0}flag" "$RAIZ/infra-setup.sh" > "$TMP/bdh-cli.sh"
+awk "/<<'BDH'/{flag=1;next}/^BDH\$/{flag=0}flag" "$RAIZ/setup.sh" > "$TMP/bdh-cli.sh"
 if [[ -s "$TMP/bdh-cli.sh" ]] && bash -n "$TMP/bdh-cli.sh" 2>/dev/null; then
     ok "o corpo do comando bdh tem sintaxe válida ($(wc -l < "$TMP/bdh-cli.sh" | tr -d ' ') linhas)"
 else
@@ -311,7 +311,7 @@ else
 fi
 
 printf '\nsysctl\n'
-if grep -q 'vm.max_map_count' "$RAIZ/infra-setup.sh" && grep -q '/etc/sysctl.d/' "$RAIZ/infra-setup.sh"; then
+if grep -q 'vm.max_map_count' "$RAIZ/setup.sh" && grep -q '/etc/sysctl.d/' "$RAIZ/setup.sh"; then
     ok "há etapa de sysctl, com persistência em /etc/sysctl.d/"
 else
     nok "sem etapa de sysctl — o OpenSearch morre no bootstrap check"
@@ -333,7 +333,7 @@ if [[ "$(cat "$TMP/sysctl1")" == "1048576" ]]; then
 else
     nok "rebaixaria para $(cat "$TMP/sysctl1")"
 fi
-if grep -q 'NUNCA rebaixar' "$RAIZ/infra-setup.sh" && grep -qF 'alvo="$atual"' "$RAIZ/infra-setup.sh"; then
+if grep -q 'NUNCA rebaixar' "$RAIZ/setup.sh" && grep -qF 'alvo="$atual"' "$RAIZ/setup.sh"; then
     ok "a guarda de nao-rebaixamento esta no script, nao so no teste"
 else
     nok "o script nao preserva valor maior"

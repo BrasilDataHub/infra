@@ -184,6 +184,6 @@ groups:
         annotations:
           summary: "{{ $labels.instance }} aceita conexão de onde não deveria"
           description: >-
-            A regra de ufw/DOCKER-USER caiu. `infra-setup.sh --metrics-only` sem
+            A regra de ufw/DOCKER-USER caiu. `setup.sh --metrics-only` sem
             --allow-from esvazia a chain e não a repovoa (05 §5.1) — é a causa
             mais provável.

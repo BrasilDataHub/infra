@@ -14,7 +14,7 @@ unitários provando que a regra **não** dispara nos casos limítrofes.
 Sem Alertmanager: a notificação usa o **alerting unificado do Grafana**, que já
 lê o datasource provisionado. É um container a menos, um lugar a menos para
 configurar rota e silêncio, e o contact point de webhook casa com o
-`--webhook-url` que o `infra-setup.sh` já aceita.
+`--webhook-url` que o `setup.sh` já aceita.
 
 Configure em *Alerting → Contact points* no Grafana. Enquanto nenhum contact
 point existir, os alertas aparecem no painel **Alertas disparando** da Visão

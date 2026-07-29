@@ -159,7 +159,7 @@ host com o Postgres, movem-se junto com ele, sob a
    Docker secret. ✅ *Observabilidade: resolvida —* `postgres_exporter`,
    Prometheus e Grafana estão em [`../../monitoring/`](../../monitoring/), com a
    role de leitura e os coletores documentados em [metricas.md](metricas.md).
-   Ligue numa instalação existente com `infra-setup.sh --metrics-only`, que não
+   Ligue numa instalação existente com `setup.sh --metrics-only`, que não
    recria o container do banco.
 4. **Migrar produção com janela:** backup verificado por restauração → parar o
    serviço no painel **sem remover o volume** → subir o compose apontando para o

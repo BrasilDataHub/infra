@@ -23,10 +23,10 @@ já têm default no compose; `MEILI_MASTER_KEY` é secreta e nunca vai para o gi
 
 Cada perfil é um arquivo `.env` versionado em [`profiles/`](profiles/) — envs de
 indexação e limite de container juntos. É o mesmo arquivo que o
-[`infra-setup.sh`](../README.md#setup-automatizado-de-vps) baixa:
+[`setup.sh`](../README.md#setup-automatizado-de-vps) baixa:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/meilisearch/profiles/busca-1gb.env -o .env
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/meilisearch/profiles/busca-1gb.env -o .env
 # depois acrescente: MEILI_MASTER_KEY=...   (mínimo 16 bytes)
 ```
 
@@ -93,7 +93,7 @@ MEILI_MASTER_KEY=... bash metrics-key.sh http://127.0.0.1:7700
 ```
 
 A chave resultante só abre `/metrics`: `/indexes`, `/stats` e `/keys` respondem
-`403`. O `infra-setup.sh --metrics` roda isso sozinho e grava o valor em
+`403`. O `setup.sh --metrics` roda isso sozinho e grava o valor em
 `services/monitoring/secrets/meili-metrics.key`.
 
 ## Implantação
@@ -106,7 +106,7 @@ usa `/dev/shm`, então não há a armadilha do Postgres — mas o **limite de me
 continua sendo recurso do serviço**, e é ele que impede o OOM na indexação.
 
 ```bash
-BASE=https://raw.githubusercontent.com/BrasilDataHub/infra/main/meilisearch
+BASE=https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/meilisearch
 curl -fsSL "$BASE/docker-compose.yml" -o docker-compose.yml
 curl -fsSL "$BASE/profiles/busca-1gb.env" -o .env     # <- perfil escolhido
 

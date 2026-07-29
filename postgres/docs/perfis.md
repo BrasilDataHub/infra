@@ -26,7 +26,7 @@ partir de envs `PG_*` (ver `generate-config.sh`). Trocar de perfil é trocar
 envs no deploy — nenhum rebuild. Cada perfil é um **arquivo `.env` versionado**
 em [`postgres/profiles/`](../profiles/), que você copia para o lado do compose
 ([receita](deploy.md#a-receita)). O mesmo arquivo é o que o
-[`infra-setup.sh`](../../README.md#setup-automatizado-de-vps) baixa — este guia
+[`setup.sh`](../../README.md#setup-automatizado-de-vps) baixa — este guia
 explica os valores, não os duplica.
 
 Quatro premissas valem para **todos** os perfis, sem exceção:
@@ -273,7 +273,7 @@ já registra isso no log).
 **Arquivo do perfil:** [`profiles/dedicada-8gb.env`](../profiles/dedicada-8gb.env) (são os defaults da imagem; o arquivo serve como registro explícito no deploy) — traz o bloco `PG_*` e também o limite de memória e o `/dev/shm` do container.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/postgres/profiles/dedicada-8gb.env -o .env
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/postgres/profiles/dedicada-8gb.env -o .env
 # depois acrescente POSTGRES_DB, POSTGRES_PASSWORD e DADOS_READ_PASSWORD
 ```
 
@@ -304,7 +304,7 @@ com o OLTP, ou o working set passar de ~10 GB.
 **Arquivo do perfil:** [`profiles/dedicada-16gb.env`](../profiles/dedicada-16gb.env) — traz o bloco `PG_*` e também o limite de memória e o `/dev/shm` do container.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/postgres/profiles/dedicada-16gb.env -o .env
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/postgres/profiles/dedicada-16gb.env -o .env
 # depois acrescente POSTGRES_DB, POSTGRES_PASSWORD e DADOS_READ_PASSWORD
 ```
 
@@ -339,7 +339,7 @@ passar de ~20 GB.
 **Arquivo do perfil:** [`profiles/dedicada-32gb.env`](../profiles/dedicada-32gb.env) — traz o bloco `PG_*` e também o limite de memória e o `/dev/shm` do container.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/postgres/profiles/dedicada-32gb.env -o .env
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/postgres/profiles/dedicada-32gb.env -o .env
 # depois acrescente POSTGRES_DB, POSTGRES_PASSWORD e DADOS_READ_PASSWORD
 ```
 
@@ -373,7 +373,7 @@ base, ou novas cargas ampliarem o working set além dos ~40 GB.
 **Arquivo do perfil:** [`profiles/dedicada-64gb.env`](../profiles/dedicada-64gb.env) — traz o bloco `PG_*` e também o limite de memória e o `/dev/shm` do container.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/postgres/profiles/dedicada-64gb.env -o .env
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/postgres/profiles/dedicada-64gb.env -o .env
 # depois acrescente POSTGRES_DB, POSTGRES_PASSWORD e DADOS_READ_PASSWORD
 ```
 
@@ -402,7 +402,7 @@ acelera commit); acima disso o caminho é sharding/réplicas, não mais RAM.
 **Arquivo do perfil:** [`profiles/dedicada-128gb.env`](../profiles/dedicada-128gb.env) — traz o bloco `PG_*` e também o limite de memória e o `/dev/shm` do container.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/postgres/profiles/dedicada-128gb.env -o .env
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/postgres/profiles/dedicada-128gb.env -o .env
 # depois acrescente POSTGRES_DB, POSTGRES_PASSWORD e DADOS_READ_PASSWORD
 ```
 
@@ -427,7 +427,7 @@ Some sempre o **limite de container** do vizinho, não o `maxmemory` nem o
 reserva do SO já está embutida no perfil — o limite do container do Postgres é
 ~87% do orçamento.
 
-> O [`infra-setup.sh`](../../README.md#como-o---auto-dimensiona-a-máquina) aplica
+> O [`setup.sh`](../../README.md#como-o---auto-dimensiona-a-máquina) aplica
 > esta fórmula sozinho: com os perfis em `auto` (o default), ele escolhe os
 > vizinhos pela RAM, soma os limites e dimensiona o Postgres com o que sobra. Os
 > perfis de vizinho que ele escolhe são os desta tabela, e o resultado de cada

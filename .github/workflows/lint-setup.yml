@@ -1,4 +1,4 @@
-name: Lint e testes do infra-setup.sh
+name: Lint e testes do setup.sh
 
 # O script provisiona máquinas como root; um erro de sintaxe ou uma divergência
 # entre os perfis embutidos e postgres/docs/perfis.md sai caro em produção.
@@ -7,8 +7,8 @@ on:
   push:
     branches: [main]
     paths:
-      - "infra-setup.sh"
-      - "test/infra-setup.test.sh"
+      - "setup.sh"
+      - "test/setup.test.sh"
       - "postgres/docs/perfis.md"
       - "*/profiles/*.env"
       - "*/docker-compose.yml"
@@ -19,8 +19,8 @@ on:
       - ".github/workflows/lint-setup.yml"
   pull_request:
     paths:
-      - "infra-setup.sh"
-      - "test/infra-setup.test.sh"
+      - "setup.sh"
+      - "test/setup.test.sh"
       - "postgres/docs/perfis.md"
       - "*/profiles/*.env"
       - "*/docker-compose.yml"
@@ -37,11 +37,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Sintaxe
-        run: bash -n infra-setup.sh
+        run: bash -n setup.sh
 
       - name: ShellCheck
         run: |
-          shellcheck -x infra-setup.sh test/infra-setup.test.sh
+          shellcheck -x setup.sh test/setup.test.sh
           shellcheck postgres/initdb/03-role-metrics.sh \
                      meilisearch/metrics-key.sh \
                      monitoring/grafana/vendorizar.sh \
@@ -50,13 +50,13 @@ jobs:
       # Cobre, entre outras coisas, se os blocos PG_* do script continuam
       # idênticos aos de postgres/docs/perfis.md e se as envs existem na imagem.
       - name: Testes
-        run: bash test/infra-setup.test.sh
+        run: bash test/setup.test.sh
 
       - name: Re-execução herda o estado
         run: bash test/reexecucao.test.sh
 
       - name: Ajuda não falha
-        run: bash infra-setup.sh --help > /dev/null
+        run: bash setup.sh --help > /dev/null
 
       - name: Composes válidos
         run: |

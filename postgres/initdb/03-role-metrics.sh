@@ -12,7 +12,7 @@
 #            $(docker ps -q --filter label=org.brasildatahub.service=postgres) \
 #            bash -s < 03-role-metrics.sh
 #
-#      É o que o infra-setup.sh faz com --metrics. POSTGRES_USER e POSTGRES_DB
+#      É o que o setup.sh faz com --metrics. POSTGRES_USER e POSTGRES_DB
 #      não precisam ser passados: já estão no ambiente do container.
 #
 # Um caminho só para os dois casos é deliberado — dois divergiriam com o tempo.

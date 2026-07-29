@@ -43,7 +43,7 @@ Dois arquivos, ambos vindos do repositório: o compose e o `.env` do perfil
 escolhido ([catálogo](perfis.md#os-perfis)).
 
 ```bash
-BASE=https://raw.githubusercontent.com/BrasilDataHub/infra/main/postgres
+BASE=https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/postgres
 mkdir -p /srv/postgres && cd /srv/postgres
 
 curl -fsSL "$BASE/docker-compose.yml" -o docker-compose.yml
@@ -63,7 +63,7 @@ docker compose up -d
 ```
 
 Os arquivos de perfil ficam em [`postgres/profiles/`](../profiles/) e são **os
-mesmos** que o [`infra-setup.sh`](../../README.md#setup-automatizado-de-vps)
+mesmos** que o [`setup.sh`](../../README.md#setup-automatizado-de-vps)
 baixa — não há uma segunda cópia dos valores em lugar nenhum.
 
 O `restart: unless-stopped` cobre o boot do host desde que o Docker suba com a

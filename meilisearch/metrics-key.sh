@@ -13,7 +13,7 @@
 # seguintes ele responde 409 e o GET devolve a chave existente. Isso evita a
 # alternativa frágil de listar todas as chaves e filtrar por descrição.
 #
-# É o que o `infra-setup.sh --metrics` executa. Também serve para rodar à mão
+# É o que o `setup.sh --metrics` executa. Também serve para rodar à mão
 # quando o Meilisearch está noutra máquina.
 set -euo pipefail
 
@@ -31,7 +31,7 @@ curl -fsS -X POST "${MEILI_URL}/keys" \
     -d "{
           \"uid\": \"${KEY_UID}\",
           \"name\": \"prometheus\",
-          \"description\": \"scrape de /metrics pelo Prometheus (infra/monitoring) — só métricas, nenhum dado\",
+          \"description\": \"scrape de /metrics pelo Prometheus (plataforma/monitoring) — só métricas, nenhum dado\",
           \"actions\": [\"metrics.get\"],
           \"indexes\": [\"*\"],
           \"expiresAt\": null

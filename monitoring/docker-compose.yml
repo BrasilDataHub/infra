@@ -21,7 +21,7 @@
 #
 # ANTES do primeiro `up`, dois caminhos precisam existir no host:
 #   mkdir -p targets secrets && touch secrets/meili-metrics.key
-# O `infra-setup.sh --metrics` faz isso. Sem eles o Prometheus não sobe — e o
+# O `setup.sh --metrics` faz isso. Sem eles o Prometheus não sobe — e o
 # erro é explícito, de propósito (ver a nota no mount de secrets).
 
 services:
@@ -35,7 +35,7 @@ services:
       # Expandida dentro do prometheus.yml (external_labels). O Prometheus 3
       # expande variáveis de ambiente na config nativamente.
       MON_HOSTNAME: ${MON_HOSTNAME:-desconhecido}
-    # Só o Prometheus leva o nome curto: `infra-setup.sh` espera o healthcheck
+    # Só o Prometheus leva o nome curto: `setup.sh` espera o healthcheck
     # com `docker ps --filter label=org.brasildatahub.service=monitoring | head -1`,
     # e com labels iguais nos cinco containers ele observaria um ao acaso.
     labels:
@@ -55,7 +55,7 @@ services:
       - --web.enable-lifecycle
     volumes:
       - prom_data:/prometheus
-      # Alvos por host, escritos pelo infra-setup.sh. Diretório vazio = nenhum
+      # Alvos por host, escritos pelo setup.sh. Diretório vazio = nenhum
       # alvo, e é assim que um host sem Meilisearch não fica com um job órfão
       # eternamente em `up == 0`.
       - ./targets:/etc/prometheus/targets:ro
@@ -75,7 +75,7 @@ services:
       # máquina e a senha é a barreira. O Prometheus NÃO TEM AUTENTICAÇÃO
       # NENHUMA: quem alcança a porta lê tudo e chama /api/v1/admin/tsdb/*.
       #
-      # Variável PRÓPRIA, nunca BIND_IP: o default do infra-setup.sh é
+      # Variável PRÓPRIA, nunca BIND_IP: o default do setup.sh é
       # --bind-ip 0.0.0.0, e reusá-la publicaria isto na internet.
       #
       #   ssh -L 9090:127.0.0.1:9090 -L 3000:127.0.0.1:3000 usuario@host
@@ -207,7 +207,7 @@ services:
     image: quay.io/prometheus/node-exporter:v1.12.1
     restart: unless-stopped
     # Profile do COMPOSE (COMPOSE_PROFILES), não confundir com os perfis de
-    # dimensionamento do repositório. Desligado no macOS pelo infra-setup.sh por
+    # dimensionamento do repositório. Desligado no macOS pelo setup.sh por
     # duas razões medidas, não teóricas:
     #   1. o container lê o /proc da VM do Docker, não do Mac — "disco cheio" no
     #      painel significaria o disco virtual;

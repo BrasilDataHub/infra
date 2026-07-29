@@ -31,7 +31,7 @@ services:
       MEILI_MAX_INDEXING_MEMORY: ${MEILI_MAX_INDEXING_MEMORY:-1GiB}
       MEILI_MAX_INDEXING_THREADS: ${MEILI_MAX_INDEXING_THREADS:-1}
       MEILI_HTTP_PAYLOAD_SIZE_LIMIT: ${MEILI_HTTP_PAYLOAD_SIZE_LIMIT:-100MB}
-    # consumida pelo `bdh status` e pela mensagem de login (ver infra-setup.sh)
+    # consumida pelo `bdh status` e pela mensagem de login (ver setup.sh)
     labels:
       org.brasildatahub.service: meilisearch
     volumes:

@@ -28,10 +28,10 @@ de projeto e de fornecedor:
 
 Cada perfil é um arquivo `.env` versionado em [`profiles/`](profiles/) —
 `maxmemory`, política de despejo e limite de container juntos. É o mesmo arquivo
-que o [`infra-setup.sh`](../README.md#setup-automatizado-de-vps) baixa:
+que o [`setup.sh`](../README.md#setup-automatizado-de-vps) baixa:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/redis/profiles/cache-512mb.env -o .env
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/redis/profiles/cache-512mb.env -o .env
 # depois acrescente: REDIS_PASSWORD=...
 ```
 
@@ -83,7 +83,7 @@ não usa `/dev/shm`, então não há a armadilha do Postgres — mas o **limite 
 memória continua sendo recurso do serviço**, e é ele que dá o headroom do AOF.
 
 ```bash
-BASE=https://raw.githubusercontent.com/BrasilDataHub/infra/main/redis
+BASE=https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/redis
 curl -fsSL "$BASE/docker-compose.yml" -o docker-compose.yml
 curl -fsSL "$BASE/profiles/cache-512mb.env" -o .env    # <- perfil escolhido
 

@@ -196,7 +196,7 @@ O serviço `postgres` **não é tocado** — há um teste na CI que compara a de
 com e sem o overlay e falha se algo mudar. Ligar métricas não pode recriar um
 container de banco de centenas de GB.
 
-Dois pré-requisitos, ambos automatizados por `infra-setup.sh --metrics-only`:
+Dois pré-requisitos, ambos automatizados por `setup.sh --metrics-only`:
 
 1. a role `metrics_read` (`pg_monitor`, sem acesso a dados) —
    [`initdb/03-role-metrics.sh`](initdb/03-role-metrics.sh) roda no `initdb` numa

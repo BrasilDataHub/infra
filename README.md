@@ -17,9 +17,9 @@ Este repositório centraliza a configuração da stack Docker utilizada por algu
 Cada pasta tem seu README com as variáveis de configuração, os perfis por
 máquina e o passo a passo de implantação.
 
-> **Implantando do zero?** A ordem entre os quatro repositórios da operação
-> (infra, cnpj-pipeline, search-indexer-service, website) e o que depende de
-> quê está no
+> **Implantando do zero?** A ordem entre os repositórios da operação
+> (`plataforma`, `baseempresarial-services`, `baseempresarial-web`) e o que
+> depende de quê está no
 > [runbook de implantação](https://github.com/BrasilDataHub/docs/blob/main/roadmap/20-arquitetura-de-busca-2026-07/IMPLANTACAO.md).
 > Este README cobre a parte de infraestrutura; ele sozinho não é suficiente.
 
@@ -83,7 +83,7 @@ pela [fórmula de coexistência](postgres/docs/perfis.md#fórmula-de-reserva).
 
 ## Setup automatizado de VPS
 
-[`infra-setup.sh`](infra-setup.sh) provisiona uma máquina nova do zero: sistema,
+[`setup.sh`](setup.sh) provisiona uma máquina nova do zero: sistema,
 Docker, layout de diretórios, `.env` de cada serviço, containers no ar, firewall,
 mensagem de login e o comando `bdh`. É **opcional** — o fluxo manual de
 [deploy.md](postgres/docs/deploy.md) continua valendo.
@@ -103,7 +103,7 @@ no macOS: `--docker-version`, `--docker-data-root`, `--skip-system-update` e
 todos os serviços pela RAM da máquina:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh \
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/setup.sh \
   | sudo bash -s -- --auto --metrics
 ```
 
@@ -111,7 +111,7 @@ curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setu
 verdade, exposto à internet:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh \
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/setup.sh \
   | sudo bash -s -- --auto --metrics \
       --bind-ip 10.0.0.5 \
       --allow-from 10.0.0.0/8 \
@@ -127,29 +127,29 @@ afetados: ficam em `127.0.0.1` de qualquer forma (veja
 containers de dados:
 
 ```bash
-sudo bash infra-setup.sh --metrics-only
+sudo bash setup.sh --metrics-only
 ```
 
 **Outras variações** que aparecem com frequência:
 
 ```bash
 # interativo (pergunta serviços, perfis, modo de volume, rede)
-curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh -o infra-setup.sh
-sudo bash infra-setup.sh
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/setup.sh -o setup.sh
+sudo bash setup.sh
 
 # só Postgres e Redis — o Postgres recebe a máquina inteira
-curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh \
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/setup.sh \
   | sudo bash -s -- --auto --services postgres,redis --allow-from 10.0.0.0/8
 
 # dados fora do disco do Docker (NVMe montado em outro ponto)
-curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh \
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/setup.sh \
   | sudo bash -s -- --auto --volumes bind --data-dir /mnt/nvme
 
 # métricas por container (cAdvisor) e Grafana numa interface privada
-curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/infra/main/infra-setup.sh \
+curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/setup.sh \
   | sudo bash -s -- --auto --metrics --metrics-containers --metrics-bind-ip 10.0.0.5
 
-sudo bash infra-setup.sh --help      # todas as opções
+sudo bash setup.sh --help      # todas as opções
 ```
 
 Baixar e revisar antes de executar é a forma recomendada: o script roda como
@@ -262,9 +262,9 @@ Os módulos do roadmap 20 entram por `--add-service`, um de cada vez, sem recria
 os containers de dados:
 
 ```bash
-sudo bash infra-setup.sh --add-service opensearch
-sudo bash infra-setup.sh --add-service pgbouncer
-sudo bash infra-setup.sh --add-service monitoring
+sudo bash setup.sh --add-service opensearch
+sudo bash setup.sh --add-service pgbouncer
+sudo bash setup.sh --add-service monitoring
 ```
 
 Serviços aceitos: `postgres`, `redis`, `meilisearch`, `opensearch`, `pgbouncer`
@@ -312,7 +312,7 @@ serviços de dados.
 ... | sudo bash -s -- --auto --metrics
 
 # acrescentar a uma instalação que JÁ existe, sem recriar os containers de dados
-sudo bash infra-setup.sh --metrics-only
+sudo bash setup.sh --metrics-only
 
 bdh metrics        # alvos, alertas disparando e séries por job
 ```
