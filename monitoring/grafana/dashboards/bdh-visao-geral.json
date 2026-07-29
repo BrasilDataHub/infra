@@ -1,7 +1,7 @@
 {
   "uid": "bdh-visao-geral",
   "id": null,
-  "version": 2,
+  "version": 3,
   "title": "Visão geral — BrasilDataHub",
   "description": "Uma tela com o que esta operação precisa responder: os serviços estão no ar, o ETL está saudável, e o disco aguenta. Escrito para esta infraestrutura — os dashboards de comunidade (Node/PostgreSQL/Redis) cobrem o detalhe.",
   "tags": [
@@ -17,7 +17,40 @@
     "to": "now"
   },
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "host",
+        "label": "Servidor (só afeta a seção de Infraestrutura)",
+        "description": "As demais seções continuam agregando a frota inteira.",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "bdh-prometheus"
+        },
+        "definition": "label_values(up, host)",
+        "query": {
+          "qryType": 1,
+          "query": "label_values(up, host)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "hide": 0
+      }
+    ]
   },
   "annotations": {
     "list": []
@@ -33,7 +66,8 @@
         "y": 0
       },
       "collapsed": false,
-      "panels": []
+      "panels": [],
+      "id": 1
     },
     {
       "type": "stat",
@@ -81,7 +115,8 @@
           "unit": "short"
         },
         "overrides": []
-      }
+      },
+      "id": 2
     },
     {
       "type": "stat",
@@ -140,7 +175,8 @@
           }
         },
         "overrides": []
-      }
+      },
+      "id": 3
     },
     {
       "type": "gauge",
@@ -196,12 +232,13 @@
           }
         },
         "overrides": []
-      }
+      },
+      "id": 4
     },
     {
       "type": "gauge",
       "title": "Disco livre (data-root)",
-      "description": "O volume do Prometheus e o do Postgres dividem o mesmo NVMe. Uma explosão de cardinalidade nas métricas enche o disco e derruba o BANCO — este é o pior modo de falha da stack.",
+      "description": "Uma agulha por servidor. Antes era um min() sobre todas as máquinas: mostrava o pior disco da frota sem dizer de quem era.",
       "datasource": {
         "type": "prometheus",
         "uid": "bdh-prometheus"
@@ -215,8 +252,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "min(node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\"})",
-          "legendFormat": "livre"
+          "expr": "min by (host) (node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\"})",
+          "legendFormat": "{{host}}"
         }
       ],
       "options": {
@@ -225,7 +262,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": false
+          "values": true
         }
       },
       "fieldConfig": {
@@ -252,7 +289,8 @@
           }
         },
         "overrides": []
-      }
+      },
+      "id": 5
     },
     {
       "type": "stat",
@@ -303,7 +341,8 @@
           }
         },
         "overrides": []
-      }
+      },
+      "id": 6
     },
     {
       "type": "row",
@@ -315,7 +354,8 @@
         "y": 5
       },
       "collapsed": false,
-      "panels": []
+      "panels": [],
+      "id": 7
     },
     {
       "type": "timeseries",
@@ -370,7 +410,8 @@
         "tooltip": {
           "mode": "multi"
         }
-      }
+      },
+      "id": 8
     },
     {
       "type": "timeseries",
@@ -412,7 +453,8 @@
         "tooltip": {
           "mode": "multi"
         }
-      }
+      },
+      "id": 9
     },
     {
       "type": "timeseries",
@@ -459,7 +501,8 @@
         "tooltip": {
           "mode": "multi"
         }
-      }
+      },
+      "id": 10
     },
     {
       "type": "timeseries",
@@ -518,7 +561,8 @@
         "tooltip": {
           "mode": "multi"
         }
-      }
+      },
+      "id": 11
     },
     {
       "type": "row",
@@ -530,7 +574,8 @@
         "y": 22
       },
       "collapsed": false,
-      "panels": []
+      "panels": [],
+      "id": 12
     },
     {
       "type": "timeseries",
@@ -576,7 +621,8 @@
         "tooltip": {
           "mode": "multi"
         }
-      }
+      },
+      "id": 13
     },
     {
       "type": "timeseries",
@@ -618,7 +664,8 @@
         "tooltip": {
           "mode": "multi"
         }
-      }
+      },
+      "id": 14
     },
     {
       "type": "timeseries",
@@ -660,7 +707,8 @@
         "tooltip": {
           "mode": "multi"
         }
-      }
+      },
+      "id": 15
     },
     {
       "type": "row",
@@ -672,7 +720,8 @@
         "x": 0,
         "y": 30
       },
-      "panels": []
+      "panels": [],
+      "id": 16
     },
     {
       "type": "stat",
@@ -749,7 +798,8 @@
         "colorMode": "background",
         "graphMode": "none",
         "textMode": "auto"
-      }
+      },
+      "id": 17
     },
     {
       "type": "stat",
@@ -801,7 +851,8 @@
         "colorMode": "value",
         "graphMode": "area",
         "textMode": "auto"
-      }
+      },
+      "id": 18
     },
     {
       "type": "timeseries",
@@ -860,7 +911,8 @@
             ]
           }
         ]
-      }
+      },
+      "id": 19
     },
     {
       "type": "gauge",
@@ -915,7 +967,8 @@
           "fields": "",
           "values": false
         }
-      }
+      },
+      "id": 20
     },
     {
       "type": "gauge",
@@ -974,11 +1027,13 @@
           "fields": "",
           "values": false
         }
-      }
+      },
+      "id": 21
     },
     {
+      "id": 22,
       "type": "row",
-      "title": "Meilisearch e host",
+      "title": "Infraestrutura — inventário",
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -986,12 +1041,944 @@
         "y": 39
       },
       "collapsed": false,
-      "panels": []
+      "panels": [],
+      "description": "Quais máquinas a coleta conhece e o que cada uma roda. Os jobs prometheus, alertmanager e blackbox ficam de fora: os dois primeiros são static_configs sem rótulo de host, e o blackbox sonda URLs, não máquinas."
     },
     {
+      "id": 23,
+      "type": "stat",
+      "title": "Servidores identificados",
+      "description": "Zero aqui significa que os alvos deste Prometheus foram escritos sem labels.host — reaplique com `bash setup.sh --update` no host do Prometheus. Toda a seção por servidor depende disso. Os external_labels do prometheus.yml NÃO servem: eles não são gravados no TSDB, só entram em remote_write, federação e nos alertas enviados ao Alertmanager.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 40
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(count by (host) (up{host!=\"\"}))",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "sem rótulo host",
+                  "color": "red",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 24,
+      "type": "stat",
+      "title": "Alvos sem rótulo",
+      "description": "Pega o caso parcial: o host do Prometheus já migrou e um host remoto ainda está no formato antigo. Esses alvos coletam normalmente, mas ficam fora da seção por servidor.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 40
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(up{host=\"\", job!~\"prometheus|alertmanager|blackbox\"}) or vector(0)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 25,
+      "type": "table",
+      "title": "Servidores e alvos",
+      "description": "Ordenado por servidor, as máquinas ficam agrupadas com seus serviços: um bloco em all-in-one, N blocos em distribuído. Clique numa linha para abrir o dashboard de detalhe.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 8,
+        "y": 40
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job!~\"prometheus|alertmanager|blackbox\"}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
+            "renameByName": {},
+            "indexByName": {
+              "host": 0,
+              "job": 1,
+              "instance": 2,
+              "Value": 3
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "host"
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          },
+          "links": [
+            {
+              "title": "Abrir no Node Exporter Full",
+              "targetBlank": true,
+              "url": "/d/bdh-node/?var-job=node&var-nodename=${__data.fields.host}&${__url_time_range}"
+            },
+            {
+              "title": "Abrir no PostgreSQL",
+              "targetBlank": true,
+              "url": "/d/bdh-postgres/?var-instance=${__data.fields.instance}&${__url_time_range}"
+            },
+            {
+              "title": "Abrir no Redis",
+              "targetBlank": true,
+              "url": "/d/bdh-redis/?var-instance=${__data.fields.instance}&${__url_time_range}"
+            },
+            {
+              "title": "Abrir no OpenSearch",
+              "targetBlank": true,
+              "url": "/d/bdh-opensearch/?${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "estado"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "fora",
+                        "color": "red",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "no ar",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 26,
+      "type": "table",
+      "title": "Apelidos que não batem com o hostname real",
+      "description": "O rótulo host de um alvo remoto vem do @apelido de --metrics-scrape; o nodename vem do uname -n da máquina. Quando divergem, os links desta página abrem o servidor errado. Corrija com: bash setup.sh --update --metrics-scrape job=ip:porta@<hostname real>. A query compara os dois rótulos copiando cada um para um label auxiliar em vez de sobrescrever host: sobrescrever colapsaria duas máquinas que compartilham o mesmo nodename num único labelset, e o painel mostraria erro de série duplicada em vez do resultado.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 40
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count by (host, nodename, chave) (label_replace(node_uname_info, \"chave\", \"$1\", \"host\", \"(.*)\")) unless count by (host, nodename, chave) (label_replace(node_uname_info, \"chave\", \"$1\", \"nodename\", \"(.*)\"))",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "chave": true
+            },
+            "renameByName": {
+              "host": "apelido",
+              "nodename": "hostname real"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "todos os apelidos conferem",
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 27,
+      "type": "state-timeline",
+      "title": "Disponibilidade por alvo",
+      "description": "Quando cada alvo caiu — a pergunta que o stat 'Alvos no ar' nunca respondeu. O blackbox fica de fora: lá o alvo é uma URL sondada, e a falha significa outra coisa.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 48
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job!~\"blackbox\"}",
+          "legendFormat": "{{host}} · {{job}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 0,
+            "fillOpacity": 80
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "fora",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "no ar",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "never",
+        "rowHeight": 0.9,
+        "alignValue": "center",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 28,
+      "type": "row",
+      "title": "Servidor $host",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 56
+      },
+      "collapsed": false,
+      "panels": [],
+      "repeat": "host",
+      "repeatDirection": "v"
+    },
+    {
+      "id": 29,
+      "type": "stat",
+      "title": "Uptime",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 0,
+        "y": 57
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - node_boot_time_seconds{host=\"$host\"}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "noValue": "sem node_exporter nesta máquina",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Detalhe da máquina (Node Exporter Full)",
+              "targetBlank": true,
+              "url": "/d/bdh-node/?var-job=node&var-nodename=${host}&${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 30,
+      "type": "gauge",
+      "title": "CPU",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 3,
+        "y": 57
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{host=\"$host\",mode=\"idle\"}[5m])))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "noValue": "sem node_exporter nesta máquina",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Detalhe da máquina (Node Exporter Full)",
+              "targetBlank": true,
+              "url": "/d/bdh-node/?var-job=node&var-nodename=${host}&${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 31,
+      "type": "gauge",
+      "title": "Memória",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 6,
+        "y": 57
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - node_memory_MemAvailable_bytes{host=\"$host\"} / node_memory_MemTotal_bytes{host=\"$host\"})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "noValue": "sem node_exporter nesta máquina",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 85
+              },
+              {
+                "color": "red",
+                "value": 95
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Detalhe da máquina (Node Exporter Full)",
+              "targetBlank": true,
+              "url": "/d/bdh-node/?var-job=node&var-nodename=${host}&${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 32,
+      "type": "gauge",
+      "title": "Disco (pior sistema de arquivos)",
+      "description": "Os limiares casam com o alerta DiscoQuaseCheio (< 15% livres): painel e alerta olham a mesma série, para a investigação não começar desconfiando do alerta.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 9,
+        "y": 57
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - min(node_filesystem_avail_bytes{host=\"$host\",fstype!~\"tmpfs|overlay|squashfs\"} / node_filesystem_size_bytes{host=\"$host\",fstype!~\"tmpfs|overlay|squashfs\"}))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "noValue": "sem node_exporter nesta máquina",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 85
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Detalhe da máquina (Node Exporter Full)",
+              "targetBlank": true,
+              "url": "/d/bdh-node/?var-job=node&var-nodename=${host}&${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 33,
+      "type": "stat",
+      "title": "Load por núcleo",
+      "description": "Normalizado pelo número de núcleos: 1 significa a máquina exatamente ocupada, independente do tamanho dela. O scalar() no divisor não é cosmético — count() devolve um vetor SEM rótulos, e dividir o node_load5 (que tem host, instance e job) por ele não casaria rótulo nenhum: o painel ficaria permanentemente vazio, indistinguível de uma máquina sem node_exporter.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 12,
+        "y": 57
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_load5{host=\"$host\"} / scalar(count(count by (cpu) (node_cpu_seconds_total{host=\"$host\"})))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "noValue": "sem node_exporter nesta máquina",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Detalhe da máquina (Node Exporter Full)",
+              "targetBlank": true,
+              "url": "/d/bdh-node/?var-job=node&var-nodename=${host}&${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 34,
+      "type": "stat",
+      "title": "Coletores no ar",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 15,
+        "y": 57
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(up{host=\"$host\"})",
+          "legendFormat": "no ar"
+        },
+        {
+          "refId": "B",
+          "expr": "count(up{host=\"$host\"})",
+          "legendFormat": "total"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 35,
+      "type": "stat",
+      "title": "node_exporter",
+      "description": "Quando diz 'ausente', os painéis de máquina desta faixa ficam sem dado — e isso é esperado, não falha. Acontece no macOS (o node_exporter leria a VM do Docker, cujo kernel nem tem CONFIG_PSI) e em host remoto provisionado sem `node=` no --metrics-scrape. Para ligar: --metrics-publish <ip privado> no host observado.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 18,
+        "y": 57
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(node_uname_info{host=\"$host\"}) or vector(0)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "ausente",
+                  "color": "blue",
+                  "index": 0
+                },
+                "1": {
+                  "text": "presente",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 36,
+      "type": "stat",
+      "title": "Alertas deste servidor",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 21,
+        "y": 57
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(ALERTS{alertstate=\"firing\",host=\"$host\"}) or vector(0)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 37,
       "type": "timeseries",
-      "title": "Meilisearch — fila de tarefas e indexação",
-      "description": "meilisearch_is_indexing em 1 durante horas é normal numa carga grande; o que importa é a fila drenar depois.",
+      "title": "Rede",
+      "description": "Interfaces virtuais do Docker ficam de fora: elas medem tráfego entre containers do próprio host, não a rede que liga as máquinas.",
       "datasource": {
         "type": "prometheus",
         "uid": "bdh-prometheus"
@@ -1000,28 +1987,29 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 40
+        "y": 61
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "meilisearch_task_queue_used_size",
-          "legendFormat": "tarefas na fila"
+          "expr": "rate(node_network_receive_bytes_total{host=\"$host\",device!~\"lo|veth.*|br-.*|docker.*\"}[5m])",
+          "legendFormat": "↓ {{device}}"
         },
         {
           "refId": "B",
-          "expr": "meilisearch_is_indexing",
-          "legendFormat": "indexando"
+          "expr": "rate(node_network_transmit_bytes_total{host=\"$host\",device!~\"lo|veth.*|br-.*|docker.*\"}[5m])",
+          "legendFormat": "↑ {{device}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 10,
             "lineWidth": 2
-          }
+          },
+          "unit": "Bps",
+          "noValue": "sem node_exporter nesta máquina"
         },
         "overrides": []
       },
@@ -1036,8 +2024,10 @@
       }
     },
     {
+      "id": 38,
       "type": "timeseries",
-      "title": "Meilisearch — latência p95",
+      "title": "Pressão (PSI)",
+      "description": "O que distingue 'o ETL está pesado' de 'o disco saturou'. Em NVMe o %util satura em 100% sem o disco estar no limite; o tempo de stall não mente. O de memória é o sinal mais precoce da stack — sobe enquanto o MemAvailable ainda parece saudável, porque o kernel já está descartando page cache. Depende de CONFIG_PSI no kernel: presente em Ubuntu 22.04+/Debian 12, ausente na VM do Docker Desktop no macOS — ali este painel fica vazio.",
       "datasource": {
         "type": "prometheus",
         "uid": "bdh-prometheus"
@@ -1046,70 +2036,39 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 40
+        "y": 61
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, path) (rate(meilisearch_http_response_time_seconds_bucket[5m])))",
-          "legendFormat": "{{path}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Pressão de IO (PSI)",
-      "description": "O que distingue 'o ETL está pesado' de 'o disco saturou'. Em NVMe o %util satura em 100% sem o disco estar no limite; o tempo de stall não mente. Depende de CONFIG_PSI no kernel: presente em Ubuntu 22.04+/Debian 12, ausente na VM do Docker Desktop no macOS — ali este painel fica vazio.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "bdh-prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 16,
-        "y": 40
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "rate(node_pressure_io_stalled_seconds_total[5m])",
+          "expr": "rate(node_pressure_io_stalled_seconds_total{host=\"$host\"}[5m])",
           "legendFormat": "parado por IO"
         },
         {
           "refId": "B",
-          "expr": "rate(node_pressure_io_waiting_seconds_total[5m])",
+          "expr": "rate(node_pressure_io_waiting_seconds_total{host=\"$host\"}[5m])",
           "legendFormat": "esperando IO"
+        },
+        {
+          "refId": "C",
+          "expr": "rate(node_pressure_memory_stalled_seconds_total{host=\"$host\"}[5m])",
+          "legendFormat": "parado por memória"
+        },
+        {
+          "refId": "D",
+          "expr": "rate(node_pressure_cpu_waiting_seconds_total{host=\"$host\"}[5m])",
+          "legendFormat": "esperando CPU"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 10,
             "lineWidth": 2
           },
+          "unit": "percentunit",
+          "noValue": "sem node_exporter nesta máquina",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1135,6 +2094,102 @@
           "mode": "multi"
         }
       }
+    },
+    {
+      "id": 39,
+      "type": "timeseries",
+      "title": "Disco por sistema de arquivos",
+      "description": "Livre, não usado: o alerta DiscoQuaseCheio dispara abaixo de 15%.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 61
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_filesystem_avail_bytes{host=\"$host\",fstype!~\"tmpfs|overlay|squashfs\"} / node_filesystem_size_bytes{host=\"$host\",fstype!~\"tmpfs|overlay|squashfs\"}",
+          "legendFormat": "{{mountpoint}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "noValue": "sem node_exporter nesta máquina",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0.15
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    }
+  ],
+  "links": [
+    {
+      "type": "link",
+      "title": "Host (Node Exporter Full)",
+      "url": "/d/bdh-node/",
+      "icon": "external link",
+      "targetBlank": true
+    },
+    {
+      "type": "link",
+      "title": "PostgreSQL",
+      "url": "/d/bdh-postgres/",
+      "icon": "external link",
+      "targetBlank": true
+    },
+    {
+      "type": "link",
+      "title": "Redis",
+      "url": "/d/bdh-redis/",
+      "icon": "external link",
+      "targetBlank": true
+    },
+    {
+      "type": "link",
+      "title": "OpenSearch",
+      "url": "/d/bdh-opensearch/",
+      "icon": "external link",
+      "targetBlank": true
+    },
+    {
+      "type": "link",
+      "title": "Meilisearch",
+      "url": "/d/bdh-meilisearch/",
+      "icon": "external link",
+      "targetBlank": true
     }
   ]
 }

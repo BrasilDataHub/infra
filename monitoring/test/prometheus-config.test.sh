@@ -215,10 +215,25 @@ for f in "$RAIZ"/grafana/dashboards/*.json; do
 
     # Painel sem target abre vazio e parece "sem dados" — indistinguível de um
     # serviço parado para quem está olhando o painel às três da manhã.
-    sem_alvo="$(jq -r '[.panels[]? | select(.type != "row" and .type != "text")
+    # A varredura desce para `.panels[].panels[]`: painel dentro de row COLAPSADA
+    # mora ali, e a versão anterior desta checagem não os enxergava.
+    sem_alvo="$(jq -r '[(.panels[]?, .panels[]?.panels[]?)
+                        | select(.type != "row" and .type != "text")
                         | select((.targets // []) | length == 0) | .title] | length' "$f" 2>/dev/null || echo 0)"
     if [ "${sem_alvo:-0}" -ne 0 ]; then
         nok "$nome — $sem_alvo painel(éis) sem target"
+        continue
+    fi
+
+    # O `repeat` do Grafana clona painéis e deriva ids novos a partir dos que já
+    # existem. Sem id, ou com id repetido, o comportamento é indefinido — painéis
+    # duplicados ou sumindo, e o sintoma não aponta para a causa.
+    ids_ok="$(jq -r '[(.panels[]?, .panels[]?.panels[]?) | .id]
+                     | (length > 0)
+                       and (map(select(. == null)) | length) == 0
+                       and (length == (unique | length))' "$f" 2>/dev/null || echo false)"
+    if [ "$ids_ok" != "true" ]; then
+        nok "$nome — painel sem id ou com id repetido (quebra o repeat)"
         continue
     fi
 
@@ -253,6 +268,71 @@ for metrica in opensearch_cluster_status opensearch_jvm_mem_heap_used_percent \
         nok "$metrica — painel e alerta divergem"
     fi
 done
+
+# --- seção de infraestrutura da visão geral ----------------------------------
+# Ela é a única resposta do Grafana para "quais servidores existem e o que cada
+# um roda", e depende de três peças que podem ser removidas isoladamente sem
+# quebrar nada visível: a variável, o repeat da row e o rótulo host nas queries.
+VISAO="$RAIZ/grafana/dashboards/bdh-visao-geral.json"
+
+if [ "$(jq -r '[.templating.list[]? | select(.name == "host")] | length' "$VISAO")" -eq 1 ]; then
+    ok "a visão geral tem a variável host"
+else
+    nok "a visão geral não tem a variável host — a seção por servidor não repete"
+fi
+
+if [ "$(jq -r '[(.panels[]?, .panels[]?.panels[]?) | select(.repeat == "host")] | length' "$VISAO")" -ge 1 ]; then
+    ok "há uma seção que se repete por servidor"
+else
+    nok "nenhum painel repete por host — em deploy distribuído os servidores somem"
+fi
+
+# `up` e não `node_uname_info`: a variável precisa enxergar TODA máquina que a
+# coleta conhece, inclusive as sem node_exporter (macOS, ou remoto provisionado
+# sem `node=`). Vindo do node_uname_info, essas apareceriam no inventário e
+# sumiriam da seção por servidor — some sem dizer que sumiu.
+if jq -e '.templating.list[]? | select(.name == "host")
+          | select(.query.query == "label_values(up, host)")' "$VISAO" >/dev/null 2>&1; then
+    ok "a variável host vem de up (enxerga máquina sem node_exporter)"
+else
+    nok "a variável host não vem de label_values(up, host)"
+fi
+
+# shellcheck disable=SC2016  # aspas simples de PROPÓSITO: o padrão procura o
+# texto literal `host="$host"` dentro do JSON, onde `$host` é a variável de
+# template do Grafana. Expandir aqui casaria com o valor de $host no shell
+# (vazio) e o teste aprovaria um dashboard sem filtro nenhum.
+n_filtra="$(grep -c 'host=\\"\$host\\"' "$VISAO" || true)"
+if [ "${n_filtra:-0}" -ge 8 ]; then
+    ok "os painéis por servidor filtram por máquina ($n_filtra queries)"
+else
+    nok "só $n_filtra queries filtram por host — a seção por servidor agregaria a frota inteira"
+fi
+
+# O PSI morava na row de Meilisearch e não tem nada a ver com Meilisearch: é
+# métrica de máquina. Ao mover a row para o dashboard próprio, era o painel mais
+# fácil de perder junto — e ele é o que distingue "ETL pesado" de "disco no teto".
+if grep -q 'node_pressure_io_stalled_seconds_total' "$VISAO"; then
+    ok "a visão geral manteve a pressão de IO (PSI)"
+else
+    nok "o painel de PSI sumiu da visão geral — foi junto com a row de Meilisearch"
+fi
+
+# O Meilisearch é opcional e está em substituição pelo OpenSearch: numa infra que
+# não o roda, o job fica sem alvo e os painéis ficavam permanentemente vazios na
+# página principal. Ele tem dashboard próprio, que se explica quando vazio.
+if grep -q 'meilisearch_' "$VISAO"; then
+    nok "a visão geral voltou a citar métricas de Meilisearch (elas têm dashboard próprio)"
+else
+    ok "a visão geral não carrega painéis de um serviço opcional"
+fi
+
+if [ -f "$RAIZ/grafana/dashboards/meilisearch.json" ] \
+   && grep -q 'meilisearch_task_queue_used_size' "$RAIZ/grafana/dashboards/meilisearch.json"; then
+    ok "existe dashboard dedicado ao Meilisearch"
+else
+    nok "não há dashboard do Meilisearch — o serviço ficaria sem painel nenhum"
+fi
 
 echo
 echo "Perfis"
