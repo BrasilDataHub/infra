@@ -65,6 +65,50 @@ check "o script não multiplica por 1024 dentro do awk" "ok" \
 check "available_mem_gb enxerga mais de 1 GB neste host" "ok" \
     "$( (( $(available_mem_gb) > 1 )) && echo ok || echo "viu $(available_mem_gb) GB" )"
 
+printf '\nDestino de alerta sobrevive ao --update\n'
+# O destino é segredo (webhook, senha de SMTP), então não vai para o
+# .setup-state: fica no .env do monitoring. Sem relê-lo, um --update qualquer
+# encontrava "nenhum destino" e DESLIGAVA o Alertmanager em silêncio — o
+# container existente continua de pé, porque um profile inativo só impede
+# recriar, e o operador só descobriria no próximo incidente sem notificação.
+if declare -f herdar_destino_de_alerta >/dev/null; then
+    pass "existe a herança do destino de alerta"
+else
+    fail "o destino de alerta não é herdado: --update desliga o Alertmanager"
+fi
+mon_dir="$(mktemp -d)/services/monitoring"; mkdir -p "$mon_dir"
+WORKDIR="${mon_dir%/services/monitoring}"
+printf 'ALERTMANAGER_SLACK_WEBHOOK=https://exemplo/hook/abc=def\nALERTMANAGER_EXTERNAL_URL=http://alertas.exemplo\n' > "$mon_dir/.env"
+ALERT_SLACK_WEBHOOK=""; ALERT_EXTERNAL_URL=""; FLAGS_EXPLICITAS=""
+herdar_destino_de_alerta
+check "webhook herdado do .env (inclusive com '=' no valor)" "https://exemplo/hook/abc=def" "$ALERT_SLACK_WEBHOOK"
+check "external-url herdada"                                 "http://alertas.exemplo"        "$ALERT_EXTERNAL_URL"
+check "com o destino herdado, o Alertmanager fica LIGADO"    "ligado" \
+    "$(tem_destino_de_alerta && echo ligado || echo desligado)"
+# Flag explícita continua vencendo o valor herdado.
+ALERT_SLACK_WEBHOOK="https://novo/hook"; _explicita ALERT_SLACK_WEBHOOK
+herdar_destino_de_alerta
+check "flag explícita sobrescreve o herdado" "https://novo/hook" "$ALERT_SLACK_WEBHOOK"
+rm -rf "$WORKDIR"; FLAGS_EXPLICITAS=""
+
+printf '\nHost só de observabilidade sobrevive a uma reexecução\n'
+# `monitoring` sai do array SERVICES (não é serviço de dados), e o estado
+# gravava a lista vazia: `--update` morria com "nenhum serviço selecionado" no
+# host que mais recebe ajuste depois de instalado.
+trecho_estado="$(awk '/monitoring. sai do array SERVICES em validate_and_prompt/,/printf .SERVICES=/' "$REPO_ROOT/setup.sh")"
+if printf '%s\n' "$trecho_estado" | grep -q 'SOMENTE_MONITORING.*==.*true'; then
+    pass "o estado registra 'monitoring' num host só de observabilidade"
+else
+    fail "SERVICES= vai vazio ao estado: --update fica impossível nesse host"
+fi
+# A string do estado é relida por load_state e volta ao array em
+# validate_and_prompt, que é quem reativa SOMENTE_MONITORING.
+if grep -q 'monitoring)$' "$REPO_ROOT/setup.sh" && grep -q 'SOMENTE_MONITORING="true"' "$REPO_ROOT/setup.sh"; then
+    pass "a string herdada reativa o modo somente-monitoração"
+else
+    fail "o modo somente-monitoração não é reconstruído a partir do estado"
+fi
+
 printf '\nTeto de CPU do OpenSearch cabe na máquina\n'
 # O perfil traz OS_CPU_LIMIT=6 (host de 12 vCPU dividido com o Postgres). Num
 # host DEDICADO ao motor de busca, a máquina certa para 8 GiB tem 4 vCPU — e o

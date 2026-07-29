@@ -786,6 +786,35 @@ tem_destino_de_alerta() {
     [[ -n "$ALERT_SLACK_WEBHOOK" || -n "$ALERT_WEBHOOK_URL" || -n "$ALERT_EMAIL_TO" ]]
 }
 
+# Destino informado numa execução ANTERIOR. Ele é segredo — webhook e senha de
+# SMTP —, então não vai para o `.setup-state`, que não é chmod 600: fica no
+# `.env` do monitoring, e é de lá que a reexecução o relê.
+#
+# Sem esta herança, QUALQUER `--update` posterior (acrescentar um alvo, mudar a
+# retenção) encontrava "nenhum destino" e DESLIGAVA o Alertmanager — o oposto
+# exato do que o modo de atualização promete, e em silêncio: o container
+# existente continua de pé, porque um profile inativo só impede recriar. O
+# operador só descobriria no próximo incidente que não notificou.
+herdar_destino_de_alerta() {
+    local env_mon="$WORKDIR/services/monitoring/.env"
+    [[ -f "$env_mon" ]] || return 0
+    local linha chave valor
+    while IFS= read -r linha; do
+        chave="${linha%%=*}"; valor="${linha#*=}"
+        case "$chave" in
+            ALERTMANAGER_SLACK_WEBHOOK) foi_explicita ALERT_SLACK_WEBHOOK || ALERT_SLACK_WEBHOOK="$valor" ;;
+            ALERTMANAGER_SLACK_CHANNEL) foi_explicita ALERT_SLACK_CHANNEL || ALERT_SLACK_CHANNEL="$valor" ;;
+            ALERTMANAGER_WEBHOOK_URL)   foi_explicita ALERT_WEBHOOK_URL   || ALERT_WEBHOOK_URL="$valor" ;;
+            ALERTMANAGER_EMAIL_TO)      foi_explicita ALERT_EMAIL_TO      || ALERT_EMAIL_TO="$valor" ;;
+            ALERTMANAGER_EMAIL_FROM)    foi_explicita ALERT_EMAIL_FROM    || ALERT_EMAIL_FROM="$valor" ;;
+            ALERTMANAGER_SMTP_HOST)     foi_explicita ALERT_SMTP_HOST     || ALERT_SMTP_HOST="$valor" ;;
+            ALERTMANAGER_SMTP_USER)     foi_explicita ALERT_SMTP_USER     || ALERT_SMTP_USER="$valor" ;;
+            ALERTMANAGER_SMTP_PASSWORD) foi_explicita ALERT_SMTP_PASSWORD || ALERT_SMTP_PASSWORD="$valor" ;;
+            ALERTMANAGER_EXTERNAL_URL)  foi_explicita ALERT_EXTERNAL_URL  || ALERT_EXTERNAL_URL="$valor" ;;
+        esac
+    done < <(grep -E '^ALERTMANAGER_[A-Z_]+=' "$env_mon" 2>/dev/null || true)
+}
+
 metrics_budget_gb() {
     local base
     base="$(neighbor_budget_gb "$METRICS_PROFILE")"
@@ -1092,6 +1121,10 @@ validate_and_prompt() {
     if [[ "$METRICS_ENABLED" == "true" ]]; then
         # O perfil de métricas já foi resolvido e validado no bloco de
         # dimensionamento acima, junto com os demais vizinhos.
+
+        # O destino de uma instalação anterior vale como se tivesse sido
+        # passado agora — é o que impede que um --update desligue o alerta.
+        herdar_destino_de_alerta
 
         # `--metrics-publish 0.0.0.0` entregaria os internos do banco para a
         # internet. O overlay recusa isso no compose; falhar aqui é mais cedo e
@@ -1915,7 +1948,19 @@ write_env_files() {
             printf 'SCRIPT_VERSION=%s\n' "$SCRIPT_VERSION"
             printf 'REF=%s\n' "$REF"
             printf 'INSTALLED_AT=%s\n' "$(now_iso)"
-            printf 'SERVICES=%s\n' "$(IFS=,; printf '%s' "${SERVICES[*]}")"
+            # `monitoring` sai do array SERVICES em validate_and_prompt (ele não
+            # é serviço de dados: tem layout próprio e dois volumes), mas
+            # PRECISA voltar ao estado. Sem esta linha, um host só de
+            # observabilidade gravava `SERVICES=` vazio e a reexecução morria
+            # com "nenhum serviço selecionado" — `--update` ficava impossível
+            # exatamente no host que mais recebe ajuste depois de instalado:
+            # alvos novos, destino de alerta, retenção.
+            local servicos_estado
+            servicos_estado="$(IFS=,; printf '%s' "${SERVICES[*]}")"
+            if [[ "$SOMENTE_MONITORING" == "true" ]]; then
+                servicos_estado="${servicos_estado:+${servicos_estado},}monitoring"
+            fi
+            printf 'SERVICES=%s\n' "$servicos_estado"
             printf 'VOLUMES_MODE=%s\n' "$VOLUMES_MODE"
             # As cinco chaves abaixo são o que faltava, e a ausência delas era o
             # defeito: sem POSTGRES_DB, BIND_IP e ALLOW_FROM no estado, a segunda
