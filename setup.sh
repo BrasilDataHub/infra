@@ -459,18 +459,32 @@ service_internal_port() {
 # Memória disponível ao Docker, em GiB. Em Linux nativo é a RAM do host; no
 # macOS o daemon roda numa VM que costuma receber metade dela — dimensionar pelo
 # host geraria limites maiores do que a VM tem.
+#
+# ATENÇÃO à ordem do main(): esta função é chamada por validate_and_prompt(),
+# que roda ANTES de install_docker(). Numa máquina nova o `docker info` falha, e
+# o caminho do /proc/meminfo é o NORMAL — não o excepcional.
 available_mem_gb() {
-    local bytes
+    local bytes gb
     bytes="$(docker info -f '{{.MemTotal}}' 2>/dev/null || true)"
     case "$bytes" in ''|*[!0-9]*) bytes="" ;; esac
-    if [[ -z "$bytes" ]]; then
-        if [[ -r /proc/meminfo ]]; then
-            bytes=$(awk '/MemTotal/ {printf "%d", $2 * 1024}' /proc/meminfo)
-        else
-            bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
-        fi
+    if [[ -n "$bytes" ]]; then
+        printf '%d' $(( bytes / 1024 / 1024 / 1024 ))
+        return 0
     fi
-    printf '%d' $(( bytes / 1024 / 1024 / 1024 ))
+    if [[ -r /proc/meminfo ]]; then
+        # kB -> GiB DENTRO do awk, sem passar por bytes. O `$2 * 1024` anterior
+        # estourava o inteiro de 32 bits do mawk (o awk de fábrica do Debian e
+        # do Ubuntu): `printf "%d"` satura em INT_MAX = 2147483647, que dividido
+        # por 1024^3 dá **1**. Como nenhuma máquina nova tem Docker quando esta
+        # função roda, TODO host Linux com 2 GiB ou mais reportava 1 GiB — o
+        # `--auto` escolhia dedicada-8gb e em seguida se matava porque "o Docker
+        # tem 1 GB". Nenhum provisionamento novo passava daqui.
+        gb=$(awk '/^MemTotal:/ {printf "%d", $2 / 1048576; exit}' /proc/meminfo)
+    else
+        gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 / 1024 ))
+    fi
+    case "$gb" in ''|*[!0-9]*) gb=0 ;; esac
+    printf '%d' "$gb"
 }
 
 # 'dedicada-16gb' -> 16. É o orçamento de RAM que o perfil pressupõe.

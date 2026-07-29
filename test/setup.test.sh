@@ -48,6 +48,23 @@ check "125 GB → dedicada-128gb" "dedicada-128gb"  "$(detect_pg_profile 125)"
 check "2 GB → menor perfil"     "dedicada-8gb"    "$(detect_pg_profile 2)"
 check "13 GB não sobe de perfil" "dedicada-8gb"   "$(detect_pg_profile 13)"
 
+printf '\nMemória disponível — o overflow que impedia todo provisionamento novo\n'
+# available_mem_gb() roda em validate_and_prompt(), ANTES de install_docker():
+# numa máquina nova o `docker info` não existe e o /proc/meminfo é o caminho
+# normal. Com `$2 * 1024`, o `printf "%d"` do mawk (o awk de fábrica do Debian e
+# do Ubuntu) satura em INT_MAX = 2147483647 → 1 GiB. Todo host com 2 GiB ou mais
+# reportava 1 GiB, e o --auto se matava logo em seguida.
+leitura_meminfo() { awk '/^MemTotal:/ {printf "%d", $2 / 1048576; exit}'; }
+check "32 GiB não viram 1 GiB (INT_MAX do mawk)" "30" \
+    "$(printf 'MemTotal:       32089880 kB\nMemFree:  100 kB\n' | leitura_meminfo)"
+check "64 GiB são lidos inteiros"   "62"  "$(printf 'MemTotal:       65787240 kB\n' | leitura_meminfo)"
+check "128 GiB são lidos inteiros"  "125" "$(printf 'MemTotal:      131841680 kB\n' | leitura_meminfo)"
+check "8 GiB são lidos inteiros"    "7"   "$(printf 'MemTotal:        8129160 kB\n' | leitura_meminfo)"
+check "o script não multiplica por 1024 dentro do awk" "ok" \
+    "$(grep -qF 'printf "%d", $2 * 1024' "$REPO_ROOT/setup.sh" && echo 'ainda multiplica' || echo ok)"
+check "available_mem_gb enxerga mais de 1 GB neste host" "ok" \
+    "$( (( $(available_mem_gb) > 1 )) && echo ok || echo "viu $(available_mem_gb) GB" )"
+
 printf '\nDetecção de perfil dos vizinhos pela RAM\n'
 check "8 GB  → cache-256mb"   "cache-256mb"  "$(detect_redis_profile 8)"
 check "13 GB → cache-256mb"   "cache-256mb"  "$(detect_redis_profile 13)"
