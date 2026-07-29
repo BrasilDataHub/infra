@@ -1,22 +1,37 @@
 {
   "uid": "bdh-visao-geral",
   "id": null,
-  "version": 1,
+  "version": 2,
   "title": "Visão geral — BrasilDataHub",
   "description": "Uma tela com o que esta operação precisa responder: os serviços estão no ar, o ETL está saudável, e o disco aguenta. Escrito para esta infraestrutura — os dashboards de comunidade (Node/PostgreSQL/Redis) cobrem o detalhe.",
-  "tags": ["brasildatahub", "visao-geral"],
+  "tags": [
+    "brasildatahub",
+    "visao-geral"
+  ],
   "timezone": "browser",
   "editable": false,
   "schemaVersion": 39,
   "refresh": "30s",
-  "time": { "from": "now-6h", "to": "now" },
-  "templating": { "list": [] },
-  "annotations": { "list": [] },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
   "panels": [
     {
       "type": "row",
       "title": "Estado geral",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "collapsed": false,
       "panels": []
     },
@@ -24,20 +39,47 @@
       "type": "stat",
       "title": "Alvos no ar",
       "description": "Quantos alvos o Prometheus está conseguindo coletar. Qualquer número abaixo do total significa monitoração cega em algum ponto.",
-      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
       "targets": [
-        { "refId": "A", "expr": "sum(up)", "legendFormat": "no ar" },
-        { "refId": "B", "expr": "count(up)", "legendFormat": "total" }
+        {
+          "refId": "A",
+          "expr": "sum(up)",
+          "legendFormat": "no ar"
+        },
+        {
+          "refId": "B",
+          "expr": "count(up)",
+          "legendFormat": "total"
+        }
       ],
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "colorMode": "value",
         "graphMode": "none",
         "textMode": "value_and_name"
       },
       "fieldConfig": {
-        "defaults": { "color": { "mode": "thresholds" }, "unit": "short" },
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short"
+        },
         "overrides": []
       }
     },
@@ -45,26 +87,55 @@
       "type": "stat",
       "title": "Uptime do PostgreSQL",
       "description": "Distingue 'o banco está lento' de 'o banco reiniciou agora'. Um valor baixo e inesperado costuma ser OOMKill.",
-      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
-      "gridPos": { "h": 4, "w": 5, "x": 4, "y": 1 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 4,
+        "y": 1
+      },
       "targets": [
-        { "refId": "A", "expr": "time() - pg_postmaster_start_time_seconds", "legendFormat": "uptime" }
+        {
+          "refId": "A",
+          "expr": "time() - pg_postmaster_start_time_seconds",
+          "legendFormat": "uptime"
+        }
       ],
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "colorMode": "value",
         "graphMode": "none"
       },
       "fieldConfig": {
         "defaults": {
           "unit": "s",
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 3600 },
-              { "color": "green", "value": 86400 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 3600
+              },
+              {
+                "color": "green",
+                "value": 86400
+              }
             ]
           }
         },
@@ -75,8 +146,16 @@
       "type": "gauge",
       "title": "Conexões / max_connections",
       "description": "Os perfis fixam max_connections entre 100 e 300. Estourar não degrada: rejeita conexão. Antes de aumentar o teto, confirme que a aplicação usa pool — mais conexões multiplicam o work_mem alocável.",
-      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
-      "gridPos": { "h": 4, "w": 5, "x": 9, "y": 1 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 9,
+        "y": 1
+      },
       "targets": [
         {
           "refId": "A",
@@ -84,7 +163,15 @@
           "legendFormat": "uso"
         }
       ],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
@@ -93,9 +180,18 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.7 },
-              { "color": "red", "value": 0.85 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.7
+              },
+              {
+                "color": "red",
+                "value": 0.85
+              }
             ]
           }
         },
@@ -106,8 +202,16 @@
       "type": "gauge",
       "title": "Disco livre (data-root)",
       "description": "O volume do Prometheus e o do Postgres dividem o mesmo NVMe. Uma explosão de cardinalidade nas métricas enche o disco e derruba o BANCO — este é o pior modo de falha da stack.",
-      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
-      "gridPos": { "h": 4, "w": 5, "x": 14, "y": 1 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 14,
+        "y": 1
+      },
       "targets": [
         {
           "refId": "A",
@@ -115,7 +219,15 @@
           "legendFormat": "livre"
         }
       ],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
@@ -124,9 +236,18 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 0.15 },
-              { "color": "green", "value": 0.30 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.15
+              },
+              {
+                "color": "green",
+                "value": 0.3
+              }
             ]
           }
         },
@@ -136,13 +257,31 @@
     {
       "type": "stat",
       "title": "Alertas disparando",
-      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
-      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 1 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 19,
+        "y": 1
+      },
       "targets": [
-        { "refId": "A", "expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)", "legendFormat": "ativos" }
+        {
+          "refId": "A",
+          "expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)",
+          "legendFormat": "ativos"
+        }
       ],
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "colorMode": "background",
         "graphMode": "none"
       },
@@ -152,8 +291,14 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           }
         },
@@ -163,7 +308,12 @@
     {
       "type": "row",
       "title": "PostgreSQL — saúde sob ETL",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
       "collapsed": false,
       "panels": []
     },
@@ -171,8 +321,16 @@
       "type": "timeseries",
       "title": "Transação aberta mais antiga",
       "description": "A causa nº1 de bloat que o autovacuum não resolve: enquanto uma transação vive, tuplas mortas de TODAS as tabelas ficam impossíveis de limpar. Se um job de ETL aparecer aqui por horas, ele não está fazendo commit em lotes.",
-      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
       "targets": [
         {
           "refId": "A",
@@ -183,25 +341,51 @@
       "fieldConfig": {
         "defaults": {
           "unit": "s",
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 3600 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 3600
+              }
             ]
           }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Arquivos temporários",
       "description": "Parente próximo do incidente de /dev/shm: quando work_mem não cabe, o Postgres derrama em disco e uma query de minutos passa a levar horas. log_temp_files já está em 10MB — os candidatos estão no log do container.",
-      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
       "targets": [
         {
           "refId": "A",
@@ -212,18 +396,38 @@
       "fieldConfig": {
         "defaults": {
           "unit": "Bps",
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Checkpoints: agendados vs forçados",
       "description": "checkpoint_timeout dos perfis é 15min. Se os forçados (requested) passarem os agendados (timed), max_wal_size está pequeno para a carga de escrita — e cada checkpoint forçado é um pico de IO no meio do ETL. Sem o collector.stat_checkpointer este painel não existiria: o PG17 tirou estes campos do pg_stat_bgwriter.",
-      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
       "targets": [
         {
           "refId": "A",
@@ -239,18 +443,38 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Idade do datfrozenxid (wraparound)",
       "description": "Com carga em massa de dezenas de milhões de linhas por rodada, wraparound é risco real. Em 2 bilhões o Postgres PARA de aceitar escrita; acima de 1 bilhão o autovacuum já não está dando conta.",
-      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
       "targets": [
         {
           "refId": "A",
@@ -261,85 +485,506 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 1000000000 },
-              { "color": "red", "value": 1500000000 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1000000000
+              },
+              {
+                "color": "red",
+                "value": 1500000000
+              }
             ]
           }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "type": "row",
       "title": "Redis — cache e fila do Horizon",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
       "collapsed": false,
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Memória usada vs maxmemory",
-      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
-      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 23 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 23
+      },
       "targets": [
-        { "refId": "A", "expr": "redis_memory_used_bytes", "legendFormat": "usada" },
-        { "refId": "B", "expr": "redis_memory_max_bytes", "legendFormat": "maxmemory" }
+        {
+          "refId": "A",
+          "expr": "redis_memory_used_bytes",
+          "legendFormat": "usada"
+        },
+        {
+          "refId": "B",
+          "expr": "redis_memory_max_bytes",
+          "legendFormat": "maxmemory"
+        }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "bytes",
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Chaves despejadas",
       "description": "Com volatile-lru só chaves COM TTL são despejadas. As filas do Horizon não têm TTL, então despejo significa cache perdido — e, se alguma chave de fila ganhou TTL por engano, trabalho perdido. Nos dois casos: subir de perfil.",
-      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
-      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 23 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 23
+      },
       "targets": [
-        { "refId": "A", "expr": "rate(redis_evicted_keys_total[10m])", "legendFormat": "despejadas/s" }
+        {
+          "refId": "A",
+          "expr": "rate(redis_evicted_keys_total[10m])",
+          "legendFormat": "despejadas/s"
+        }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2 }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "lineWidth": 2
+          }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Profundidade das filas",
       "description": "Só aparece se REDIS_METRICS_KEYS estiver definido no .env do Redis. Fila que só cresce por 30 minutos indica worker parado ou job que falha e volta para a fila.",
-      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
-      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 23 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 23
+      },
       "targets": [
-        { "refId": "A", "expr": "redis_key_size", "legendFormat": "{{key}}" }
+        {
+          "refId": "A",
+          "expr": "redis_key_size",
+          "legendFormat": "{{key}}"
+        }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "OpenSearch — motor da nova busca",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Cluster de busca",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "description": "0 green · 1 yellow · 2 red. Detalhe por painel em 'OpenSearch — motor de busca'.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 31
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "opensearch_cluster_status"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "GREEN",
+                  "color": "green",
+                  "index": 0
+                },
+                "1": {
+                  "text": "YELLOW",
+                  "color": "yellow",
+                  "index": 1
+                },
+                "2": {
+                  "text": "RED",
+                  "color": "red",
+                  "index": 2
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Documentos indexados",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "description": "Shards primários do índice de busca. Zero com o site no ar é incidente.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 31
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(opensearch_index_doc_number{context=\"primaries\",index=~\"busca_estabelecimento.*\"})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Busca — consultas/s e latência média",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "description": "Média e não p95: o plugin expõe counters, não histograma. O p95 por classe de SLO vem do blackbox_exporter.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 31
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(opensearch_indices_search_query_count[5m])",
+          "legendFormat": "consultas/s"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(opensearch_indices_search_query_time_seconds[5m]) / clamp_min(rate(opensearch_indices_search_query_count[5m]), 0.001)",
+          "legendFormat": "latência média (s)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "latência média (s)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "gauge",
+      "title": "Heap do OpenSearch",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "description": "Acima de 85% em regime é GC constante — a busca fica lenta antes de o motor cair.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 35
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(opensearch_jvm_mem_heap_used_percent)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 75
+              },
+              {
+                "color": "red",
+                "value": 85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "type": "gauge",
+      "title": "Disco do motor de busca",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "description": "Em 90% o flood_stage põe TODOS os índices em read-only, e eles não voltam sozinhos.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 35
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - opensearch_fs_total_available_bytes / opensearch_fs_total_total_bytes)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 75
+              },
+              {
+                "color": "orange",
+                "value": 85
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
     },
     {
       "type": "row",
       "title": "Meilisearch e host",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      },
       "collapsed": false,
       "panels": []
     },
@@ -347,26 +992,62 @@
       "type": "timeseries",
       "title": "Meilisearch — fila de tarefas e indexação",
       "description": "meilisearch_is_indexing em 1 durante horas é normal numa carga grande; o que importa é a fila drenar depois.",
-      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
-      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 31 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 40
+      },
       "targets": [
-        { "refId": "A", "expr": "meilisearch_task_queue_used_size", "legendFormat": "tarefas na fila" },
-        { "refId": "B", "expr": "meilisearch_is_indexing", "legendFormat": "indexando" }
+        {
+          "refId": "A",
+          "expr": "meilisearch_task_queue_used_size",
+          "legendFormat": "tarefas na fila"
+        },
+        {
+          "refId": "B",
+          "expr": "meilisearch_is_indexing",
+          "legendFormat": "indexando"
+        }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Meilisearch — latência p95",
-      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
-      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 31 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 40
+      },
       "targets": [
         {
           "refId": "A",
@@ -377,18 +1058,38 @@
       "fieldConfig": {
         "defaults": {
           "unit": "s",
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Pressão de IO (PSI)",
       "description": "O que distingue 'o ETL está pesado' de 'o disco saturou'. Em NVMe o %util satura em 100% sem o disco estar no limite; o tempo de stall não mente. Depende de CONFIG_PSI no kernel: presente em Ubuntu 22.04+/Debian 12, ausente na VM do Docker Desktop no macOS — ali este painel fica vazio.",
-      "datasource": { "type": "prometheus", "uid": "bdh-prometheus" },
-      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 31 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 40
+      },
       "targets": [
         {
           "refId": "A",
@@ -404,18 +1105,36 @@
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 0.3 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.3
+              }
             ]
           }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     }
   ]
 }

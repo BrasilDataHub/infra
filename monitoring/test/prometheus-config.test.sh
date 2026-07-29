@@ -213,7 +213,45 @@ for f in "$RAIZ"/grafana/dashboards/*.json; do
         continue
     fi
 
+    # Painel sem target abre vazio e parece "sem dados" — indistinguível de um
+    # serviço parado para quem está olhando o painel às três da manhã.
+    sem_alvo="$(jq -r '[.panels[]? | select(.type != "row" and .type != "text")
+                        | select((.targets // []) | length == 0) | .title] | length' "$f" 2>/dev/null || echo 0)"
+    if [ "${sem_alvo:-0}" -ne 0 ]; then
+        nok "$nome — $sem_alvo painel(éis) sem target"
+        continue
+    fi
+
     ok "$nome — provisionável ($(jq -r '.uid' "$f"))"
+done
+
+# O motor de busca ficou de fora dos painéis até 29/07/2026: havia dashboard de
+# Postgres, de Redis e do host, o job `opensearch` coletava 719 séries, e nada
+# disso aparecia em lugar nenhum. Quem abria o Grafana concluía que o OpenSearch
+# não estava sendo monitorado — e não tinha como saber que estava.
+if [ -f "$RAIZ/grafana/dashboards/opensearch.json" ]; then
+    ok "existe dashboard dedicado ao OpenSearch"
+else
+    nok "não há dashboard do OpenSearch — o motor de busca fica invisível no Grafana"
+fi
+
+if grep -q 'opensearch_' "$RAIZ/grafana/dashboards/bdh-visao-geral.json"; then
+    ok "a visão geral mostra o motor de busca"
+else
+    nok "a visão geral não cita nenhuma métrica do OpenSearch"
+fi
+
+# As métricas dos painéis precisam ser as MESMAS que as regras de alerta usam.
+# Divergir aqui é como ter dois relógios: o alerta dispara por uma série e o
+# painel desenha outra, e a investigação começa desconfiando do alerta.
+for metrica in opensearch_cluster_status opensearch_jvm_mem_heap_used_percent \
+               opensearch_fs_total_available_bytes opensearch_indices_search_query_count; do
+    if grep -q "$metrica" "$RAIZ/grafana/dashboards/opensearch.json" \
+       && grep -q "$metrica" "$RAIZ/prometheus/rules/opensearch.rules.yml"; then
+        ok "$metrica — painel e alerta olham a mesma série"
+    else
+        nok "$metrica — painel e alerta divergem"
+    fi
 done
 
 echo

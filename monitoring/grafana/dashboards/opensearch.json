@@ -1,0 +1,938 @@
+{
+  "uid": "bdh-opensearch",
+  "id": null,
+  "version": 1,
+  "title": "OpenSearch — motor de busca",
+  "description": "Métricas do plugin prometheus-exporter instalado na imagem ghcr.io/brasildatahub/opensearch. Os nomes foram verificados num nó 3.3 real — não copiados de documentação.",
+  "tags": [
+    "brasildatahub",
+    "opensearch",
+    "busca"
+  ],
+  "timezone": "America/Sao_Paulo",
+  "editable": false,
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "indice",
+        "label": "Alias do índice",
+        "type": "textbox",
+        "query": "busca_estabelecimento",
+        "current": {
+          "text": "busca_estabelecimento",
+          "value": "busca_estabelecimento"
+        },
+        "options": [],
+        "hide": 0,
+        "description": "O índice físico é <alias>-<load_id>; o filtro casa todas as gerações."
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Estado do motor de busca",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Status do cluster",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 2
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "opensearch_cluster_status"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "GREEN",
+                  "color": "green",
+                  "index": 0
+                },
+                "1": {
+                  "text": "YELLOW",
+                  "color": "yellow",
+                  "index": 1
+                },
+                "2": {
+                  "text": "RED",
+                  "color": "red",
+                  "index": 2
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "description": "0 green · 1 yellow · 2 red. Com auto_expand_replicas 0-1 e um nó só, o normal é GREEN."
+    },
+    {
+      "type": "stat",
+      "title": "Documentos no índice de busca",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 4,
+        "y": 2
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(opensearch_index_doc_number{context=\"primaries\",index=~\"$indice.*\"})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "description": "Soma dos shards primários do índice apontado pelo alias. Zero aqui com o site no ar é incidente."
+    },
+    {
+      "type": "stat",
+      "title": "Tamanho do índice",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 9,
+        "y": 2
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(opensearch_index_store_size_bytes{context=\"primaries\",index=~\"$indice.*\"})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "description": "Duas gerações convivem por 7 dias (a N-1 é o rollback), então o total pode aparecer dobrado."
+    },
+    {
+      "type": "gauge",
+      "title": "Heap da JVM",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 14,
+        "y": 2
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(opensearch_jvm_mem_heap_used_percent)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 75
+              },
+              {
+                "color": "red",
+                "value": 85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "description": "Acima de 85% em regime significa GC constante: a busca fica lenta antes de o motor cair."
+    },
+    {
+      "type": "gauge",
+      "title": "Disco usado",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 19,
+        "y": 2
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - opensearch_fs_total_available_bytes / opensearch_fs_total_total_bytes)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 75
+              },
+              {
+                "color": "orange",
+                "value": 85
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "description": "Em 90% o flood_stage põe TODOS os índices em read-only — e eles não voltam sozinhos quando o disco esvazia."
+    },
+    {
+      "type": "row",
+      "title": "Busca — o que o usuário sente",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 3
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Consultas por segundo",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(opensearch_indices_search_query_count[5m])",
+          "legendFormat": "query"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(opensearch_indices_search_fetch_count[5m])",
+          "legendFormat": "fetch"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "`query` é a fase de casamento; `fetch` é a de hidratação. Com _source: false o fetch tende a ser baixo."
+    },
+    {
+      "type": "timeseries",
+      "title": "Latência média por consulta",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(opensearch_indices_search_query_time_seconds[5m]) / clamp_min(rate(opensearch_indices_search_query_count[5m]), 0.001)",
+          "legendFormat": "média por query"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "MÉDIA, não p95: o plugin expõe counters, não histograma, então não há bucket para o histogram_quantile. O p95 por classe de SLO vem do blackbox_exporter, que mede de fora."
+    },
+    {
+      "type": "row",
+      "title": "Indexação — a janela de carga mensal",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Documentos indexados por segundo",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 14
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(opensearch_index_indexing_index_count{context=\"primaries\"}[5m]))",
+          "legendFormat": "indexados"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(opensearch_index_indexing_index_failed_count{context=\"primaries\"}[5m]))",
+          "legendFormat": "FALHAS"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Falha aqui não é retentativa do cliente: é documento recusado pelo mapping (dynamic: strict)."
+    },
+    {
+      "type": "timeseries",
+      "title": "Merges em andamento",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 14
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(opensearch_index_merges_current_number{context=\"primaries\"})",
+          "legendFormat": "merges"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "OS_MERGE_THREADS=1 em regime. Merge concorrente com a carga disputa a mesma NVMe do Postgres."
+    },
+    {
+      "type": "timeseries",
+      "title": "Indexação estrangulada (throttle)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 14
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(opensearch_index_indexing_is_throttled_bool)",
+          "legendFormat": "throttled"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bool",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "1 = o motor está segurando a escrita porque os merges não acompanham. É o sinal para reduzir o lote."
+    },
+    {
+      "type": "row",
+      "title": "Pressão — onde o motor quebra antes de cair",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Fila dos thread pools",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 24
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "opensearch_threadpool_tasks_number{type=\"queue\"} > 0",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "O plugin não expõe contador de rejeição por pool; a FILA crescendo no pool de escrita é o sinal equivalente — e é o que precede o HTTP 429 que o indexador trata como backpressure."
+    },
+    {
+      "type": "timeseries",
+      "title": "Circuit breakers — uso do limite",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 24
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "opensearch_circuitbreaker_estimated_bytes / clamp_min(opensearch_circuitbreaker_limit_bytes, 1)",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.9
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "fielddata está em 0% de propósito: o mapping usa doc_values, e qualquer uso de fielddata é erro de consulta."
+    },
+    {
+      "type": "timeseries",
+      "title": "Breakers acionados (acumulado)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 24
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "opensearch_circuitbreaker_tripped_count",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Subiu = uma consulta foi recusada para proteger o heap. Melhor que OOM, mas o usuário viu erro."
+    },
+    {
+      "type": "row",
+      "title": "JVM e durabilidade",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Tempo em GC",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(opensearch_jvm_gc_collection_time_seconds[5m])",
+          "legendFormat": "{{gc}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Segundos de GC por segundo. Acima de 0,1 (10% do tempo) a latência de busca já sente."
+    },
+    {
+      "type": "timeseries",
+      "title": "Translog não commitado",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bdh-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(opensearch_index_translog_uncommitted_operations_number{context=\"primaries\"})",
+          "legendFormat": "operações"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "translog.durability=async: uma queda abrupta perde o que estiver aqui. Na carga mensal isso é aceitável — a origem é o Postgres."
+    }
+  ]
+}
