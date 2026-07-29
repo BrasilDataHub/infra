@@ -1,0 +1,49 @@
+{
+  "settings": {
+    "index": {
+      "number_of_shards": 1,
+      "auto_expand_replicas": "0-1",
+      "refresh_interval": "5s",
+      "max_result_window": 1000
+    },
+    "analysis": {
+      "analyzer": {
+        "loc_texto": {
+          "tokenizer": "standard",
+          "filter": ["lowercase", "asciifolding"]
+        }
+      },
+      "normalizer": {
+        "loc_sort": {
+          "type": "custom",
+          "filter": ["lowercase", "asciifolding"]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "_meta": {
+      "descricao": "Regiões, estados e municípios do IBGE para o autocomplete da home.",
+      "fonte": "ibge_regiao + ibge_estado + ibge_cidade no Postgres",
+      "documentos": 5602,
+      "tamanho": "1,2 MB",
+      "por_que_source_habilitado": "ao contrário de busca_estabelecimento, aqui o _source FICA ligado: são 5.602 documentos de 200 bytes, e ligá-lo elimina a ida ao Postgres para hidratar o rótulo. O autocomplete de localidade responde em 1 requisição."
+    },
+    "properties": {
+      "tipo": { "type": "keyword" },
+      "ibge_id": { "type": "keyword" },
+      "nome": {
+        "type": "search_as_you_type",
+        "analyzer": "loc_texto",
+        "max_shingle_size": 3
+      },
+      "nome_exato": { "type": "keyword", "normalizer": "loc_sort" },
+      "sigla": { "type": "keyword", "normalizer": "loc_sort" },
+      "label": { "type": "keyword", "index": false },
+      "hint": { "type": "keyword", "index": false },
+      "uf": { "type": "keyword" },
+      "peso": { "type": "float" }
+    }
+  }
+}

@@ -206,6 +206,83 @@ else
     ok "o hit não traz _source (hidratação por PK no Postgres)"
 fi
 
+# --- os dois campos do autocomplete precisam de POSIÇÕES --------------------
+# `nome_fantasia` estava em `index_options: freqs`, que descarta as posições dos
+# termos. O efeito não é resultado pior, é recusa: HTTP 400 "was indexed without
+# position data; cannot run PhraseQuery". Como só aparece na hora da consulta,
+# passou silencioso até alguém tentar autocompletar por nome fantasia.
+api PUT "/${INDICE}/_doc/00000000000272?refresh=true" \
+    '{"cnpj_completo":"00000000000272","razao_social":"MAGAZINE LUIZA S/A","nome_fantasia":"MAGAZINE LUIZA","uf":"SP","situacao_cadastral":"02"}' >/dev/null
+
+# A conferência é no ARQUIVO, não na API: `positions` e `norms:true` são os
+# padrões de um campo `text`, e o OpenSearch omite padrões no `_mapping` que
+# devolve — uma asserção de presença passaria vazia para sempre.
+for CAMPO in razao_social nome_fantasia; do
+    DEGRADADO="$(python3 -c '
+import json, sys
+p = json.load(open(sys.argv[1]))["mappings"]["properties"][sys.argv[2]]
+print(p.get("index_options", "positions"))
+' "$RAIZ/opensearch/index/busca_estabelecimento.json" "$CAMPO")"
+    if [ "$DEGRADADO" = "positions" ] || [ "$DEGRADADO" = "offsets" ]; then
+        ok "${CAMPO} guarda posições (index_options: ${DEGRADADO})"
+    else
+        nok "${CAMPO} em index_options '${DEGRADADO}': match_phrase_prefix devolve HTTP 400, não resultado pior"
+    fi
+    # E a afirmação que realmente importa, contra o nó de verdade.
+    if curl -fs -X POST "http://127.0.0.1:${PORTA}/${INDICE}/_search" \
+         -H 'Content-Type: application/json' \
+         -d "{\"query\":{\"match_phrase_prefix\":{\"${CAMPO}\":\"magazine lui\"}},\"_source\":false}" >/dev/null 2>&1; then
+        ok "match_phrase_prefix funciona em ${CAMPO} (o autocomplete existe)"
+    else
+        nok "match_phrase_prefix RECUSADO em ${CAMPO} — sem posições no campo"
+    fi
+done
+
+# --- o índice de localidades ------------------------------------------------
+# Regiões, estados e municípios do autocomplete da home. Índice separado, e
+# separado de propósito: 5.602 documentos com `_source` LIGADO respondem em uma
+# requisição, sem ida ao Postgres para hidratar rótulo.
+IDX_LOC=busca_localidade
+if curl -fs -X PUT "http://127.0.0.1:${PORTA}/${IDX_LOC}" \
+     -H 'Content-Type: application/json' \
+     --data-binary "@${RAIZ}/opensearch/index/busca_localidade.json" >/dev/null 2>&1; then
+    ok "o mapping de localidade foi aceito"
+
+    api PUT "/${IDX_LOC}/_doc/city:4106902?refresh=true" \
+        '{"tipo":"city","ibge_id":"4106902","nome":"Curitiba","nome_exato":"Curitiba","label":"Curitiba - PR","hint":"Município","uf":"PR","peso":1.6}' >/dev/null
+
+    # A razão de existir do índice: o fallback em memória do site é
+    # str_contains + str_starts_with, e "curtiba" nele devolve lista VAZIA.
+    FUZZY="$(api POST "/${IDX_LOC}/_search" \
+        '{"query":{"match":{"nome":{"query":"curtiba","fuzziness":"AUTO","prefix_length":1}}}}')"
+    if printf '%s' "$FUZZY" | grep -q 'Curitiba - PR'; then
+        ok "erro de digitação tolerado (curtiba → Curitiba), o que o fallback em memória não faz"
+    else
+        nok "curtiba não encontrou Curitiba — o índice perdeu sua razão de existir"
+    fi
+
+    # search_as_you_type gera os subcampos de shingle; sem eles o
+    # `bool_prefix` do autocomplete casa palavra inteira, não prefixo.
+    POR_PREFIXO="$(api POST "/${IDX_LOC}/_search" \
+        '{"query":{"multi_match":{"query":"curi","type":"bool_prefix","fields":["nome","nome._2gram","nome._3gram"]}}}')"
+    if printf '%s' "$POR_PREFIXO" | grep -q 'Curitiba - PR'; then
+        ok "autocomplete por prefixo funciona (curi → Curitiba)"
+    else
+        nok "prefixo não casou: search_as_you_type não está valendo"
+    fi
+
+    # Aqui o _source é o oposto de busca_estabelecimento, e é intencional.
+    if printf '%s' "$FUZZY" | grep -q '"label":"Curitiba - PR"'; then
+        ok "localidade traz _source — o rótulo sai do índice, sem ida ao Postgres"
+    else
+        nok "localidade sem _source: cada digitação pagaria uma consulta ao banco"
+    fi
+else
+    nok "o mapping de localidade foi RECUSADO pelo OpenSearch"
+    curl -s -X PUT "http://127.0.0.1:${PORTA}/${IDX_LOC}" -H 'Content-Type: application/json' \
+      --data-binary "@${RAIZ}/opensearch/index/busca_localidade.json" | head -5 | sed 's/^/      /'
+fi
+
 echo
 echo "  ${PASS} passaram, ${FAIL} falharam"
 [ "$FAIL" -eq 0 ]

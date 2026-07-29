@@ -174,8 +174,8 @@
         "type": "text",
         "analyzer": "br_corporativo",
         "search_analyzer": "br_corporativo_busca",
-        "index_options": "freqs",
-        "norms": false
+        "index_options": "positions",
+        "norms": true
       },
       "cnae_principal": {
         "type": "keyword"

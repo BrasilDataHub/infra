@@ -127,6 +127,33 @@ Removendo-o, `q=COMERCIO DE ALIMENTOS LTDA` custa o mesmo que sem o `LTDA`.
 > Duas linhas da lista original caíram por isso (`com` e `cia`, ambas
 > stopwords); há teste que afirma a regra.
 
+### `index_options` decide se autocomplete existe
+
+`razao_social` e `nome_fantasia` são **os dois campos do autocomplete**, e por
+isso ambos precisam de `index_options: positions`. `nome_fantasia` estava em
+`freqs` — que descarta as posições dos termos — e o efeito não é degradação, é
+recusa:
+
+```
+HTTP 400 query_shard_exception
+field:[nome_fantasia] was indexed without position data; cannot run PhraseQuery
+```
+
+Vale para `match_phrase`, `match_phrase_prefix` e `span_*`. Sem posições, a
+única busca possível no campo é `match` com `operator: and`, que casa as
+palavras em qualquer ordem e não sabe o que é prefixo: quem digita
+`magazine lui` recebe `LUPI MAGAZINE` e `MAGAZINE MAGALICE` — palavras certas,
+resultado errado.
+
+`norms: true` no mesmo campo é a segunda metade: sem norms o motor não sabe que
+`NATURA` é um nome fantasia inteiro e `BIO NATURA PRODUTOS NATURAIS` é uma
+palavra dentro de um nome longo. É 1 byte por documento por campo.
+
+Ambos exigem reindexação, mas isso não custa nada de novo: a carga mensal já
+reconstrói o índice do zero a partir do Postgres. Vale entrar **antes** da
+próxima carga — nunca depois, porque `_source` está desabilitado e `_reindex`
+não tem de onde ler.
+
 ## Operação
 
 | Situação | O que fazer |
