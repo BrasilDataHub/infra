@@ -352,6 +352,40 @@ if [[ -n "$linha_flush" && -n "$linha_guarda" && "$linha_guarda" -lt "$linha_flu
 else
     fail "iptables -F DOCKER-USER roda antes da guarda — o firewall regride em silêncio"
 fi
+
+# --- IPv6 no after.rules: erro de PARSE, não regra que não casa --------------
+# Um CIDR IPv6 escrito no bloco *filter (que é iptables-restore v4) invalida o
+# ARQUIVO INTEIRO. Como o flush da chain acontece antes, o resultado era: ufw
+# reload falhando, script morto pelo set -e, e as portas dos containers abertas
+# para a internet com o `ufw status` exibindo regras restritivas.
+if printf '%s\n' "$trecho_fw" | grep -q 'cidrs_v6'; then
+    pass "os CIDRs são separados por família antes de gerar o after.rules"
+else
+    fail "after.rules recebe qualquer CIDR — um IPv6 ali invalida o arquivo inteiro"
+fi
+if printf '%s\n' "$trecho_fw" | grep -q 'cidrs_v4\[@\]' ; then
+    pass "só os CIDRs IPv4 entram na chain DOCKER-USER"
+else
+    fail "a chain DOCKER-USER é montada sem filtrar a família do endereço"
+fi
+if printf '%s\n' "$trecho_fw" | grep -q 'if ! run ufw reload'; then
+    pass "uma falha no ufw reload não derruba o script com a chain vazia"
+else
+    fail "ufw reload solto sob set -e: aborta deixando a DOCKER-USER esvaziada"
+fi
+# A verificação vale mais que a escrita: se a chain não ficou povoada, o script
+# aplica à mão em vez de declarar sucesso.
+if printf '%s\n' "$trecho_fw" | awk '/ufw reload/,0' | grep -q 'iptables -A DOCKER-USER'; then
+    pass "chain não povoada depois do reload é corrigida à mão, não ignorada"
+else
+    fail "o script confia no reload sem verificar se a chain ficou povoada"
+fi
+if printf '%s\n' "$trecho_fw" | grep -q 'ufw delete allow'; then
+    pass "a regra permissiva de uma execução anterior é revogada"
+else
+    fail "acrescentar a regra restrita sem apagar a permissiva não restringe nada"
+fi
+
 if printf '%s\n' "$trecho_fw" | grep -q 'PRESERVADA'; then
     pass "sem --allow-from, a chain existente é preservada e o aviso diz isso"
 else

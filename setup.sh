@@ -88,6 +88,16 @@ OPENSEARCH_PORT="9200"
 # mesmo host de quem o consome, e publicá-lo fora daria um caminho até o banco
 # com a autenticação do pooler no meio.
 PGBOUNCER_PORT="6432"
+PGBOUNCER_BIND_IP="127.0.0.1"
+# Para onde o pooler aponta. Vazio = resolver no write_env_files: o BIND_IP
+# quando ele é uma interface de verdade, senão o gateway da bridge do Docker —
+# porque o container do PgBouncer NÃO enxerga o do Postgres pelo nome (são
+# projetos Compose distintos, em redes distintas).
+PGBOUNCER_DB_HOST=""
+# Vazio = o mesmo de POSTGRES_PORT. Separado porque o pooler pode apontar para
+# um banco noutro host, com outra porta publicada.
+PGBOUNCER_DB_PORT=""
+PGBOUNCER_DB_USER="postgres"
 ALLOW_FROM=""
 ENABLE_FIREWALL="true"
 # 262144 é o mínimo que o bootstrap check do OpenSearch exige.
@@ -105,8 +115,30 @@ ADD_SERVICE=""                   # serviço a acrescentar sem tocar nos demais
 MONITORING_ENABLED="true"        # --no-monitoring: só exporters, Prometheus alhures
 METRICS_PROFILE="auto"
 METRICS_CONTAINERS="false"       # --metrics-containers liga o cAdvisor
+# --- coleta remota (Prometheus num host, serviços em outro) -------------------
+# O repositório TEM os overlays para isto (`<serviço>/docker-compose.metrics-remote.yml`
+# e `monitoring/docker-compose.remote.yml`), e o setup nunca os usava: num
+# desenho distribuído os exporters ficavam sem porta publicada, alcançáveis só
+# pela rede Docker local, e o Prometheus do outro host não via nada. A
+# observabilidade simplesmente não existia fora da máquina única.
+METRICS_PUBLISH_IP=""            # --metrics-publish: interface onde os exporters escutam
+METRICS_SCRAPE=""                # --metrics-scrape: alvos remotos (job=host:porta,...)
 METRICS_NETWORK="bdh_metrics"
 MONITORING_BIND_IP="127.0.0.1"   # NUNCA reusar BIND_IP: o default dele é 0.0.0.0
+# --- destino dos alertas ------------------------------------------------------
+# O Alertmanager RECUSA subir sem receiver, e a recusa é o ponto do módulo: o
+# diagnóstico que o originou encontrou 18 regras validadas e sem destino.
+# O setup não tinha como configurá-lo, e o efeito era o pior dos dois mundos —
+# a stack subia "com sucesso" e o Alertmanager ficava em restart loop para
+# sempre, com os alertas sendo avaliados e indo para lugar nenhum.
+ALERT_SLACK_WEBHOOK=""
+ALERT_SLACK_CHANNEL=""
+ALERT_WEBHOOK_URL=""
+ALERT_EMAIL_TO=""
+ALERT_EMAIL_FROM=""
+ALERT_SMTP_HOST=""
+ALERT_SMTP_USER=""
+ALERT_SMTP_PASSWORD=""
 PROMETHEUS_PORT="9090"
 GRAFANA_PORT="3000"
 GRAFANA_ADMIN_PASSWORD=""
@@ -266,8 +298,34 @@ OPTIONS (observabilidade — desligada por default):
                              com --metrics-containers.
       --metrics-containers   Inclui o cAdvisor (memória usada vs limite por
                              container; custa 200-400 MB de RAM)
+
+    COLETA REMOTA — Prometheus num host, serviços em outro:
+      --metrics-publish IP   No host OBSERVADO. Publica os exporters (e o node
+                             exporter) NESTA interface — use a privada, nunca
+                             0.0.0.0: /metrics não tem autenticação e entrega
+                             pg_settings_* inteiro. Implica --metrics e
+                             --no-monitoring.
+      --metrics-scrape LISTA No host do PROMETHEUS. Alvos remotos, no formato
+                             job=host:porta separados por vírgula. Jobs aceitos:
+                             postgres, redis, node, opensearch, meilisearch,
+                             cadvisor. Ex.:
+                               --metrics-scrape postgres=10.0.1.2:9187,\
+                             node=10.0.1.2:9100,opensearch=10.0.1.4:9200
       --metrics-bind-ip IP   Interface do Grafana e do Prometheus
                              (default: 127.0.0.1 — use um túnel SSH)
+
+    DESTINO DOS ALERTAS — o Alertmanager NÃO SOBE sem pelo menos um destes, e a
+    recusa é deliberada: alerta que não notifica ninguém é o problema que o
+    módulo existe para resolver. Sem nenhum, o script deixa o Alertmanager
+    DESLIGADO (em vez de em restart loop) e avisa.
+      --alert-slack-webhook URL    caminho mais curto
+      --alert-slack-channel NOME   (default: #alertas)
+      --alert-webhook-url URL      webhook genérico (n8n, Discord via proxy)
+      --alert-email-to ENDEREÇO    exige --alert-email-from e --alert-smtp-host
+      --alert-email-from ENDEREÇO
+      --alert-smtp-host HOST:PORTA
+      --alert-smtp-user USUÁRIO
+      --alert-smtp-password SENHA
       --prometheus-port N    (default: 9090)
       --grafana-port N       (default: 3000)
       --grafana-password SENHA  (se omitida, é gerada)
@@ -276,11 +334,23 @@ OPTIONS (observabilidade — desligada por default):
     serviços de dados: o Prometheus não tem autenticação nenhuma. Acesse com
     ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 usuario@host
 
+OPTIONS (PgBouncer — roda no host da APLICAÇÃO):
+      --pgbouncer-db-host HOST  Postgres para onde o pooler aponta. Default:
+                             o --bind-ip quando ele é uma interface de verdade,
+                             senão o gateway da bridge do Docker. Num host que
+                             NÃO roda o Postgres, é obrigatório (junto de
+                             --postgres-password).
+      --pgbouncer-db-port N  (default: o mesmo de --postgres-port)
+      --pgbouncer-bind-ip IP Interface de publicação do pooler
+                             (default: 127.0.0.1 — a aplicação é local)
+      --pgbouncer-port N     (default: 6432)
+
 OPTIONS (rede e firewall):
       --bind-ip IP           Interface de publicação (default: 0.0.0.0 — todas)
       --postgres-port N      (default: 5432)
       --redis-port N         (default: 6379)
       --meilisearch-port N   (default: 7700)
+      --opensearch-port N    (default: 9200)
       --allow-from CIDR[,CIDR]  Restringe o firewall a estas origens
                              (default: sem restrição — qualquer origem)
       --no-firewall          Não configura o ufw
@@ -341,6 +411,11 @@ while [[ $# -gt 0 ]]; do
         --postgres-port) POSTGRES_PORT="$2"; _explicita POSTGRES_PORT; shift 2 ;;
         --redis-port) REDIS_PORT="$2"; _explicita REDIS_PORT; shift 2 ;;
         --meilisearch-port) MEILI_PORT="$2"; _explicita MEILI_PORT; shift 2 ;;
+        --opensearch-port) OPENSEARCH_PORT="$2"; _explicita OPENSEARCH_PORT; shift 2 ;;
+        --pgbouncer-db-host) PGBOUNCER_DB_HOST="$2"; _explicita PGBOUNCER_DB_HOST; shift 2 ;;
+        --pgbouncer-db-port) PGBOUNCER_DB_PORT="$2"; _explicita PGBOUNCER_DB_PORT; shift 2 ;;
+        --pgbouncer-bind-ip) PGBOUNCER_BIND_IP="$2"; _explicita PGBOUNCER_BIND_IP; shift 2 ;;
+        --pgbouncer-port) PGBOUNCER_PORT="$2"; _explicita PGBOUNCER_PORT; shift 2 ;;
         --allow-from) ALLOW_FROM="$2"; _explicita ALLOW_FROM; shift 2 ;;
         --enable-firewall) ENABLE_FIREWALL="true"
 # 262144 é o mínimo que o bootstrap check do OpenSearch exige.
@@ -363,7 +438,21 @@ VM_MAX_MAP_COUNT="262144"; shift ;;
         --no-monitoring) MONITORING_ENABLED="false"; shift ;;
         --metrics-profile) METRICS_PROFILE="$2"; METRICS_ENABLED="true"; _explicita METRICS_PROFILE; shift 2 ;;
         --metrics-containers) METRICS_CONTAINERS="true"; METRICS_ENABLED="true"; shift ;;
+        # Host OBSERVADO de um desenho distribuído: publica os exporters numa
+        # interface (a privada) e não sobe Prometheus nenhum.
+        --metrics-publish) METRICS_PUBLISH_IP="$2"; METRICS_ENABLED="true"; MONITORING_ENABLED="false"
+            _explicita METRICS_PUBLISH_IP; shift 2 ;;
+        # Host do PROMETHEUS: de onde coletar o que está nas outras máquinas.
+        --metrics-scrape) METRICS_SCRAPE="$2"; METRICS_ENABLED="true"; _explicita METRICS_SCRAPE; shift 2 ;;
         --metrics-bind-ip) MONITORING_BIND_IP="$2"; shift 2 ;;
+        --alert-slack-webhook) ALERT_SLACK_WEBHOOK="$2"; _explicita ALERT_SLACK_WEBHOOK; shift 2 ;;
+        --alert-slack-channel) ALERT_SLACK_CHANNEL="$2"; _explicita ALERT_SLACK_CHANNEL; shift 2 ;;
+        --alert-webhook-url) ALERT_WEBHOOK_URL="$2"; _explicita ALERT_WEBHOOK_URL; shift 2 ;;
+        --alert-email-to) ALERT_EMAIL_TO="$2"; _explicita ALERT_EMAIL_TO; shift 2 ;;
+        --alert-email-from) ALERT_EMAIL_FROM="$2"; _explicita ALERT_EMAIL_FROM; shift 2 ;;
+        --alert-smtp-host) ALERT_SMTP_HOST="$2"; _explicita ALERT_SMTP_HOST; shift 2 ;;
+        --alert-smtp-user) ALERT_SMTP_USER="$2"; _explicita ALERT_SMTP_USER; shift 2 ;;
+        --alert-smtp-password) ALERT_SMTP_PASSWORD="$2"; _explicita ALERT_SMTP_PASSWORD; shift 2 ;;
         --prometheus-port) PROMETHEUS_PORT="$2"; shift 2 ;;
         --grafana-port) GRAFANA_PORT="$2"; shift 2 ;;
         --grafana-password) GRAFANA_ADMIN_PASSWORD="$2"; shift 2 ;;
@@ -427,6 +516,17 @@ service_volume_key() {
         redis) printf 'redis_data' ;;
         meilisearch) printf 'meili_data' ;;
         opensearch) printf 'os_data' ;;
+    esac
+}
+
+# Interface em que o serviço é REALMENTE publicado. Não é sempre BIND_IP: o
+# PgBouncer tem interface própria (loopback por default), e o resumo que usava
+# BIND_IP para todos anunciava `pgbouncer → 0.0.0.0:6432` num pooler que só
+# escuta em 127.0.0.1.
+service_bind_ip() {
+    case "$1" in
+        pgbouncer) printf '%s' "$PGBOUNCER_BIND_IP" ;;
+        *) printf '%s' "$BIND_IP" ;;
     esac
 }
 
@@ -607,6 +707,35 @@ service_profile() {
     esac
 }
 
+# Serviços que têm `docker-compose.metrics.yml` no repositório — isto é, que
+# precisam de um EXPORTER ao lado para serem observados. Nem todos precisam, e
+# tratar a ausência como erro era um defeito com consequência total:
+#
+#   opensearch  expõe /_prometheus/metrics NATIVAMENTE (o plugin do Aiven é
+#               instalado na imagem, ver opensearch/Dockerfile), e o job já
+#               existe no prometheus.yml apontando para lá;
+#   pgbouncer   não tem job nenhum no prometheus.yml.
+#
+# Como create_layout baixava o overlay para TODO serviço selecionado, um host
+# com `--metrics` e OpenSearch levava 404 e o provisionamento MORRIA ali —
+# antes de subir container nenhum, com o sistema já alterado.
+SERVICES_COM_EXPORTER="postgres redis meilisearch"
+tem_overlay_metrics() {
+    case " $SERVICES_COM_EXPORTER " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+# Endereço do Postgres visto de DENTRO de um container que não divide rede com
+# ele. É o caso do PgBouncer: projeto Compose próprio, rede própria, então o
+# nome `postgres` não resolve — o caminho é a porta publicada no host.
+docker_bridge_gateway() {
+    local ip=""
+    ip="$(docker network inspect bridge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || true)"
+    if [[ -z "$ip" ]]; then
+        ip="$(ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
+    fi
+    printf '%s' "${ip:-172.17.0.1}"
+}
+
 # Orçamento de RAM de um perfil de VIZINHO, em GB — o que entra na fórmula de
 # reserva de docs/perfis.md. São os limites de container dos arquivos .env
 # arredondados PARA CIMA: melhor sobrar page cache para o Postgres do que
@@ -643,6 +772,11 @@ neighbor_budget_gb() {
 
 # Orçamento da stack de observabilidade. Delega a neighbor_budget_gb para não
 # manter duas tabelas de números que precisariam ser atualizadas juntas.
+# Há para onde notificar? O Alertmanager aceita três formas, e basta uma.
+tem_destino_de_alerta() {
+    [[ -n "$ALERT_SLACK_WEBHOOK" || -n "$ALERT_WEBHOOK_URL" || -n "$ALERT_EMAIL_TO" ]]
+}
+
 metrics_budget_gb() {
     local base
     base="$(neighbor_budget_gb "$METRICS_PROFILE")"
@@ -918,9 +1052,48 @@ validate_and_prompt() {
         die "--meilisearch-key precisa de no mínimo 16 bytes (MEILI_ENV=production)"
     fi
 
+    # PgBouncer num host SEM Postgres é o desenho normal desta operação (o
+    # pooler vive junto da aplicação). Nesse caso o script não tem como
+    # descobrir nem o endereço nem a senha do banco: sem as duas flags, o
+    # pooler subiria apontando para o gateway local e falharia a autenticação —
+    # e o sintoma chegaria como "aplicação não conecta", longe daqui.
+    if service_selected pgbouncer && ! service_selected postgres; then
+        # Numa reexecução a senha já está no disco — exigi-la de novo tornaria
+        # `--update` impossível neste host, que é justamente o que ele existe
+        # para evitar. Ela vive no .env do pooler e no credentials.env.
+        local tem_senha="false"
+        [[ -n "$POSTGRES_PASSWORD" ]] && tem_senha="true"
+        grep -q '^PGB_PASSWORD=' "$WORKDIR/secrets/credentials.env" 2>/dev/null && tem_senha="true"
+        grep -q '^PGB_PASSWORD=' "$WORKDIR/services/pgbouncer/.env" 2>/dev/null && tem_senha="true"
+        [[ -n "$PGBOUNCER_DB_HOST" ]] \
+            || die "pgbouncer sem postgres neste host exige --pgbouncer-db-host <ip do banco>"
+        [[ "$tem_senha" == "true" ]] \
+            || die "pgbouncer sem postgres neste host exige --postgres-password (a senha do banco remoto)"
+    fi
+
     if [[ "$METRICS_ENABLED" == "true" ]]; then
         # O perfil de métricas já foi resolvido e validado no bloco de
         # dimensionamento acima, junto com os demais vizinhos.
+
+        # `--metrics-publish 0.0.0.0` entregaria os internos do banco para a
+        # internet. O overlay recusa isso no compose; falhar aqui é mais cedo e
+        # mais claro.
+        case "$METRICS_PUBLISH_IP" in
+            0.0.0.0|"::"|"*") die "--metrics-publish exige uma interface específica (use a privada), nunca 0.0.0.0" ;;
+        esac
+
+        # O container morre no start com uma mensagem clara se o par estiver
+        # incompleto; falhar aqui evita descobrir isso num restart loop.
+        if [[ -n "$ALERT_EMAIL_TO" ]]; then
+            [[ -n "$ALERT_SMTP_HOST" ]] || die "--alert-email-to exige --alert-smtp-host (host:porta)"
+            [[ -n "$ALERT_EMAIL_FROM" ]] || die "--alert-email-to exige --alert-email-from"
+        fi
+        if [[ "$MONITORING_ENABLED" == "true" ]] && ! tem_destino_de_alerta; then
+            warn "sem destino de alerta: o Alertmanager ficará DESLIGADO."
+            warn "  As regras continuam sendo avaliadas e os alertas aparecem em"
+            warn "  'bdh metrics', mas NINGUÉM é notificado. Para ligar depois:"
+            warn "    bash setup.sh --update --alert-slack-webhook https://hooks.slack.com/..."
+        fi
 
         # No macOS o node exporter e o cAdvisor leem o /proc da VM do Docker, não
         # do Mac — e o kernel da VM nem traz CONFIG_PSI. Ver monitoring/README.md.
@@ -978,6 +1151,11 @@ load_state() {
             POSTGRES_PORT)    foi_explicita POSTGRES_PORT   || POSTGRES_PORT="$valor" ;;
             REDIS_PORT)       foi_explicita REDIS_PORT      || REDIS_PORT="$valor" ;;
             MEILI_PORT)       foi_explicita MEILI_PORT      || MEILI_PORT="$valor" ;;
+            OPENSEARCH_PORT)  foi_explicita OPENSEARCH_PORT || OPENSEARCH_PORT="$valor" ;;
+            PGBOUNCER_DB_HOST) foi_explicita PGBOUNCER_DB_HOST || PGBOUNCER_DB_HOST="$valor" ;;
+            PGBOUNCER_DB_PORT) foi_explicita PGBOUNCER_DB_PORT || PGBOUNCER_DB_PORT="$valor" ;;
+            PGBOUNCER_BIND_IP) foi_explicita PGBOUNCER_BIND_IP || PGBOUNCER_BIND_IP="$valor" ;;
+            PGBOUNCER_PORT)   foi_explicita PGBOUNCER_PORT  || PGBOUNCER_PORT="$valor" ;;
             PG_PROFILE)       foi_explicita PG_PROFILE      || PG_PROFILE="$valor" ;;
             REDIS_PROFILE)    foi_explicita REDIS_PROFILE   || REDIS_PROFILE="$valor" ;;
             MEILI_PROFILE)    foi_explicita MEILI_PROFILE   || MEILI_PROFILE="$valor" ;;
@@ -986,6 +1164,8 @@ load_state() {
             # é uma decisão que precisa ser tomada, nunca herdada de um estado antigo.
             METRICS_ENABLED)  [[ "$valor" == "true" ]] && METRICS_ENABLED="true" ;;
             MONITORING_ENABLED) [[ "$METRICS_ENABLED" == "true" ]] && MONITORING_ENABLED="$valor" ;;
+            METRICS_PUBLISH_IP) foi_explicita METRICS_PUBLISH_IP || { METRICS_PUBLISH_IP="$valor"; MONITORING_ENABLED="false"; } ;;
+            METRICS_SCRAPE)     foi_explicita METRICS_SCRAPE     || METRICS_SCRAPE="$valor" ;;
         esac
     done < "$arquivo"
 
@@ -1295,6 +1475,12 @@ create_layout() {
     # cada serviço não é tocado.
     if [[ "$METRICS_ENABLED" == "true" ]]; then
         for s in "${SERVICES[@]}"; do
+            # Serviço sem exporter não tem overlay para baixar — e pedi-lo
+            # matava o provisionamento inteiro (ver SERVICES_COM_EXPORTER).
+            if ! tem_overlay_metrics "$s"; then
+                info "$s: sem exporter (métricas nativas ou fora do escopo do Prometheus)"
+                continue
+            fi
             dir="$(service_dir "$s")"
             if [[ "$DRY_RUN" != "true" ]]; then
                 curl -fsSL "${RAW_BASE}/${s}/docker-compose.metrics.yml" \
@@ -1316,6 +1502,34 @@ create_layout() {
             curl -fsSL "${RAW_BASE}/meilisearch/metrics-key.sh" \
                 -o "$(service_dir meilisearch)/metrics-key.sh" \
                 || die "falha ao baixar metrics-key.sh"
+        fi
+
+        # --- coleta remota: publicar as portas dos exporters -------------------
+        # Só aqui a regra "exporter não publica porta" é excepcionada, e de
+        # forma explícita: o overlay é um arquivo à parte, exige uma interface
+        # sem default e a proteção passa a ser o firewall.
+        if [[ -n "$METRICS_PUBLISH_IP" && "$DRY_RUN" != "true" ]]; then
+            for s in "${SERVICES[@]}"; do
+                tem_overlay_metrics "$s" || continue
+                dir="$(service_dir "$s")"
+                curl -fsSL "${RAW_BASE}/${s}/docker-compose.metrics-remote.yml" \
+                    -o "$dir/docker-compose.metrics-remote.yml" \
+                    || die "falha ao baixar ${RAW_BASE}/${s}/docker-compose.metrics-remote.yml"
+                ok "$s: exporter publicado em ${METRICS_PUBLISH_IP}"
+            done
+            # O node exporter mede o HOST (CPU, disco, PSI) e vive no projeto
+            # `monitoring`. Num host observado ele é o único componente daquele
+            # projeto que sobe — sem ele, o Prometheus remoto enxergaria os
+            # bancos e nada da máquina onde eles rodam.
+            dir="$(service_dir monitoring)"
+            run mkdir -p "$dir/targets" "$dir/secrets"
+            curl -fsSL "${RAW_BASE}/monitoring/docker-compose.yml" -o "$dir/docker-compose.yml" \
+                || die "falha ao baixar ${RAW_BASE}/monitoring/docker-compose.yml"
+            curl -fsSL "${RAW_BASE}/monitoring/docker-compose.remote.yml" -o "$dir/docker-compose.remote.yml" \
+                || die "falha ao baixar ${RAW_BASE}/monitoring/docker-compose.remote.yml"
+            touch "$dir/secrets/meili-metrics.key"
+            protect_metrics_key "$dir/secrets/meili-metrics.key"
+            ok "monitoring: node exporter para coleta remota"
         fi
 
         # `monitoring` fica FORA do array SERVICES de propósito: ele tem DOIS
@@ -1380,6 +1594,18 @@ write_env_files() {
         warn "credenciais existentes preservadas ($prev)"
     fi
 
+    # Host de APLICAÇÃO (pooler sem banco local): a senha do banco remoto chega
+    # por flag na primeira execução e precisa sobreviver às seguintes. Gerar uma
+    # aleatória aqui — o que a linha abaixo faria — apontaria o pooler para o
+    # outro host com uma senha inventada, e o sintoma chegaria como "a aplicação
+    # parou de conectar" depois de um `--update` de rotina.
+    if service_selected pgbouncer && ! service_selected postgres && [[ -z "$POSTGRES_PASSWORD" ]]; then
+        POSTGRES_PASSWORD="${PGB_PASSWORD:-}"
+        if [[ -z "$POSTGRES_PASSWORD" ]]; then
+            POSTGRES_PASSWORD="$(grep -h '^PGB_PASSWORD=' "$(service_dir pgbouncer)/.env" 2>/dev/null | cut -d= -f2-)"
+        fi
+    fi
+
     [[ -z "$POSTGRES_PASSWORD" ]] && POSTGRES_PASSWORD="$(gen_secret)"
     [[ -z "$DADOS_READ_PASSWORD" ]] && DADOS_READ_PASSWORD="$(gen_secret)"
     [[ -z "$REDIS_PASSWORD" ]] && REDIS_PASSWORD="$(gen_secret)"
@@ -1388,6 +1614,16 @@ write_env_files() {
     # metrics_read não é a do postgres, e a chave do Meili não é a master key.
     [[ -z "$PG_METRICS_PASSWORD" ]] && PG_METRICS_PASSWORD="$(gen_secret)"
     [[ -z "$GRAFANA_ADMIN_PASSWORD" ]] && GRAFANA_ADMIN_PASSWORD="$(gen_secret)"
+
+    # Para onde o pooler aponta. Resolvido AQUI, e não no parser, porque o
+    # gateway da bridge só existe depois de install_docker().
+    if service_selected pgbouncer && [[ -z "$PGBOUNCER_DB_HOST" && "$DRY_RUN" != "true" ]]; then
+        case "$BIND_IP" in
+            0.0.0.0|""|127.0.0.1|localhost) PGBOUNCER_DB_HOST="$(docker_bridge_gateway)" ;;
+            *) PGBOUNCER_DB_HOST="$BIND_IP" ;;
+        esac
+        info "pgbouncer aponta para ${PGBOUNCER_DB_HOST}:${PGBOUNCER_DB_PORT:-$POSTGRES_PORT}"
+    fi
 
     # O perfil de métricas é baixado uma vez e reusado: os limites dos exporters
     # vivem nele, e vão para o .env de cada serviço. Fonte única, como nos demais
@@ -1424,11 +1660,36 @@ write_env_files() {
                 printf 'MEILI_MASTER_KEY=%s\n' "$MEILI_MASTER_KEY"
                 printf 'BIND_IP=%s\nMEILI_PORT=%s\n' "$BIND_IP" "$MEILI_PORT"
                 ;;
+            # O OpenSearch não tinha bloco, e a ausência ERA um defeito de
+            # exposição: sem BIND_IP no .env, o compose caía no default
+            # `0.0.0.0` e publicava na internet o único serviço da stack que
+            # não tem autenticação nenhuma — mesmo num provisionamento feito
+            # com `--bind-ip 10.0.0.5` justamente para evitar isso.
+            opensearch)
+                printf 'BIND_IP=%s\nOPENSEARCH_PORT=%s\n' "$BIND_IP" "$OPENSEARCH_PORT"
+                ;;
+            # Sem este bloco o PgBouncer NÃO SUBIA: as quatro PGB_* do compose
+            # são `${VAR:?}`, então o `up` falhava com "defina PGB_DB_HOST" —
+            # inclusive no `--add-service pgbouncer` que o README manda rodar.
+            pgbouncer)
+                printf 'PGB_DB_HOST=%s\n' "$PGBOUNCER_DB_HOST"
+                printf 'PGB_DB_PORT=%s\n' "${PGBOUNCER_DB_PORT:-$POSTGRES_PORT}"
+                printf 'PGB_DB_NAME=%s\n' "$POSTGRES_DB"
+                printf 'PGB_USER=%s\n' "$PGBOUNCER_DB_USER"
+                printf 'PGB_PASSWORD=%s\n' "$POSTGRES_PASSWORD"
+                printf 'PGBOUNCER_BIND_IP=%s\nPGBOUNCER_PORT=%s\n' "$PGBOUNCER_BIND_IP" "$PGBOUNCER_PORT"
+                ;;
             esac
 
         } > "$env_file"
         chmod 600 "$env_file"
-        ok "$s: .env gerado do perfil $(service_profile "$s")"
+        if [[ -n "$(service_profile "$s")" ]]; then
+            ok "$s: .env gerado do perfil $(service_profile "$s")"
+        else
+            # PgBouncer não tem perfil de máquina — é dimensionado pela
+            # aplicação. A linha antiga terminava em "do perfil " e parecia bug.
+            ok "$s: .env gerado (sem perfil de máquina)"
+        fi
 
         # A senha do exporter do Postgres vai num arquivo SEPARADO, e isso é
         # deliberado: `env_file` faz parte da definição do serviço, então
@@ -1447,6 +1708,42 @@ write_env_files() {
             ok "postgres: credencial do exporter em .env.metrics"
         fi
     done
+
+    # A interface dos exporters vai num arquivo PRÓPRIO, e não no .env de cada
+    # serviço, pela mesma razão do .env.metrics: `env_file` faz parte da
+    # definição do serviço, então acrescentar METRICS_BIND_IP ao .env do
+    # Postgres mudaria o hash de configuração e o Compose RECRIARIA o banco —
+    # um restart de centenas de GB só para ligar coleta remota. Este arquivo é
+    # lido como ambiente pelo setup e pelo `bdh` antes do docker compose.
+    if [[ -n "$METRICS_PUBLISH_IP" && "$DRY_RUN" != "true" ]]; then
+        {
+            printf '# Gerado por setup.sh — interface de publicação dos exporters.\n'
+            printf '# Lido como AMBIENTE (nunca como env_file de serviço).\n'
+            printf 'METRICS_BIND_IP=%s\n' "$METRICS_PUBLISH_IP"
+        } > "$WORKDIR/.metrics-remote.env"
+        chmod 600 "$WORKDIR/.metrics-remote.env"
+        ok "coleta remota: exporters em ${METRICS_PUBLISH_IP}"
+
+        # O .env do projeto `monitoring` é necessário mesmo quando só o node
+        # exporter sobe aqui: o Compose interpola o arquivo INTEIRO antes de
+        # decidir o que subir, e `GRAFANA_ADMIN_PASSWORD` é `${VAR:?}`. Sem
+        # este bloco, `up node-exporter` falhava com um erro sobre o Grafana —
+        # num host que não roda Grafana nenhum.
+        dir="$(service_dir monitoring)"
+        {
+            cat "$profile_metrics"
+            printf '\n# --- deploy remoto (gerado por setup.sh em %s) ---\n' "$(now_iso)"
+            printf '# Este host é OBSERVADO: só o node exporter sobe daqui. Prometheus,\n'
+            printf '# Grafana e Alertmanager vivem no host de monitoração.\n'
+            printf 'COMPOSE_PROFILES=node\n'
+            printf 'METRICS_BIND_IP=%s\n' "$METRICS_PUBLISH_IP"
+            printf 'MON_HOSTNAME=%s\n' "$(hostname)"
+            printf 'METRICS_NETWORK=%s\n' "$METRICS_NETWORK"
+            # Só para satisfazer a interpolação — o Grafana não sobe aqui.
+            printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$GRAFANA_ADMIN_PASSWORD"
+        } > "$dir/.env"
+        chmod 600 "$dir/.env"
+    fi
 
     if [[ "$METRICS_ENABLED" == "true" && "$MONITORING_ENABLED" == "true" && "$DRY_RUN" != "true" ]]; then
         # COMPOSE_PROFILES é do Compose e NÃO é "perfil" no sentido deste
@@ -1470,6 +1767,19 @@ write_env_files() {
             printf 'METRICS_NETWORK=%s\n' "$METRICS_NETWORK"
             printf 'GRAFANA_ROOT_URL=http://localhost:%s\n' "$GRAFANA_PORT"
             printf 'COMPOSE_PROFILES=%s\n' "$compose_profiles"
+            # Só as que foram informadas: uma variável vazia aqui é indistinguível
+            # de "não configurada" para o generate-config.sh, mas escrever todas
+            # deixaria o .env sugerindo que há e-mail configurado quando não há.
+            [[ -n "$ALERT_SLACK_WEBHOOK" ]] && printf 'ALERTMANAGER_SLACK_WEBHOOK=%s\n' "$ALERT_SLACK_WEBHOOK"
+            [[ -n "$ALERT_SLACK_CHANNEL" ]] && printf 'ALERTMANAGER_SLACK_CHANNEL=%s\n' "$ALERT_SLACK_CHANNEL"
+            [[ -n "$ALERT_WEBHOOK_URL" ]]   && printf 'ALERTMANAGER_WEBHOOK_URL=%s\n' "$ALERT_WEBHOOK_URL"
+            [[ -n "$ALERT_EMAIL_TO" ]]      && printf 'ALERTMANAGER_EMAIL_TO=%s\n' "$ALERT_EMAIL_TO"
+            [[ -n "$ALERT_EMAIL_FROM" ]]    && printf 'ALERTMANAGER_EMAIL_FROM=%s\n' "$ALERT_EMAIL_FROM"
+            [[ -n "$ALERT_SMTP_HOST" ]]     && printf 'ALERTMANAGER_SMTP_HOST=%s\n' "$ALERT_SMTP_HOST"
+            [[ -n "$ALERT_SMTP_USER" ]]     && printf 'ALERTMANAGER_SMTP_USER=%s\n' "$ALERT_SMTP_USER"
+            [[ -n "$ALERT_SMTP_PASSWORD" ]] && printf 'ALERTMANAGER_SMTP_PASSWORD=%s\n' "$ALERT_SMTP_PASSWORD"
+            # `true` fecha o bloco: o último `[[ ]]` falso derrubaria o `set -e`.
+            true
         } > "$dir/.env"
         chmod 600 "$dir/.env"
         ok "monitoring: .env gerado do perfil $METRICS_PROFILE"
@@ -1492,6 +1802,13 @@ write_env_files() {
             fi
             if service_selected meilisearch; then
                 printf 'MEILI_MASTER_KEY=%s\nMEILI_PORT=%s\n' "$MEILI_MASTER_KEY" "$MEILI_PORT"
+            fi
+            # Num host de aplicação esta é a ÚNICA credencial que existe, e sem
+            # ela no arquivo o `--update` não teria de onde herdá-la.
+            if service_selected pgbouncer; then
+                printf '\n# --- pooler (aponta para o banco em %s) ---\n' "$PGBOUNCER_DB_HOST"
+                printf 'PGB_DB_HOST=%s\nPGB_USER=%s\nPGB_PASSWORD=%s\nPGBOUNCER_PORT=%s\n' \
+                    "$PGBOUNCER_DB_HOST" "$PGBOUNCER_DB_USER" "$POSTGRES_PASSWORD" "$PGBOUNCER_PORT"
             fi
             if [[ "$METRICS_ENABLED" == "true" ]]; then
                 printf '\n# --- observabilidade ---\n'
@@ -1556,6 +1873,16 @@ write_env_files() {
             printf 'POSTGRES_PORT=%s\n' "$POSTGRES_PORT"
             printf 'REDIS_PORT=%s\n' "$REDIS_PORT"
             printf 'MEILI_PORT=%s\n' "$MEILI_PORT"
+            printf 'OPENSEARCH_PORT=%s\n' "$OPENSEARCH_PORT"
+            # Sem estas três no estado, um `--update` num host com PgBouncer
+            # reapontava o pooler para o default e reescrevia o .env — a
+            # aplicação continuaria conectando, no banco errado.
+            if service_selected pgbouncer; then
+                printf 'PGBOUNCER_DB_HOST=%s\n' "$PGBOUNCER_DB_HOST"
+                printf 'PGBOUNCER_BIND_IP=%s\n' "$PGBOUNCER_BIND_IP"
+                printf 'PGBOUNCER_PORT=%s\n' "$PGBOUNCER_PORT"
+                printf 'PGBOUNCER_DB_PORT=%s\n' "${PGBOUNCER_DB_PORT:-$POSTGRES_PORT}"
+            fi
             # Cada bloco num `if`: uma condição falsa como última expressão do
             # grupo faria o `set -e` abortar o script (era o caso quando o
             # Meilisearch não estava entre os serviços escolhidos).
@@ -1566,6 +1893,12 @@ write_env_files() {
             if [[ "$METRICS_ENABLED" == "true" ]]; then
                 printf 'METRICS_PROFILE=%s\n' "$METRICS_PROFILE"
                 printf 'MONITORING_ENABLED=%s\n' "$MONITORING_ENABLED"
+                # Sem estas duas no estado, um `--update` num desenho
+                # distribuído despublicaria os exporters e apagaria os alvos
+                # remotos: o Prometheus do outro host perderia tudo, em silêncio.
+                [[ -n "$METRICS_PUBLISH_IP" ]] && printf 'METRICS_PUBLISH_IP=%s\n' "$METRICS_PUBLISH_IP"
+                [[ -n "$METRICS_SCRAPE" ]] && printf 'METRICS_SCRAPE=%s\n' "$METRICS_SCRAPE"
+                true
             fi
         } > "$WORKDIR/.setup-state"
     fi
@@ -1574,12 +1907,17 @@ write_env_files() {
 start_services() {
     section "Subindo os serviços"
     local s dir compose_args
+    # Variável de INTERPOLAÇÃO do Compose (o overlay remoto a exige sem
+    # default). Exportada, e não escrita no .env do serviço, para não recriar o
+    # container do banco — ver write_env_files.
+    [[ -n "$METRICS_PUBLISH_IP" ]] && export METRICS_BIND_IP="$METRICS_PUBLISH_IP"
     for s in "${SERVICES[@]}"; do
         dir="$(service_dir "$s")"
         compose_args=(--project-directory "$dir" -f "$dir/docker-compose.yml")
-        # Ordem: base → metrics → override. O override do modo bind é o último a
-        # falar sobre volumes, exatamente como antes de existir o overlay.
+        # Ordem: base → metrics → remote → override. O override do modo bind é o
+        # último a falar sobre volumes, exatamente como antes dos overlays.
         [[ -f "$dir/docker-compose.metrics.yml" ]] && compose_args+=(-f "$dir/docker-compose.metrics.yml")
+        [[ -f "$dir/docker-compose.metrics-remote.yml" ]] && compose_args+=(-f "$dir/docker-compose.metrics-remote.yml")
         [[ -f "$dir/docker-compose.override.yml" ]] && compose_args+=(-f "$dir/docker-compose.override.yml")
         # --metrics-only acrescenta o exporter sem --force-recreate: o Compose
         # compara a definição desejada com a atual e recria apenas o que mudou,
@@ -1684,9 +2022,37 @@ setup_metrics() {
         fi
     fi
 
+    # --- host OBSERVADO de um desenho distribuído ----------------------------
+    if [[ -n "$METRICS_PUBLISH_IP" ]]; then
+        local mdir_r; mdir_r="$(service_dir monitoring)"
+        export METRICS_BIND_IP="$METRICS_PUBLISH_IP"
+        # `up node-exporter` e não `up`: deste projeto, só o node exporter roda
+        # aqui — Prometheus, Grafana e Alertmanager vivem no host de
+        # monitoração. O profile `node` é o que o compose exige para criá-lo.
+        if COMPOSE_PROFILES=node run docker compose -p monitoring \
+                --project-directory "$mdir_r" \
+                -f "$mdir_r/docker-compose.yml" \
+                -f "$mdir_r/docker-compose.remote.yml" \
+                up -d node-exporter; then
+            ok "node exporter no ar em ${METRICS_PUBLISH_IP}:9100"
+        else
+            warn "node exporter não subiu — as métricas de HOST desta máquina"
+            warn "  ficarão ausentes no Prometheus remoto ('bdh logs monitoring')"
+        fi
+        info "aponte o Prometheus do outro host para:"
+        service_selected postgres && info "  --metrics-scrape postgres=${METRICS_PUBLISH_IP}:9187"
+        service_selected redis    && info "  --metrics-scrape redis=${METRICS_PUBLISH_IP}:9121"
+        service_selected opensearch && info "  --metrics-scrape opensearch=${METRICS_PUBLISH_IP}:${OPENSEARCH_PORT}"
+        info "  --metrics-scrape node=${METRICS_PUBLISH_IP}:9100"
+    fi
+
     [[ "$MONITORING_ENABLED" != "true" ]] && {
-        info "--no-monitoring: exporters no ar, Prometheus deve ser apontado de fora"
-        info "  os exporters escutam na rede Docker '${METRICS_NETWORK}', sem porta publicada"
+        info "--no-monitoring: Prometheus deve ser apontado de fora"
+        if [[ -z "$METRICS_PUBLISH_IP" ]]; then
+            warn "  os exporters escutam só na rede Docker '${METRICS_NETWORK}', SEM porta"
+            warn "  publicada: um Prometheus em outro host não os alcança. Para o desenho"
+            warn "  distribuído, use --metrics-publish <ip da interface privada>."
+        fi
         return 0
     }
 
@@ -1707,11 +2073,48 @@ setup_metrics() {
         printf '[{"targets":["meilisearch:7700"]}]\n' > "$mdir/targets/meilisearch.json"
         printf '%s' "$MEILI_METRICS_KEY" > "$mdir/secrets/meili-metrics.key"
     fi
+    # O motor de busca não tem exporter: `/_prometheus/metrics` vem do plugin
+    # instalado na imagem, e o job `opensearch` do prometheus.yml já aponta para
+    # esse caminho. Faltava só o ALVO — e sem ele o job ficava vazio, as seis
+    # regras de opensearch.rules.yml não tinham série nenhuma para avaliar, e o
+    # serviço mais novo da stack era o único invisível na observabilidade.
+    service_selected opensearch \
+        && printf '[{"targets":["opensearch:9200"]}]\n' > "$mdir/targets/opensearch.json"
     if [[ "$OS_FAMILY" == "linux" ]]; then
         printf '[{"targets":["node-exporter:9100"]}]\n' > "$mdir/targets/node.json"
         [[ "$METRICS_CONTAINERS" == "true" ]] \
             && printf '[{"targets":["cadvisor:8080"]}]\n' > "$mdir/targets/cadvisor.json"
     fi
+    # --- alvos REMOTOS (serviços em outras máquinas) --------------------------
+    # Um arquivo por job, com sufixo `-remoto`: o glob do prometheus.yml é
+    # `<job>*.json`, então ele casa sem que os alvos locais sejam sobrescritos —
+    # um host pode ter Postgres local e OpenSearch remoto ao mesmo tempo.
+    if [[ -n "$METRICS_SCRAPE" ]]; then
+        local -a pares=(); local par job alvo alvos
+        IFS=',' read -r -a pares <<< "$METRICS_SCRAPE"
+        for par in "${pares[@]}"; do
+            case "${par%%=*}" in
+                postgres|redis|node|opensearch|meilisearch|cadvisor|blackbox) ;;
+                *) warn "--metrics-scrape: job desconhecido em '$par' (ignorado)"; continue ;;
+            esac
+            case "${par#*=}" in
+                *:[0-9]*) ;;
+                *) die "--metrics-scrape: '$par' não está no formato job=host:porta" ;;
+            esac
+        done
+        for job in postgres redis node opensearch meilisearch cadvisor; do
+            alvos=""
+            for par in "${pares[@]}"; do
+                [[ "$par" == "$job="* ]] || continue
+                alvo="${par#*=}"
+                alvos="${alvos}${alvos:+,}\"${alvo}\""
+            done
+            [[ -z "$alvos" ]] && continue
+            printf '[{"targets":[%s]}]\n' "$alvos" > "$mdir/targets/${job}-remoto.json"
+            ok "alvo remoto do job $job: ${alvos//\"/}"
+        done
+    fi
+
     protect_metrics_key "$mdir/secrets/meili-metrics.key"
     ok "alvos escritos em $mdir/targets/"
 
@@ -1721,7 +2124,32 @@ setup_metrics() {
     # pull falha (registry fora do ar, imagem não publicada), e o provisionamento
     # morre antes de `configure_firewall` — deixando os bancos publicados em
     # 0.0.0.0 com o ufw ainda inativo. Aconteceu em 2026-07-27.
+    # Sem destino, o Alertmanager morre no start e o Docker o reinicia para
+    # sempre — um container em restart loop que ninguém lê, num host que o
+    # resumo declarou saudável. Melhor mantê-lo fora do conjunto ativo, de forma
+    # visível e reversível: um profile inativo não sobe e não vira órfão.
+    local override="$mdir/docker-compose.override.yml"
+    if tem_destino_de_alerta; then
+        [[ -f "$override" ]] && { rm -f "$override"; ok "destino de alerta configurado: Alertmanager religado"; }
+    else
+        cat > "$override" <<'EOF'
+# Gerado por setup.sh — NENHUM destino de alerta foi informado.
+#
+# O Alertmanager recusa subir sem receiver (é o ponto do módulo), e deixá-lo
+# reiniciando em loop esconderia isso atrás de um container "quase no ar".
+# O profile abaixo não está em COMPOSE_PROFILES, então ele fica desligado.
+#
+# Para religá-lo, informe um destino e reaplique — o setup apaga este arquivo:
+#   bash setup.sh --update --alert-slack-webhook https://hooks.slack.com/...
+services:
+  alertmanager:
+    profiles: ["alerting"]
+EOF
+        warn "Alertmanager desligado: nenhum destino de alerta configurado"
+    fi
+
     local compose_args=(--project-directory "$mdir" -f "$mdir/docker-compose.yml")
+    [[ -f "$override" ]] && compose_args+=(-f "$override")
     local up_args=(up -d)
     [[ "$FORCE" == "true" ]] && up_args+=(--force-recreate)
     if ! run docker compose -p monitoring "${compose_args[@]}" "${up_args[@]}"; then
@@ -1776,7 +2204,25 @@ configure_firewall() {
     local -a cidrs=()
     for s in "${SERVICES[@]}"; do
         port="$(service_port "$s")"
+        # Serviço publicado só em loopback não precisa (nem deve) de regra: o
+        # Docker cria o DNAT apenas para destino 127.0.0.1, então nada externo
+        # casa. Abrir a porta no ufw daria a impressão contrária a quem lesse o
+        # `ufw status` — é o caso do PgBouncer no default.
+        if [[ "$s" == "pgbouncer" ]]; then
+            case "$PGBOUNCER_BIND_IP" in
+                127.0.0.1|localhost)
+                    info "pgbouncer: em loopback, sem regra de firewall"
+                    continue ;;
+            esac
+        fi
         if [[ -n "$ALLOW_FROM" ]]; then
+            # Uma execução anterior SEM --allow-from deixou `allow <porta>/tcp`
+            # para qualquer origem. Acrescentar a regra restrita não revoga a
+            # permissiva — o ufw aplica a primeira que casa, e a antiga libera
+            # todo mundo. Apagá-la é o que torna a restrição real.
+            if [[ "$DRY_RUN" != "true" ]]; then
+                ufw delete allow "${port}/tcp" >/dev/null 2>&1 || true
+            fi
             IFS=',' read -r -a cidrs <<< "$ALLOW_FROM"
             for cidr in "${cidrs[@]}"; do
                 run ufw allow from "$cidr" to any port "$port" proto tcp
@@ -1787,6 +2233,29 @@ configure_firewall() {
             warn "$s: porta $port aberta para QUALQUER origem"
         fi
     done
+
+    # Coleta remota: as portas dos exporters também são publicadas, e /metrics
+    # não tem autenticação nenhuma — o do Postgres entrega `pg_settings_*`
+    # inteiro. Sem estas regras, a chain restringiria o banco e deixaria aberto
+    # o exporter que descreve o banco.
+    local -a portas_exporter=()
+    if [[ -n "$METRICS_PUBLISH_IP" ]]; then
+        service_selected postgres && portas_exporter+=(9187)
+        service_selected redis && portas_exporter+=(9121)
+        portas_exporter+=(9100)
+        for port in "${portas_exporter[@]}"; do
+            if [[ -n "$ALLOW_FROM" ]]; then
+                IFS=',' read -r -a cidrs <<< "$ALLOW_FROM"
+                for cidr in "${cidrs[@]}"; do
+                    run ufw allow from "$cidr" to any port "$port" proto tcp
+                done
+            else
+                run ufw allow "${port}/tcp"
+                warn "exporter na porta $port aberto para QUALQUER origem (/metrics não tem senha)"
+            fi
+        done
+        ok "portas de exporter liberadas: ${portas_exporter[*]}"
+    fi
 
     # Grafana e Prometheus só entram no firewall quando NÃO estão em loopback:
     # com -p 127.0.0.1:3000:3000 o Docker cria a regra de DNAT apenas para
@@ -1876,22 +2345,68 @@ configure_firewall() {
         info "chain DOCKER-USER vazia: reconstruindo a partir de ALLOW_FROM=${ALLOW_FROM}"
     fi
 
-    # Daqui para baixo há `ALLOW_FROM`, então esvaziar é seguro: a chain é
-    # reconstruída logo abaixo, no mesmo bloco. `ufw reload` sozinho não
-    # bastaria — ele reaplica o arquivo, e as regras já inseridas continuariam
-    # na chain.
+    # SÓ OS CIDRs IPv4 entram aqui. `/etc/ufw/after.rules` é um arquivo
+    # `iptables-restore`, e um endereço IPv6 dentro dele não é uma regra que não
+    # casa — é um ERRO DE PARSE que invalida o ARQUIVO INTEIRO:
+    #
+    #   iptables-restore: host/network `2804:1b2:...' not found
+    #   ERROR: problem running ufw-init
+    #
+    # E o efeito era o pior possível: o `iptables -F` acima já tinha esvaziado a
+    # chain, o `ufw reload` falhava, o `set -e` matava o script antes do resumo,
+    # e o host ficava com as portas dos containers ABERTAS para a internet
+    # enquanto o `ufw status` exibia regras restritivas — exatamente a armadilha
+    # que este bloco existe para fechar. Acontecia com qualquer operador cujo IP
+    # de origem fosse IPv6, que é o caso comum em rede residencial brasileira.
+    local -a cidrs_v4=() cidrs_v6=()
+    IFS=',' read -r -a cidrs <<< "$ALLOW_FROM"
+    for cidr in "${cidrs[@]}"; do
+        [[ -z "$cidr" ]] && continue
+        case "$cidr" in
+            *:*) cidrs_v6+=("$cidr") ;;
+            *)   cidrs_v4+=("$cidr") ;;
+        esac
+    done
+
+    # As portas que de fato passam pela DOCKER-USER: um serviço publicado em
+    # loopback não é alcançável de fora, e listá-lo aqui só confundiria a
+    # leitura da chain.
+    local -a portas_filtradas=()
+    for s in "${SERVICES[@]}"; do
+        if [[ "$s" == "pgbouncer" ]]; then
+            case "$PGBOUNCER_BIND_IP" in 127.0.0.1|localhost) continue ;; esac
+        fi
+        portas_filtradas+=("$(service_internal_port "$s")")
+    done
+    # As portas dos exporters publicados passam pela mesma chain.
+    for port in "${portas_exporter[@]+"${portas_exporter[@]}"}"; do
+        portas_filtradas+=("$port")
+    done
+
+    if (( ${#cidrs_v6[@]} )); then
+        warn "origens IPv6 em --allow-from (${cidrs_v6[*]}) não entram na chain DOCKER-USER:"
+        warn "  ela é IPv4, e um endereço v6 ali invalida o arquivo de regras inteiro."
+        warn "  O tráfego IPv6 para as portas publicadas passa pelo docker-proxy e é"
+        warn "  filtrado pelo ufw (INPUT), que já recebeu as regras acima."
+    fi
+    if (( ${#cidrs_v4[@]} == 0 )); then
+        warn "nenhuma origem IPv4 em --allow-from: as portas dos containers serão"
+        warn "  BLOQUEADAS para todo o IPv4 (é o que 'só estas origens' significa)."
+    fi
+
+    # Daqui para baixo esvaziar é seguro: a chain é reconstruída logo abaixo, no
+    # mesmo bloco. `ufw reload` sozinho não bastaria — ele reaplica o arquivo, e
+    # as regras já inseridas continuariam na chain.
     iptables -F DOCKER-USER 2>/dev/null || true
 
-    IFS=',' read -r -a cidrs <<< "$ALLOW_FROM"
     {
         printf '%s\n' "$begin"
         printf '*filter\n:DOCKER-USER - [0:0]\n'
         printf -- '-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN\n'
         printf -- '-A DOCKER-USER -s 172.16.0.0/12 -j RETURN\n'   # entre containers
         printf -- '-A DOCKER-USER -s 127.0.0.0/8 -j RETURN\n'     # do próprio host
-        for s in "${SERVICES[@]}"; do
-            port="$(service_internal_port "$s")"
-            for cidr in "${cidrs[@]}"; do
+        for port in "${portas_filtradas[@]+"${portas_filtradas[@]}"}"; do
+            for cidr in "${cidrs_v4[@]+"${cidrs_v4[@]}"}"; do
                 printf -- '-A DOCKER-USER -p tcp --dport %s -s %s -j RETURN\n' "$port" "$cidr"
             done
             printf -- '-A DOCKER-USER -p tcp --dport %s -j DROP\n' "$port"
@@ -1900,8 +2415,42 @@ configure_firewall() {
         printf '%s\n' "$end"
     } >> "$rules_file"
 
-    run ufw reload
-    ok "chain DOCKER-USER restringe as portas dos containers a ${ALLOW_FROM}"
+    # `if !`, e não `run ufw reload` solto: sob `set -e` uma falha aqui aborta o
+    # script com a chain recém-esvaziada — o estado mais inseguro possível.
+    if ! run ufw reload; then
+        warn "o 'ufw reload' falhou; aplicando as regras direto na chain DOCKER-USER."
+    fi
+
+    # Host SEM porta publicada — um host de aplicação com o pooler e o
+    # Prometheus em loopback é exatamente isso. Não há o que restringir, e a
+    # verificação de DROP abaixo daria um falso alarme dizendo que "as portas
+    # estão acessíveis de qualquer origem" num host que não publica nenhuma.
+    if (( ${#portas_filtradas[@]} == 0 )); then
+        ok "nenhuma porta publicada neste host — nada a restringir na DOCKER-USER"
+        return 0
+    fi
+
+    # VERIFICAÇÃO, e não confiança: o reload pode ter falhado por outra razão e o
+    # sintoma seria silencioso. Se a chain não ficou povoada, aplica-se à mão —
+    # perde-se a persistência no boot, mas não a proteção agora, e o aviso diz
+    # exatamente isso.
+    if ! iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j DROP'; then
+        for port in "${portas_filtradas[@]+"${portas_filtradas[@]}"}"; do
+            for cidr in "${cidrs_v4[@]+"${cidrs_v4[@]}"}"; do
+                iptables -A DOCKER-USER -p tcp --dport "$port" -s "$cidr" -j RETURN 2>/dev/null || true
+            done
+            iptables -A DOCKER-USER -p tcp --dport "$port" -j DROP 2>/dev/null || true
+        done
+        if iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j DROP'; then
+            warn "chain DOCKER-USER povoada à mão. A persistência em $rules_file"
+            warn "  NÃO foi aplicada: confira o arquivo antes do próximo boot."
+        else
+            warn "NÃO foi possível restringir as portas dos containers. Elas estão"
+            warn "  acessíveis de qualquer origem — trate isto antes de expor dados."
+        fi
+    else
+        ok "chain DOCKER-USER restringe as portas dos containers a ${cidrs_v4[*]:-nenhuma origem IPv4}"
+    fi
 }
 
 install_cli_and_motd() {
@@ -1953,8 +2502,17 @@ compose() {
     local dir; dir="$(svc_dir "$svc")"
     [[ -d "$dir" ]] || { echo "serviço '$svc' não provisionado em $dir" >&2; exit 1; }
     local args=(--project-directory "$dir" -f "$dir/docker-compose.yml")
-    # Mesma ordem do setup.sh: base → metrics → override.
+    # Mesma ordem do setup.sh: base → metrics → remote → override.
     [[ -f "$dir/docker-compose.metrics.yml" ]] && args+=(-f "$dir/docker-compose.metrics.yml")
+    if [[ -f "$dir/docker-compose.metrics-remote.yml" ]]; then
+        # O overlay exige METRICS_BIND_IP sem default (um 0.0.0.0 ali entregaria
+        # os internos do banco). Ela vive num arquivo próprio para não entrar no
+        # .env do serviço e recriar o container do banco.
+        if [[ -f "$BDH_ROOT/.metrics-remote.env" ]]; then
+            set -a; . "$BDH_ROOT/.metrics-remote.env"; set +a
+        fi
+        args+=(-f "$dir/docker-compose.metrics-remote.yml")
+    fi
     [[ -f "$dir/docker-compose.override.yml" ]] && args+=(-f "$dir/docker-compose.override.yml")
     docker compose -p "$svc" "${args[@]}" "$@"
 }
@@ -2177,8 +2735,17 @@ summary() {
     _log "    ${C_BOLD}serviços${C_RESET}"
     for s in "${SERVICES[@]}"; do
         port="$(service_port "$s")"
-        info "  $s → ${BIND_IP}:${port}   ($(service_dir "$s"))"
+        info "  $s → $(service_bind_ip "$s"):${port}   ($(service_dir "$s"))"
     done
+    # O OpenSearch é o único serviço da stack SEM autenticação nenhuma (o plugin
+    # de segurança está desligado). Nos outros a senha ainda é uma barreira; aqui
+    # o firewall é a única que existe.
+    if service_selected opensearch && [[ -z "$ALLOW_FROM" && "$BIND_IP" == "0.0.0.0" ]]; then
+        _log ""
+        warn "o OpenSearch está publicado em 0.0.0.0 e NÃO TEM AUTENTICAÇÃO."
+        warn "quem alcançar a porta ${OPENSEARCH_PORT} lê e apaga o índice inteiro."
+        warn "use --allow-from <CIDR> ou --bind-ip <interface privada>."
+    fi
     _log ""
     _log "    ${C_BOLD}credenciais${C_RESET}"
     info "  $WORKDIR/secrets/credentials.env   (chmod 600 — 'bdh creds --show')"
