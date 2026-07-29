@@ -325,6 +325,10 @@ printf '\nFirewall: nunca esvaziar sem repovoar\n'
 # segue `active`, porque a DOCKER-USER não aparece ali.
 trecho_fw="$(awk '/^configure_firewall\(\)/,/^}/' "$REPO_ROOT/setup.sh")"
 linha_flush="$(printf '%s\n' "$trecho_fw" | grep -n 'iptables -F DOCKER-USER' | head -1 | cut -d: -f1)"
+# shellcheck disable=SC2016  # aspas simples de PROPÓSITO: isto é um padrão de
+# grep procurando o texto literal `$ALLOW_FROM` dentro do script. Expandir a
+# variável aqui faria o padrão casar com o VALOR dela — em geral vazio — e o
+# teste passaria a aprovar qualquer coisa.
 linha_guarda="$(printf '%s\n' "$trecho_fw" | grep -n 'if \[\[ -z "\$ALLOW_FROM" \]\]' | tail -1 | cut -d: -f1)"
 if [[ -n "$linha_flush" && -n "$linha_guarda" && "$linha_guarda" -lt "$linha_flush" ]]; then
     pass "o flush da DOCKER-USER só acontece DEPOIS da guarda de ALLOW_FROM"
