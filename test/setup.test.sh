@@ -607,6 +607,21 @@ check "job filtra só os seus alvos" \
 
 check "os alvos locais levam labels.host" "ok" \
     "$(grep -q '"labels":{"host":"%s"}' "$REPO_ROOT/setup.sh" && echo ok || echo 'alvo local sem rótulo')"
+
+# --host-label existe para o host que NÃO pode ser renomeado: num nó Docker
+# Swarm o hostname está registrado no cluster, e trocá-lo num manager arrisca
+# desassociar o nó. Ele vence o hostname só para os alvos locais.
+check "--host-label vence o hostname" "bdh-apps" \
+    "$(HOST_LABEL=bdh-apps host_label)"
+check "sem --host-label, o hostname continua valendo" "$(hostname)" \
+    "$(HOST_LABEL='' host_label)"
+# O apelido de um alvo remoto vem do --metrics-scrape e é passado como argumento
+# — o --host-label do host do Prometheus não pode sequestrá-lo.
+check "--host-label não afeta o apelido de alvo remoto" \
+    '[{"targets":["10.0.1.10:9100"],"labels":{"host":"bdh-data"}}]' \
+    "$(HOST_LABEL=bdh-apps alvos_remotos_json node 'node=10.0.1.10:9100@bdh-data')"
+check "usage() documenta --host-label" "ok" \
+    "$(usage | grep -q -- '--host-label' && echo ok)"
 check "usage() documenta o @apelido" "ok" \
     "$(usage | grep -q 'job=host:porta\[@apelido\]' && echo ok)"
 

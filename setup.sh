@@ -128,6 +128,11 @@ METRICS_CONTAINERS="false"       # --metrics-containers liga o cAdvisor
 # observabilidade simplesmente não existia fora da máquina única.
 METRICS_PUBLISH_IP=""            # --metrics-publish: interface onde os exporters escutam
 METRICS_SCRAPE=""                # --metrics-scrape: alvos remotos (job=host:porta,...)
+# --host-label: nome da máquina nas séries, quando o hostname do SO não serve.
+# Existe porque renomear o host nem sempre é possível: num nó Docker Swarm o
+# hostname está registrado no cluster, e trocá-lo num manager arrisca
+# desassociar o nó. Vazio = usa o hostname, que é o caso normal.
+HOST_LABEL=""
 METRICS_NETWORK="bdh_metrics"
 MONITORING_BIND_IP="127.0.0.1"   # NUNCA reusar BIND_IP: o default dele é 0.0.0.0
 # --- destino dos alertas ------------------------------------------------------
@@ -190,6 +195,9 @@ now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # cortar domínio) quebraria a igualdade em silêncio.
 host_label() {
     local n="${1-}"
+    # --host-label vence o hostname, e só para os alvos LOCAIS: o apelido de um
+    # alvo remoto vem do próprio --metrics-scrape e é passado como argumento.
+    [[ -z "$n" ]] && n="${HOST_LABEL:-}"
     [[ -z "$n" ]] && n="$(hostname 2>/dev/null || true)"
     # Valor de rótulo aceita qualquer UTF-8; o que não pode é quebrar o JSON.
     n="${n//[\"\\]/-}"; n="${n//[[:space:]]/-}"
@@ -387,6 +395,14 @@ OPTIONS (observabilidade — desligada por default):
                              opensearch=10.0.1.11:9200@bdh-search
       --metrics-bind-ip IP   Interface do Grafana e do Prometheus
                              (default: 127.0.0.1 — use um túnel SSH)
+      --host-label NOME      Nome desta máquina nas séries, quando o hostname do
+                             SO não serve. O default é o `hostname`, e é o que
+                             você quer na maioria dos casos. Use esta flag quando
+                             renomear o host não for possível — num nó Docker
+                             Swarm, por exemplo, o hostname está registrado no
+                             cluster e trocá-lo num manager arrisca desassociar
+                             o nó. Vale só para os alvos LOCAIS; o nome de um
+                             alvo remoto vem do @apelido de --metrics-scrape.
 
     DESTINO DOS ALERTAS — o Alertmanager NÃO SOBE sem pelo menos um destes, e a
     recusa é deliberada: alerta que não notifica ninguém é o problema que o
@@ -523,6 +539,7 @@ VM_MAX_MAP_COUNT="262144"; shift ;;
             _explicita METRICS_PUBLISH_IP; shift 2 ;;
         # Host do PROMETHEUS: de onde coletar o que está nas outras máquinas.
         --metrics-scrape) METRICS_SCRAPE="$2"; METRICS_ENABLED="true"; _explicita METRICS_SCRAPE; shift 2 ;;
+        --host-label) HOST_LABEL="$2"; _explicita HOST_LABEL; shift 2 ;;
         --metrics-bind-ip) MONITORING_BIND_IP="$2"; shift 2 ;;
         --alert-slack-webhook) ALERT_SLACK_WEBHOOK="$2"; _explicita ALERT_SLACK_WEBHOOK; shift 2 ;;
         --alert-slack-channel) ALERT_SLACK_CHANNEL="$2"; _explicita ALERT_SLACK_CHANNEL; shift 2 ;;
@@ -2113,6 +2130,7 @@ write_env_files() {
                 # remotos: o Prometheus do outro host perderia tudo, em silêncio.
                 [[ -n "$METRICS_PUBLISH_IP" ]] && printf 'METRICS_PUBLISH_IP=%s\n' "$METRICS_PUBLISH_IP"
                 [[ -n "$METRICS_SCRAPE" ]] && printf 'METRICS_SCRAPE=%s\n' "$METRICS_SCRAPE"
+                [[ -n "$HOST_LABEL" ]] && printf 'HOST_LABEL=%s\n' "$HOST_LABEL"
                 true
             fi
         } > "$WORKDIR/.setup-state"

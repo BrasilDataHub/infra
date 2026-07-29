@@ -53,6 +53,24 @@ do dashboard abrir no servidor certo.
 `blackbox.json` fica de fora de propósito: ali o alvo é uma URL, não uma máquina,
 e um `host` mentiria sobre o que está sendo medido.
 
+### Quando o hostname não serve
+
+Nem sempre dá para renomear a máquina. Num nó **Docker Swarm** o hostname está
+registrado no cluster, e trocá-lo num manager arrisca desassociar o nó — num
+manager único, isso derruba tudo que roda ali. Provedores também entregam
+máquinas com nomes como `v2202607386618488113`, que viram rótulo e painel.
+
+Para esses casos existe `--host-label`:
+
+```bash
+bash setup.sh --update --host-label bdh-apps
+```
+
+Ele vence o `hostname` **apenas para os alvos locais** — o nome de um alvo remoto
+continua vindo do `@apelido` do `--metrics-scrape`. E como o mesmo valor vai para
+`MON_HOSTNAME`, que o compose passa ao container do node_exporter, o `nodename`
+acompanha: os dois seguem iguais e os links do dashboard continuam certos.
+
 **Serviço que não existe não deve ter arquivo.** O `prometheus.yml` usa um glob
 por job, então a ausência do arquivo deixa o job *sem alvo* — em vez de deixá-lo
 `up == 0` para sempre, o que envenenaria o alerta `AlvoForaDoAr`, que é o mais
