@@ -559,8 +559,13 @@ check "label 'monitoring' aparece uma única vez" "1" \
 # via host="bdh-data" e nodename="88cdb3eab7a0": o link para o Node Exporter
 # Full, que casa por nodename, abria a máquina errada. `pid: host` não resolve —
 # o UTS namespace é outro. Encontrado em 29/07/2026, no primeiro deploy real.
+# O awk usa flag em vez de range `/ini/,/fim/`: a própria linha `node-exporter:`
+# casa o padrão de fim, e o range se fecharia nela mesma, com uma linha só.
+# shellcheck disable=SC2016  # aspas simples de PROPÓSITO: procura o texto
+# literal `${MON_HOSTNAME` no YAML, não o valor da variável no shell.
 check "node-exporter herda o hostname do host" "ok" \
-    "$(awk '/^  node-exporter:/,/^  [a-z]/' "$mon" | grep -q 'hostname: \${MON_HOSTNAME' && echo ok || echo 'nodename seria o ID do container')"
+    "$(awk '/^  node-exporter:/{f=1;next} /^  [a-z]/{f=0} f' "$mon" \
+        | grep -q 'hostname: ${MON_HOSTNAME' && echo ok || echo 'nodename seria o ID do container')"
 
 printf '\nRótulo de máquina nos alvos do Prometheus\n'
 # O `host` do alvo é o ÚNICO rótulo que diz de qual máquina a série veio: os
