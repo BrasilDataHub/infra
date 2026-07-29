@@ -272,6 +272,44 @@ for verbo in status logs up down restart verify pull metrics creds path; do
 done
 ok "todos os verbos do bdh estão no dispatch"
 
+# --- 6. A ORDEM: load_state precisa rodar ANTES de o array SERVICES existir --
+#
+# Este e o teste que faltava. Os de cima chamam load_state() diretamente e
+# passam mesmo com a ordem errada — foi exatamente o que aconteceu: load_state
+# vivia em preflight(), que roda DEPOIS de validate_and_prompt() ter derivado o
+# array SERVICES da string SERVICES_INPUT. Resultado: `--add-service opensearch`
+# acrescentava a string e ninguem mais olhava para ela. O servico simplesmente
+# nao era provisionado, sem erro nenhum.
+#
+# Aqui o que se exercita e o FLUXO: chama validate_and_prompt() de verdade e
+# confere o ARRAY, que e o que todo o resto do script consome.
+printf '\nordem de carregamento\n'
+(
+    carregar
+    mkdir -p "$WORKDIR"
+    cat > "$WORKDIR/.setup-state" <<'ST'
+SERVICES=postgres,redis,meilisearch
+PG_PROFILE=dedicada-8gb
+MEILI_PROFILE=busca-4gb
+ST
+    ADD_SERVICE="opensearch"
+    UPDATE_MODE="true"
+    AUTO="true"
+    validate_and_prompt >/dev/null 2>&1
+    printf '%s|%s' "${SERVICES[*]}" "$MEILI_PROFILE"
+) > "$TMP/r6" 2>/dev/null
+saida="$(cat "$TMP/r6")"
+if [[ "${saida%%|*}" == *"opensearch"* ]]; then
+    ok "--add-service chega ao ARRAY SERVICES, e nao so a string"
+else
+    nok "o array ficou '${saida%%|*}' — o servico nao seria provisionado"
+fi
+if [[ "${saida##*|}" == "busca-4gb" ]]; then
+    ok "perfil herdado sobrevive ao dimensionamento"
+else
+    nok "perfil virou '${saida##*|}' em vez do herdado busca-4gb"
+fi
+
 printf '\nsysctl\n'
 if grep -q 'vm.max_map_count' "$RAIZ/infra-setup.sh" && grep -q '/etc/sysctl.d/' "$RAIZ/infra-setup.sh"; then
     ok "há etapa de sysctl, com persistência em /etc/sysctl.d/"

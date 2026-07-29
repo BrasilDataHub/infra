@@ -657,6 +657,23 @@ validate_and_prompt() {
     section "Configuração"
 
     [[ "$DRY_RUN" == "true" ]] && warn "modo --dry-run: nada será alterado"
+
+    # O estado herdado precisa estar carregado ANTES de qualquer coisa ler
+    # SERVICES_INPUT — e a primeira leitura é logo abaixo, onde ele vira o
+    # array SERVICES. Ficava em `preflight()`, que roda DEPOIS: o `--add-service`
+    # acrescentava o serviço à string e ninguém mais olhava para a string, então
+    # o serviço novo simplesmente não era provisionado. Os perfis herdados
+    # (MEILI_PROFILE e afins) chegavam igualmente tarde para o dimensionamento.
+    load_state
+
+    # `--update` e `--add-service` são não-interativos por definição: existem
+    # justamente para NÃO perguntar de novo o que já está no .setup-state.
+    # Sem isto, cada `ask` tentava ler /dev/tty e falhava numa sessão SSH sem
+    # TTY, imprimindo erro por pergunta.
+    if [[ "$UPDATE_MODE" == "true" && "$AUTO" != "true" ]]; then
+        AUTO="true"
+    fi
+
     if [[ "$AUTO" != "true" && ! -r /dev/tty ]]; then
         warn "sem terminal interativo (execução por pipe) — assumindo --auto"
         AUTO="true"
@@ -925,9 +942,10 @@ preflight() {
         die "sem permissão para criar $WORKDIR — rode com sudo ou escolha outro --workdir"
     fi
 
-    # ANTES de qualquer validação: as pré-checagens e o dimensionamento
-    # coordenado precisam enxergar os valores herdados, não os defaults.
-    load_state
+    # `load_state` já rodou no início de validate_and_prompt(). Chamá-lo aqui
+    # de novo seria inócuo (é idempotente) mas enganoso: sugeriria que este é o
+    # ponto em que a herança acontece, e não é — quando o fluxo chega aqui, o
+    # array SERVICES já foi construído.
 
     if [[ -f "$WORKDIR/.setup-state" && "$FORCE" != "true" ]]; then
         die "instalação existente em $WORKDIR — use --update para reaplicar a configuração herdando o estado, ou -f para refazer do zero (volumes preservados)"
