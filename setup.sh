@@ -475,7 +475,12 @@ available_mem_gb() {
 
 # 'dedicada-16gb' -> 16. É o orçamento de RAM que o perfil pressupõe.
 profile_budget_gb() {
-    local n="${1#dedicada-}"
+    # Tira QUALQUER prefixo até o hífen, e não só `dedicada-`. Com o strip
+    # antigo, `compartilhada-14gb` virava a string `compartilhada-14`, que
+    # dentro de `(( ))` avalia a variável indefinida `compartilhada` (=0) menos
+    # 14: **−14**. Efeito: a checagem de perfil grande demais nunca disparava
+    # para esse perfil, e o resumo imprimia uma soma negativa.
+    local n="${1#*-}"
     printf '%s' "${n%gb}"
 }
 
@@ -551,6 +556,20 @@ REDIS_PROFILES="cache-256mb cache-512mb cache-768mb cache-1gb cache-2gb fila-256
 MEILI_PROFILES="busca-512mb busca-1gb busca-4gb busca-16gb"
 OPENSEARCH_PROFILES="compartilhada-8gb"
 METRICS_PROFILES="metricas-512mb metricas-2gb metricas-8gb"
+
+# O MAIOR perfil cujo limite de container cabe na memória informada. Existe
+# para que o conselho da mensagem de erro seja acionável: `detect_pg_profile`
+# escolhe por faixa com tolerância de ~12% para baixo, então usá-lo ali podia
+# devolver exatamente o perfil que acabou de ser recusado.
+maior_perfil_que_cabe() {
+    local mem="$1" p melhor="dedicada-8gb"
+    for p in $PG_PROFILES; do
+        case "$p" in compartilhada-*) continue ;; esac   # não é perfil de máquina dedicada
+        (( $(profile_budget_gb "$p") * 87 / 100 <= mem )) && \
+            (( $(profile_budget_gb "$p") > $(profile_budget_gb "$melhor") )) && melhor="$p"
+    done
+    printf '%s' "$melhor"
+}
 
 profile_valid() {
     local wanted="$1" list="$2" p
@@ -639,6 +658,14 @@ protect_metrics_key() {
 # fork/teste sem rede).
 fetch_profile() {
     local svc="$1" prof; prof="$(service_profile "$svc")"
+
+    # Serviço SEM perfil não é erro — é o caso do PgBouncer, dimensionado por
+    # `default_pool_size` e `max_client_conn`, que são decisão da aplicação e
+    # não do host. Sem esta guarda, `write_env_files` pedia
+    # `pgbouncer/profiles/.env`, levava 404 e matava o provisionamento inteiro —
+    # incluindo o `--add-service pgbouncer` que o README manda rodar.
+    [[ -z "$prof" ]] && return 0
+
     if [[ -n "$PROFILES_DIR" ]]; then
         local src="$PROFILES_DIR/$svc/profiles/$prof.env"
         [[ -f "$src" ]] || die "perfil não encontrado: $src"
@@ -785,17 +812,58 @@ validate_and_prompt() {
         # Um perfil maior do que a memória disponível não sobe: o Postgres falha
         # com "could not map anonymous shared memory" e fica em restart loop.
         # Melhor falhar aqui, com a razão explícita.
-        local budget
+        #
+        # O QUE PRECISA CABER É O LIMITE DO CONTAINER, e não o número do nome do
+        # perfil. `dedicada-32gb` limita o container a 28G — os 87% que
+        # docs/perfis.md prescreve —, e portanto cabe numa máquina de 30 GiB.
+        # Comparar o nome (32) com a RAM (30) recusava um perfil que subiria bem.
+        #
+        # Não era teórico: numa máquina DEDICADA reportando 28, 29, 30 ou 56 GiB
+        # — tamanhos nominais comuns de 32 e 64 GB — o próprio `--auto` escolhia
+        # um perfil e em seguida se matava por causa dele, sugerindo como
+        # correção o MESMO perfil que acabara de recusar.
+        local budget limite_gb
         budget="$(profile_budget_gb "$PG_PROFILE")"
-        if (( budget > mem_gb + 1 )) && [[ "$ALLOW_OVERSIZED" != "true" ]]; then
-            die "perfil $PG_PROFILE pressupõe ${budget} GB, mas o Docker tem ${mem_gb} GB.
+        limite_gb=$(( budget * 87 / 100 ))
+        if (( limite_gb > mem_gb )) && [[ "$ALLOW_OVERSIZED" != "true" ]]; then
+            die "perfil $PG_PROFILE limita o container a ~${limite_gb} GB, mas o Docker tem ${mem_gb} GB.
        O Postgres não subiria (shared_buffers maior que a memória disponível).
-       Use --pg-profile $(detect_pg_profile "$mem_gb"), aumente a máquina (ou a
+       Use --pg-profile $(maior_perfil_que_cabe "$mem_gb"), aumente a máquina (ou a
        memória da VM do Docker, no macOS), ou passe --allow-oversized-profile
        se souber que a memória vai crescer antes do primeiro uso."
         fi
-        if (( budget > mem_gb + 1 )); then
+        if (( limite_gb > mem_gb )); then
             warn "perfil $PG_PROFILE acima da memória disponível (${mem_gb} GB) — seguindo por --allow-oversized-profile"
+        fi
+
+        # O CASO INVERSO, que passava em silêncio: a máquina comporta bem mais
+        # do que o perfil pressupõe. O catálogo é discreto (8/16/32/64/128) e a
+        # escolha é por faixa com piso, então um host de 48 GB recebe o perfil de
+        # 32 e ~19 GiB ficam fora do limite do container.
+        #
+        # Isso NÃO é desperdício — a memória vira page cache, que é o ativo pelo
+        # qual se paga uma máquina grande para banco. Mas `effective_cache_size`
+        # fica subdimensionado, e o planner passa a preferir seq scan onde um
+        # index scan serviria. Quem quiser o encaixe exato tem a fórmula de
+        # retrofit em docs/perfis.md; o que faltava era alguém avisar que ela se
+        # aplica.
+        #
+        # Compara contra `livre` (RAM − vizinhos) e não contra a RAM bruta: num
+        # host compartilhado a sobra é intencional, e avisar ali seria ruído.
+        # Limiar de 25% acima do orçamento — não dispara em 31/32 nem 15/16, que
+        # são máquinas nominais reportando um pouco menos.
+        local livre_final=$(( mem_gb - neighbors_gb ))
+        if (( livre_final >= budget + budget / 4 )); then
+            local cabe; cabe="$(maior_perfil_que_cabe "$livre_final")"
+            warn "a máquina comporta mais do que $PG_PROFILE pressupõe:"
+            warn "  ${livre_final} GB livres contra um orçamento de ${budget} GB (limite do container: ${limite_gb} GB)."
+            if [[ "$cabe" != "$PG_PROFILE" ]]; then
+                warn "  o perfil $cabe caberia — considere --pg-profile $cabe."
+            else
+                warn "  nenhum perfil do catálogo encaixa melhor; o ajuste é por retrofit."
+            fi
+            warn "  a sobra vira page cache e não é perdida, mas effective_cache_size"
+            warn "  fica subdimensionado. Fórmula: postgres/docs/perfis.md, seção Retrofit."
         fi
 
         # A soma total ainda pode não caber: dedicada-8gb é o piso do catálogo,

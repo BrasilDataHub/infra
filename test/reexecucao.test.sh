@@ -343,6 +343,94 @@ else
     nok "o OpenSearch nao entra em neighbors_gb — o auto do Postgres superdimensiona"
 fi
 
+# --- 8. dimensionamento em maquina DEDICADA -------------------------------
+printf '\ndimensionamento\n'
+
+# 8a. profile_budget_gb com o perfil "compartilhada"
+(
+    carregar
+    printf '%s' "$(profile_budget_gb compartilhada-14gb)"
+) > "$TMP/d1"
+if [[ "$(cat "$TMP/d1")" == "14" ]]; then
+    ok "profile_budget_gb entende o perfil compartilhada"
+else
+    nok "devolveu '$(cat "$TMP/d1")' — dentro de (( )) isso vira -14 e a checagem e pulada"
+fi
+
+# 8b. o auto NAO pode escolher um perfil que a checagem seguinte recusa.
+# 28, 29, 30 e 56 GiB sao tamanhos NOMINAIS comuns (32 e 64 GB reportando
+# menos), e neles o script se matava sugerindo o perfil que acabara de recusar.
+(
+    carregar
+    falhas=""
+    for m in 27 28 29 30 31 46 47 55 56 62 94; do
+        p="$(detect_pg_profile $m)"
+        b="$(profile_budget_gb "$p")"
+        (( b * 87 / 100 > m )) && falhas="${falhas} ${m}GB:${p}"
+    done
+    printf '%s' "$falhas"
+) > "$TMP/d2"
+if [[ -z "$(cat "$TMP/d2")" ]]; then
+    ok "o perfil escolhido pelo auto sempre CABE (limite = 87% do orcamento)"
+else
+    nok "o auto escolhe perfil que a checagem recusa:$(cat "$TMP/d2")"
+fi
+# O acima confere a REGRA; este confere que o SCRIPT a aplica. Sem isto o teste
+# passaria mesmo com a checagem antiga, que comparava o nome do perfil com a RAM.
+if grep -qF 'limite_gb=$(( budget * 87 / 100 ))' "$RAIZ/setup.sh"; then
+    ok "a checagem compara o LIMITE do container, nao o nome do perfil"
+else
+    nok "a checagem ainda usa o numero do nome — recusa perfil que subiria bem"
+fi
+
+# 8c. o conselho da mensagem de erro precisa ser acionavel
+(
+    carregar
+    printf '%s|%s' "$(maior_perfil_que_cabe 30)" "$(maior_perfil_que_cabe 55)"
+) > "$TMP/d3"
+if [[ "$(cat "$TMP/d3")" == "dedicada-32gb|dedicada-64gb" ]]; then
+    ok "maior_perfil_que_cabe devolve o maior que REALMENTE cabe"
+else
+    nok "devolveu '$(cat "$TMP/d3")'"
+fi
+
+# 8d. o aviso de capacidade ociosa: dispara onde deve e cala onde deve
+(
+    carregar
+    erros=""
+    # (livre, deve_avisar)
+    for caso in "15:nao" "23:sim" "31:nao" "47:sim" "55:sim" "62:nao" "94:sim"; do
+        m="${caso%%:*}"; esperado="${caso##*:}"
+        b="$(profile_budget_gb "$(detect_pg_profile $m)")"
+        if (( m >= b + b / 4 )); then real="sim"; else real="nao"; fi
+        [[ "$real" == "$esperado" ]] || erros="${erros} ${m}GB(esperado=$esperado,real=$real)"
+    done
+    printf '%s' "$erros"
+) > "$TMP/d4"
+if [[ -z "$(cat "$TMP/d4")" ]]; then
+    ok "o aviso de capacidade ociosa dispara nas faixas certas"
+else
+    nok "divergencia:$(cat "$TMP/d4")"
+fi
+if grep -qF 'livre_final >= budget + budget / 4' "$RAIZ/setup.sh" \
+   && grep -q 'comporta mais do que' "$RAIZ/setup.sh"; then
+    ok "o aviso de capacidade ociosa existe no script"
+else
+    nok "o script nao avisa quando a maquina comporta mais que o perfil"
+fi
+
+# 8e. servico SEM perfil nao pode matar o provisionamento
+(
+    carregar
+    PROFILES_DIR="$TMP"          # forca o caminho local, sem rede
+    fetch_profile pgbouncer >/dev/null 2>&1 && printf 'ok' || printf 'MORREU'
+) > "$TMP/d5"
+if [[ "$(cat "$TMP/d5")" == "ok" ]]; then
+    ok "servico sem perfil (pgbouncer) nao aborta o setup"
+else
+    nok "fetch_profile morre com pgbouncer — e o README manda rodar --add-service pgbouncer"
+fi
+
 printf '\nsysctl\n'
 if grep -q 'vm.max_map_count' "$RAIZ/setup.sh" && grep -q '/etc/sysctl.d/' "$RAIZ/setup.sh"; then
     ok "há etapa de sysctl, com persistência em /etc/sysctl.d/"
