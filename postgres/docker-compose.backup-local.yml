@@ -1,0 +1,76 @@
+# Overlay de REPOSITÓRIO LOCAL para o backup — usa um diretório do host (tipicamente
+# um volume de bloco anexado) em vez de object storage.
+#
+#   docker compose -f docker-compose.yml \
+#                  -f docker-compose.backup.yml \
+#                  -f docker-compose.backup-local.yml up -d
+#
+# Sempre DEPOIS de docker-compose.backup.yml: este arquivo só acrescenta o mount
+# do repositório aos dois serviços que o backup.yml já definiu. Sozinho ele não
+# liga backup nenhum.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# POR QUE ESTE ARQUIVO EXISTE
+#
+# O desenho original assume `repo1-type=s3`, e nesse caso nenhum container
+# precisa enxergar o repositório: os dois falam com o bucket pela rede. Com
+# `repo1-type=posix` o repositório é um caminho de filesystem, e ele tem de
+# estar montado nos DOIS containers — não só no sidecar.
+#
+# Quem executa `archive-push` é o servidor Postgres, como subprocesso do
+# postmaster (ver backup/README.md, "O binário vive nos dois lados"). Montar o
+# repositório apenas no sidecar produz a falha mais cara possível: o `backup`
+# funciona, o `info` reporta sucesso, e TODO segmento de WAL falha ao ser
+# arquivado. O `pg_wal` cresce sem teto até derrubar o banco pelo disco — no
+# mesmo NVMe do PGDATA.
+#
+# Por isso o mount aqui é rw nos dois, e por isso ele não é opcional.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# QUANDO PREFERIR CADA UM
+#
+#   posix (este arquivo)  repositório no mesmo datacenter do banco. Restauração
+#                         rápida, custo zero, e NENHUMA proteção contra perda do
+#                         projeto inteiro ou exclusão acidental do volume.
+#   s3                    sobrevive à perda do host e do projeto. Mais lento
+#                         para restaurar, custa por GB/mês.
+#
+# Os dois podem coexistir: o pgBackRest aceita repo1 e repo2 no mesmo
+# pgbackrest.conf. Repositório local como repo1 (restauração rápida) e object
+# storage como repo2 (sobrevivência) é a configuração recomendada quando o dado
+# não é reconstruível. Em `dados_cnpj` o dado É reconstruível a partir dos
+# arquivos públicos da RFB — ao custo, medido, de ~10,7 h.
+#
+# .env ao lado (além do que backup.yml já pede):
+#   BDH_BACKUP_REPO_DIR=/mnt/bdh-backup/pgbackrest
+#
+# O diretório precisa existir e pertencer ao uid/gid do postgres da imagem:
+#   install -d -o 999 -g 999 -m 0750 /mnt/bdh-backup/pgbackrest
+#
+# E o pgbackrest.conf do host precisa apontar para o caminho de DENTRO do
+# container — /var/lib/pgbackrest, não o caminho do host:
+#   repo1-type=posix
+#   repo1-path=/var/lib/pgbackrest
+# Modelo pronto em backup/pgbackrest.conf.local.example.
+
+services:
+  postgres:
+    volumes:
+      # rw: é aqui que o archive_command escreve cada segmento de WAL.
+      - type: bind
+        source: "${BDH_BACKUP_REPO_DIR:?defina BDH_BACKUP_REPO_DIR, ex. /mnt/bdh-backup/pgbackrest}"
+        target: /var/lib/pgbackrest
+        bind:
+          # create_host_path: false é deliberado. Se o volume de bloco não
+          # estiver montado, o Docker criaria um diretório vazio no disco raiz e
+          # o backup rodaria — para o disco errado, silenciosamente, até encher
+          # o mesmo NVMe do PGDATA. Falhar a subida é o comportamento correto.
+          create_host_path: false
+
+  pgbackrest:
+    volumes:
+      - type: bind
+        source: "${BDH_BACKUP_REPO_DIR:?defina BDH_BACKUP_REPO_DIR, ex. /mnt/bdh-backup/pgbackrest}"
+        target: /var/lib/pgbackrest
+        bind:
+          create_host_path: false

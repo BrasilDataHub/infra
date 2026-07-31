@@ -31,7 +31,14 @@ services:
       # sozinho fica esperando eleição para sempre e nunca fica GREEN.
       discovery.type: single-node
       cluster.name: ${OS_CLUSTER_NAME:-bdh}
-      node.name: ${OS_NODE_NAME:-bdh-data}
+      # Default NEUTRO de propósito. Já foi `bdh-data`, e como o nome do nó não
+      # tem efeito nenhum em runtime, o erro sobreviveu à implantação: o cluster
+      # rodava em `bdh-search` e se apresentava como `bdh-data` no `_cat/nodes`,
+      # nas métricas e nos alertas — apontando o plantão para o servidor do
+      # PostgreSQL durante um incidente de busca.
+      #
+      # Defina OS_NODE_NAME com o hostname real em cada deploy.
+      node.name: ${OS_NODE_NAME:-opensearch}
       OPENSEARCH_JAVA_OPTS: ${OS_JAVA_OPTS:--Xms4g -Xmx4g -XX:MaxDirectMemorySize=1g}
       DISABLE_SECURITY_PLUGIN: "true"
       DISABLE_INSTALL_DEMO_CONFIG: "true"

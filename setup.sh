@@ -2775,7 +2775,7 @@ compose() {
     local dir; dir="$(svc_dir "$svc")"
     [[ -d "$dir" ]] || { echo "serviço '$svc' não provisionado em $dir" >&2; exit 1; }
     local args=(--project-directory "$dir" -f "$dir/docker-compose.yml")
-    # Mesma ordem do setup.sh: base → metrics → remote → override.
+    # Mesma ordem do setup.sh: base → metrics → remote → backup → override.
     [[ -f "$dir/docker-compose.metrics.yml" ]] && args+=(-f "$dir/docker-compose.metrics.yml")
     if [[ -f "$dir/docker-compose.metrics-remote.yml" ]]; then
         # O overlay exige METRICS_BIND_IP sem default (um 0.0.0.0 ali entregaria
@@ -2786,6 +2786,20 @@ compose() {
         fi
         args+=(-f "$dir/docker-compose.metrics-remote.yml")
     fi
+    # BACKUP — a ausência destes overlays aqui é DESTRUTIVA, não cosmética.
+    #
+    # `archive_mode` e `archive_command` vêm de docker-compose.backup.yml. Um
+    # `bdh restart postgres` que não os incluísse subiria o banco com
+    # `archive_mode=off` (o default do compose base) e o arquivamento de WAL
+    # pararia — em silêncio, com o sidecar ainda no ar e o `pgbackrest info`
+    # ainda reportando o último full como válido. A operação seguiria acreditando
+    # ter PITR até a primeira tentativa de restaurar.
+    #
+    # Por isso os overlays são incluídos sempre que os arquivos existem: quem
+    # implantou o backup não precisa lembrar de nada, e quem não implantou não
+    # tem os arquivos e não paga nada por esta condição.
+    [[ -f "$dir/docker-compose.backup.yml" ]] && args+=(-f "$dir/docker-compose.backup.yml")
+    [[ -f "$dir/docker-compose.backup-local.yml" ]] && args+=(-f "$dir/docker-compose.backup-local.yml")
     [[ -f "$dir/docker-compose.override.yml" ]] && args+=(-f "$dir/docker-compose.override.yml")
     docker compose -p "$svc" "${args[@]}" "$@"
 }

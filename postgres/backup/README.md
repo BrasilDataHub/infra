@@ -12,10 +12,59 @@
 - **Ferramenta:** [pgBackRest](https://pgbackrest.org/) — backup físico
   incremental + WAL archiving → **PITR** (restauração a qualquer ponto no
   tempo, não só ao momento do último dump).
-- **Destino:** object storage S3-compatível, um bucket por projeto
-  (ex.: `baseempresarial-pgbackrest` na Hetzner, ~€5/mês).
+- **Destino:** object storage S3-compatível (`repo1-type=s3`), um bucket por
+  projeto (ex.: `baseempresarial-pgbackrest` na Hetzner, ~€5/mês), **ou** um
+  diretório local em volume de bloco (`repo1-type=posix`) — ver
+  [Repositório local](#repositório-local-posix).
 - **Execução:** container sidecar no mesmo host do Postgres, montando o **volume
   de dados** (`bdh_pg_data`) e o socket.
+
+### Repositório local (posix)
+
+Alternativa ao object storage, para quando o dado é **reconstruível** e o que se
+quer do backup é RTO, não sobrevivência a desastre.
+
+| | s3 | posix |
+|---|---|---|
+| sobrevive à perda do host/projeto | **sim** | não |
+| velocidade de restore | rede | disco local |
+| custo | por GB/mês | zero (volume já pago) |
+| credencial no `pgbackrest.conf` | sim | nenhuma |
+
+Os dois coexistem: `repo1` local para restaurar rápido, `repo2` em S3 para
+sobreviver. Recomendado sempre que o dado **não** for reproduzível.
+
+**O que muda na instalação:**
+
+1. `pgbackrest.conf.local.example` no lugar de `pgbackrest.conf.example`;
+2. o overlay [`../docker-compose.backup-local.yml`](../docker-compose.backup-local.yml),
+   **depois** de `docker-compose.backup.yml`;
+3. `BDH_BACKUP_REPO_DIR` no `.env`, apontando para o diretório no volume.
+
+```bash
+install -d -o 999 -g 999 -m 0750 /mnt/<volume>/pgbackrest
+echo 'BDH_BACKUP_REPO_DIR=/mnt/<volume>/pgbackrest' >> .env
+```
+
+**Por que o overlay monta o repositório nos DOIS containers.** Quem executa
+`archive-push` é o servidor Postgres, não o sidecar (ver
+[O binário vive nos DOIS lados](#o-binário-vive-nos-dois-lados)). Com `s3` isso
+não aparece — os dois falam com o bucket pela rede. Com `posix`, montar só no
+sidecar produz a falha mais cara possível: o `backup` funciona, o `info` reporta
+sucesso, e **todo** segmento de WAL falha ao ser arquivado, até o `pg_wal` encher
+o mesmo NVMe do PGDATA.
+
+**Duas armadilhas verificadas em 31/07/2026, ambas custam um loop de restart:**
+
+- **Comentário é `#`, nunca `;`.** Um `;` no início da linha não é comentário
+  para o pgBackRest: o parser o lê como par chave/valor fora de seção e aborta
+  com `key/value found outside of section at line 1`. Os modelos deste diretório
+  já usam `#`.
+- **Não use o prefixo `PGBACKREST_` para variáveis que não sejam opções dele.**
+  O pgBackRest lê o ambiente e mapeia `PGBACKREST_FOO` para a opção `foo`; uma
+  variável só de compose chamada `PGBACKREST_REPO_DIR` vira a opção inexistente
+  `repo-dir` e ele avisa `environment contains invalid option`. É por isso que a
+  variável do overlay se chama `BDH_BACKUP_REPO_DIR`.
 
 ### O binário vive nos DOIS lados
 
@@ -51,7 +100,10 @@ O compose está em [`../docker-compose.backup.yml`](../docker-compose.backup.yml
 
 ```bash
 install -d -m 0750 /etc/pgbackrest
+# object storage:
 cp pgbackrest.conf.example /etc/pgbackrest/pgbackrest.conf
+# ou repositório local:
+# cp pgbackrest.conf.local.example /etc/pgbackrest/pgbackrest.conf
 $EDITOR /etc/pgbackrest/pgbackrest.conf     # preencher as chaves do bucket
 chown -R 999:999 /etc/pgbackrest            # uid/gid do postgres na imagem
 chmod 0640 /etc/pgbackrest/pgbackrest.conf
@@ -61,6 +113,16 @@ install -d -o 999 -g 999 -m 0755 /var/lib/node_exporter/textfile
 
 As credenciais ficam **só** nesse arquivo: nenhum `.env`, nenhum `docker
 inspect`, nenhum commit.
+
+> **`checksum-page` e clusters sem checksums.** Se o `initdb` correu sem
+> `--data-checksums`, o pgBackRest avisa no primeiro backup —
+> `checksum-page option set to true but checksums are not enabled on the
+> cluster, resetting to false` — e segue sem detecção de corrupção de página.
+> O backup é válido; o que se perde é o alarme precoce de corrupção silenciosa
+> de disco. Ligar depois exige `pg_checksums` com o **cluster parado**, e em
+> 137 GB isso é uma janela real de indisponibilidade: planeje junto da carga
+> mensal. Verifique com
+> `SELECT current_setting('data_checksums')`.
 
 ### 2. O alerta ANTES do `archive_mode`
 

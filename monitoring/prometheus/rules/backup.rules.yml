@@ -23,28 +23,56 @@ groups:
   - name: arquivamento-wal
     rules:
       - alert: ArquivamentoDeWalParado
-        # 300s é o limiar da trava. O nome real da métrica do postgres_exporter
-        # v0.20.1 é `last_archive_age` (e não `last_archived_age`, como
-        # aparece no roadmap): o coletor stat_archiver publica
+        # O nome real da métrica do postgres_exporter v0.20.1 é
+        # `last_archive_age` (e não `last_archived_age`, como aparece no
+        # roadmap): o coletor stat_archiver publica
         # `extract(epoch from now() - last_archived_time)`.
         #
-        # Para este alerta não ser um falso positivo permanente num banco de
-        # baixa escrita, o overlay de backup fixa archive_timeout=60s — sem ele,
-        # um banco ocioso passaria horas sem fechar um segmento e a série
-        # cresceria para sempre. Os dois números são um par.
-        expr: pg_stat_archiver_last_archive_age > 300
-        for: 5m
+        # ─────────────────────────────────────────────────────────────────────
+        # LIMIAR: 23400s (6h30), e não 300s. Corrigido em 31/07/2026.
+        #
+        # A versão anterior usava 300s apoiada na premissa de que
+        # `archive_timeout=60s` garante um segmento por minuto. A premissa está
+        # errada: `archive_timeout` só força o fechamento de um segmento quando
+        # houve ALGUMA escrita de WAL desde o último. Num banco sem escrita o
+        # PostgreSQL não gera segmento vazio — deliberadamente, para não
+        # produzir WAL infinito num banco ocioso.
+        #
+        # `dados_cnpj` é exatamente esse caso: carga uma vez por mês, e leitura
+        # pura entre elas. Verificado em 31/07/2026 — com o arquivamento
+        # comprovadamente saudável (`failed_count=0`, último segmento arquivado
+        # com sucesso), este alerta subiu a critical em 6 minutos só porque
+        # ninguém escreveu no banco.
+        #
+        # 6h30 é o `check` do pgBackRest (a cada 6h, `BDH_BACKUP_CHECK_SCHEDULE`)
+        # mais 30 min de margem. O `check` força uma troca de segmento, então
+        # num banco saudável a idade NUNCA passa de 6h — mesmo sem escrita
+        # nenhuma. Os dois números são um par: mudar o schedule do `check` exige
+        # mudar este limiar junto.
+        #
+        # O que NÃO se perde com o limiar maior: quem detecta arquivamento
+        # travado de verdade é `ArquivamentoDeWalFalhando`, logo abaixo, que
+        # olha `failed_count` e dispara em 15 min. Este alerta cobre o caso
+        # diferente — o `archive_command` que nunca é chamado —, e para esse a
+        # janela de 6h é adequada.
+        # ─────────────────────────────────────────────────────────────────────
+        expr: pg_stat_archiver_last_archive_age > 23400
+        for: 10m
         labels:
           severity: critical
           runbook: postgres/backup/README.md
         annotations:
-          summary: "Nenhum WAL arquivado há mais de 5 minutos"
+          summary: "Nenhum WAL arquivado há mais de 6h30"
           description: >-
-            O pg_wal está retendo segmentos. Verifique
+            Nem a escrita normal nem o `check` de 6h do pgBackRest fecharam um
+            segmento. O pg_wal pode estar retendo segmentos. Verifique
             `docker logs postgres-postgres-1 | grep archive` e
             `pgbackrest --stanza=<stanza> check`. Se o repositório estiver
             inacessível, o disco do banco enche — meça o espaço livre AGORA com
-            `df -h` no volume do PGDATA antes de investigar a causa.
+            `df -h` no volume do PGDATA antes de investigar a causa. Num banco
+            de escrita rara, confirme antes se o sidecar do pgBackRest está no
+            ar: sem o `check` periódico, um banco ocioso não fecha segmento e
+            este alerta dispara sem haver falha.
 
       - alert: ArquivamentoDeWalFalhando
         # Falha ISOLADA de archive-push é recuperável (o Postgres reexecuta o

@@ -82,7 +82,7 @@ que **não** está nele:
 | Variável | Default | Descrição |
 |---|---|---|
 | `OS_CLUSTER_NAME` | `bdh` | nome do cluster |
-| `OS_NODE_NAME` | `bdh-data` | nome do nó. Aparece nos alertas e no `_cat/nodes` |
+| `OS_NODE_NAME` | `opensearch` | nome do nó. Aparece nos alertas e no `_cat/nodes` — **defina com o hostname real**: o default é neutro justamente porque um nome errado aqui não quebra nada em runtime e só aparece durante um incidente, apontando o plantão para o servidor errado |
 | `OS_VOLUME` | `bdh_os_data` | volume dos índices |
 | `OS_SNAPSHOT_VOLUME` | `bdh_os_snapshots` | volume do repositório de snapshot. Separado do de dados: um snapshot no mesmo volume não protege de nada |
 | `OPENSEARCH_PORT` | `9200` | porta publicada no host |

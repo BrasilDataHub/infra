@@ -1,0 +1,82 @@
+# Modelo de /etc/pgbackrest/pgbackrest.conf para REPOSITÓRIO LOCAL (posix).
+#
+# Use este modelo com o overlay ../docker-compose.backup-local.yml. Para
+# repositório em object storage, use pgbackrest.conf.example.
+#
+#   install -d -m 0750 /etc/pgbackrest
+#   cp pgbackrest.conf.local.example /etc/pgbackrest/pgbackrest.conf
+#   chown -R 999:999 /etc/pgbackrest       # uid/gid do postgres na imagem
+#   chmod 0640 /etc/pgbackrest/pgbackrest.conf
+#
+#   # e o diretório do repositório, no volume de bloco:
+#   install -d -o 999 -g 999 -m 0750 /mnt/bdh-backup/pgbackrest
+#
+# Diferente do modelo S3, aqui NÃO há credencial nenhuma — o arquivo continua
+# com 0640 por consistência, e porque `pg1-user` e os caminhos são informação
+# de infraestrutura.
+
+# ATENÇÃO À SINTAXE: comentário no pgBackRest é '#'. Um ';' no início da linha
+# NÃO é comentário — o parser o lê como par chave/valor fora de seção e aborta
+# com "key/value found outside of section at line 1", travando o sidecar num
+# loop de restart. Verificado em 31/07/2026, pgBackRest 2.x.
+
+[global]
+# posix = diretório de filesystem. O caminho é o de DENTRO do container, que o
+# overlay backup-local.yml monta a partir de BDH_BACKUP_REPO_DIR. Escrever aqui
+# o caminho do host (/mnt/bdh-backup/...) faz o pgBackRest procurar um diretório
+# que não existe no container e falhar no stanza-create.
+repo1-type=posix
+repo1-path=/var/lib/pgbackrest
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RETENÇÃO — 1 full, decisão deliberada para `dados_cnpj`
+#
+# O `expire` do pgBackRest roda DEPOIS de um backup bem-sucedido, nunca antes.
+# Com retention-full=1 os dois fulls coexistem enquanto o novo é gerado, e o
+# antigo só sai quando o novo termina — uma falha no meio deixa o full anterior
+# intacto. Retenção 1 não cria janela sem backup.
+#
+# 1 e não 2 porque o perfil de mudança deste banco é mensal: a carga da RFB roda
+# uma vez por mês e, entre elas, só há atualização de métricas e insights.
+# Guardar dois fulls custaria ~40 GB para proteger contra um cenário — corrupção
+# lógica descoberta mais de um ciclo depois — que os diffs + WAL já cobrem dentro
+# do ciclo corrente.
+#
+# SUBA PARA 2 se o banco passar a receber escrita contínua de origem não
+# reproduzível. Aqui `dados_cnpj` é 100% derivável dos arquivos públicos da RFB,
+# ao custo medido de ~10,7 h — o que torna o backup uma ferramenta de RTO, não
+# de sobrevivência do dado.
+#
+# Dimensionamento: 137 GB de banco comprimidos com zst ficam em torno de 35-45 GB
+# por full. Com retenção 1 e o pico de dois fulls durante a geração, reserve ao
+# menos 2,5× o tamanho de um full mais os diffs da semana.
+# ─────────────────────────────────────────────────────────────────────────────
+repo1-retention-full=1
+repo1-retention-diff=7
+
+# zst é o melhor custo-benefício de CPU por byte para este volume de dados; o
+# nível 3 é o default e não vale subir num host que divide CPU com o banco.
+compress-type=zst
+compress-level=3
+
+# Ajuste ao host: deixe CPU para o banco. Num ccx33 (8 vCPU), 4 aqui deixa 4
+# para o Postgres — ver a nota de coexistência em ../docs/perfis.md.
+process-max=4
+
+# Dispara um checkpoint imediato em vez de esperar o spread checkpoint. Encurta o
+# backup ao custo de um pico de IO no início — preferível a manter o
+# pg_backup_start aberto por até checkpoint_timeout.
+start-fast=y
+
+# Verificação de página durante o backup. Detecta corrupção silenciosa de disco
+# no momento em que ela ainda cabe num backup anterior.
+checksum-page=y
+
+log-level-console=info
+log-level-file=info
+
+[dados-cnpj]
+pg1-path=/var/lib/postgresql/data
+pg1-port=5432
+pg1-socket-path=/var/run/postgresql
+pg1-user=postgres
