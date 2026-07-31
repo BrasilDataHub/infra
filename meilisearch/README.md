@@ -1,5 +1,10 @@
 # meilisearch
 
+> Módulo disponível, **não usado no BaseEmpresarial**: lá o motor de busca é o
+> OpenSearch ([`opensearch/`](../opensearch/README.md)). Este módulo continua
+> provisionável pelo `setup.sh` (`--services ...,meilisearch`) para os demais
+> projetos da org.
+
 Imagem `ghcr.io/brasildatahub/meilisearch` — wrapper **pinado** de
 `getmeili/meilisearch:v1.34` (mesma minor da produção) para manter todos os
 serviços de infra sob o namespace da org. Toda a configuração do Meilisearch
