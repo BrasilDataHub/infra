@@ -28,6 +28,38 @@ docker compose exec pgbouncer psql -h 127.0.0.1 -p 6432 -U "$PGB_USER" -d pgboun
 
 Depois, aponte a aplicação para a porta **6432** em vez da 5432.
 
+## A rede da aplicação
+
+O pooler só serve se a aplicação **enxergar** o container dele. Dentro do
+container da aplicação, `127.0.0.1:6432` é o loopback DELA — não chega aqui.
+
+| Como a aplicação é implantada | O que fazer |
+|---|---|
+| Mesmo `docker compose`, ou rede criada por este compose | nada: `APP_NETWORK` cria a rede e o alias `pgbouncer` resolve |
+| Painel que cria a própria rede (Dokploy, Coolify, Swarm) | `APP_NETWORK=<rede do painel>` **e** o overlay [`docker-compose.rede-externa.yml`](docker-compose.rede-externa.yml) |
+
+No segundo caso o overlay não é opcional: sem `external: true` o compose recusa
+uma rede que ele não criou, e a saída manual (`docker network connect`) não
+sobrevive ao próximo `up -d` — o container volta sem a rede, no meio de um
+deploy que parecia rotineiro.
+
+Num host do `setup.sh`, instale o overlay como `docker-compose.override.yml`:
+é o nome que o helper `bdh` inclui sozinho.
+
+```bash
+cp docker-compose.rede-externa.yml \
+   /opt/brasildatahub/services/pgbouncer/docker-compose.override.yml
+echo 'APP_NETWORK=dokploy-network' >> /opt/brasildatahub/services/pgbouncer/.env
+bdh up pgbouncer
+```
+
+Confira o alias depois de qualquer recriação:
+
+```bash
+docker inspect pgbouncer-pgbouncer-1 \
+  --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{$v.Aliases}}{{println}}{{end}}'
+```
+
 ## A ordem de implantação, que é indivisível
 
 O item 18 é um par. Invertê-lo **derruba a aplicação**:
