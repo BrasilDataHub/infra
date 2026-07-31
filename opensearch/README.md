@@ -215,8 +215,16 @@ mapping inteiro. O que ele **não** preserva, e por isso não serve de referênc
 
 - **latência.** Com ~1 GiB de page cache disputado com o PGDATA, busca fria vai
   ao disco onde produção serve da memória. Medição feita aqui não transfere.
-- **tamanho de lote na carga.** O breaker `request` cai para ~800 MiB, e lotes
-  de `_bulk` acima de ~10 MB passam a ser rejeitados.
+- **tamanho de lote na carga.** Medido ao carregar os 72,32 M documentos:
+
+  | `OPENSEARCH_BULK_SIZE` | Resultado |
+  |---|---|
+  | `5000` (default do indexer) | breaker `parent` dispara com 1,4 GiB de heap real contra o limite de 1,3; backpressure exponencial derruba a taxa de ~5.000 para **560 docs/s**, e o motor passa a recusar até chamadas de `_settings` |
+  | `1500` + `refresh_interval: -1` | **zero backpressure**, 6.000–7.400 docs/s, heap estável em 53%, carga completa em ~3 h |
+
+  O default de 5000 foi dimensionado para o heap de 4 GiB de produção. Contra
+  este host, passe `OPENSEARCH_BULK_SIZE=1500` — o ajuste é no **cliente**, e
+  não custa memória nenhuma.
 
 ### Por que o perfil errado não é só conservador
 
