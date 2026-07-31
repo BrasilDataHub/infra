@@ -75,6 +75,12 @@ container da aplicação, `127.0.0.1:6432` é o loopback DELA — não chega aqu
 |---|---|
 | Mesmo `docker compose`, ou rede criada por este compose | nada: `APP_NETWORK` cria a rede e o alias `pgbouncer` resolve |
 | Painel que cria a própria rede (Dokploy, Coolify, Swarm) | `APP_NETWORK=<rede do painel>` **e** o overlay [`docker-compose.rede-externa.yml`](docker-compose.rede-externa.yml) |
+| Deploy **pelo próprio painel** | [`docker-compose.dokploy.yml`](docker-compose.dokploy.yml) — arquivo único, sem overlays e sem `.env` ao lado |
+
+Deployar pelo painel é o caminho mais simples quando o host já é gerenciado por
+um: a rede deixa de ser um problema (o painel cria o container nela) e o
+serviço aparece na mesma tela que o resto. O preço é perder
+`bdh status|logs|verify` para ele.
 
 No segundo caso o overlay não é opcional: sem `external: true` o compose recusa
 uma rede que ele não criou, e a saída manual (`docker network connect`) não

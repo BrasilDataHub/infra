@@ -1,0 +1,107 @@
+# PgBouncer para deploy por PAINEL (Dokploy, Coolify) — arquivo único, sem
+# overlays e sem `.env` ao lado. Cole no campo de Compose do painel.
+#
+# É o mesmo serviço de `docker-compose.yml`, com duas diferenças que existem
+# porque quem cria a rede aqui é o painel, não este arquivo:
+#
+#   1. a rede da aplicação é `external: true` — o painel já a criou;
+#   2. os valores estão embutidos, em vez de virem de um `.env` do host.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# ANTES DE APLICAR
+#
+#   1. A imagem precisa estar publicada com suporte a PGB_EXTRA_DATABASES /
+#      PGB_EXTRA_USERS. Confira:
+#
+#        docker run --rm --entrypoint sh ghcr.io/brasildatahub/pgbouncer:1 \
+#          -c 'grep -c PGB_EXTRA_DATABASES /usr/local/bin/generate-config.sh'
+#
+#      Zero significa imagem antiga: o segundo banco será recusado com
+#      "no such database" e as duas conexões da aplicação caem juntas.
+#
+#   2. Se já houver um PgBouncer no host publicando a mesma porta, remova-o
+#      antes — duas publicações em 127.0.0.1:6432 conflitam:
+#
+#        cd /opt/brasildatahub/services/pgbouncer && docker compose -p pgbouncer down
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  pgbouncer:
+    image: ghcr.io/brasildatahub/pgbouncer:1
+    restart: unless-stopped
+
+    environment:
+      # --- destino: o Postgres, pela rede privada -----------------------------
+      # IP privado do host do banco. NÃO use o público: o tráfego sairia para a
+      # internet e a senha atravessa em claro (sslmode=prefer).
+      PGB_DB_HOST: 10.0.1.10
+      PGB_DB_PORT: "5432"
+
+      # --- banco e usuário PRINCIPAIS ----------------------------------------
+      # Este par também define `admin_users`/`stats_users`, que é quem pode
+      # rodar SHOW POOLS / SHOW STATS no console de administração.
+      PGB_DB_NAME: baseempresarial
+      PGB_USER: postgres
+      PGB_PASSWORD: "<SENHA_DO_POSTGRES>"
+
+      # --- o SEGUNDO banco, e o usuário dele ---------------------------------
+      # O PgBouncer roteia pelo `dbname` do handshake: um banco fora daqui é
+      # recusado com "no such database". O usuário fora do userlist é recusado
+      # no handshake.
+      #
+      # `dados_read` precisa estar aqui para que a conexão de leitura CONTINUE
+      # sendo somente-leitura. Sem ele, a única saída seria mandar o CNPJ pelo
+      # superusuário — trocar um pooler por uma escalação de privilégio.
+      PGB_EXTRA_DATABASES: "dados_cnpj"
+      PGB_EXTRA_USERS: "dados_read=<SENHA_DO_DADOS_READ>"
+
+      # --- dimensionamento ---------------------------------------------------
+      # `default_pool_size` é por par (database, usuário): dois bancos com um
+      # usuário cada são 2 × 20 = 40 conexões reais no pior caso. Confira
+      # contra o `max_connections` do servidor (150) antes de crescer.
+      #
+      # É também o multiplicador de `work_mem` no pior caso de sort.
+      PGB_POOL_MODE: transaction
+      PGB_DEFAULT_POOL_SIZE: "20"
+      PGB_MAX_CLIENT_CONN: "400"
+
+    # Publicar em 127.0.0.1 é para DIAGNÓSTICO do host (SHOW POOLS) e para o
+    # túnel SSH. A aplicação NÃO passa por aqui — ela alcança o container pela
+    # rede, por DNS. Remova esta seção se não quiser a porta no host.
+    ports:
+      - "127.0.0.1:6432:6432"
+
+    networks:
+      dokploy-network:
+        # É este alias que vai em DB_HOST/CDC_DB_HOST da aplicação. Sem ele,
+        # só o nome do container resolveria — e esse nome carrega o prefixo do
+        # projeto, que o painel escolhe e pode mudar entre deploys.
+        aliases:
+          - pgbouncer
+
+    healthcheck:
+      # `$$` porque o Compose interpola `$`: o container precisa receber
+      # `${PGB_PASSWORD}` literal para o shell dele expandir.
+      test: ["CMD-SHELL", "PGPASSWORD=$${PGB_PASSWORD} psql -h 127.0.0.1 -p 6432 -U $${PGB_USER} -d pgbouncer -tAc 'SHOW LISTS' > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "1"
+
+networks:
+  # Criada pelo painel. `external: true` diz ao Compose para usá-la, não criá-la
+  # — sem isso ele recusa uma rede que não tem os labels dele.
+  dokploy-network:
+    external: true
