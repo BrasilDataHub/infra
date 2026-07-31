@@ -77,6 +77,14 @@ container da aplicação, `127.0.0.1:6432` é o loopback DELA — não chega aqu
 | Painel que cria a própria rede (Dokploy, Coolify, Swarm) | `APP_NETWORK=<rede do painel>` **e** o overlay [`docker-compose.rede-externa.yml`](docker-compose.rede-externa.yml) |
 | Deploy **pelo próprio painel** | [`docker-compose.dokploy.yml`](docker-compose.dokploy.yml) — arquivo único, sem overlays e sem `.env` ao lado |
 
+Três coisas quebram esse deploy, e nenhuma delas aparece como erro do pooler:
+
+| Sintoma | Causa |
+|---|---|
+| A aplicação não resolve o host do banco | `DB_HOST` com o **nome do serviço no painel**. Esse nome não existe em DNS — quem resolve é o **alias** (`pgbouncer`) e o nome do container |
+| Conexões falham em metade das vezes | **Dois** containers com o mesmo alias na rede. O DNS sorteia entre eles |
+| Container "Up" com o pooler recusando tudo | `healthcheck` removido. Ele é o que distingue "o processo subiu" de "o pooler autentica" |
+
 Deployar pelo painel é o caminho mais simples quando o host já é gerenciado por
 um: a rede deixa de ser um problema (o painel cria o container nela) e o
 serviço aparece na mesma tela que o resto. O preço é perder

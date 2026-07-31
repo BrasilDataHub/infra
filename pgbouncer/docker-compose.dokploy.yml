@@ -19,13 +19,26 @@
 #      Zero significa imagem antiga: o segundo banco será recusado com
 #      "no such database" e as duas conexões da aplicação caem juntas.
 #
-#   2. Se já houver um PgBouncer no host publicando a mesma porta, remova-o
-#      antes — duas publicações em 127.0.0.1:6432 conflitam:
+#   2. Não pode haver OUTRO PgBouncer no host com o mesmo alias de rede. Dois
+#      containers com o alias `pgbouncer` na mesma rede fazem o DNS sortear
+#      entre eles — e metade das conexões vai para o errado. Confira:
 #
-#        cd /opt/brasildatahub/services/pgbouncer && docker compose -p pgbouncer down
+#        docker network inspect dokploy-network \
+#          --format '{{range .Containers}}{{.Name}}{{println}}{{end}}'
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# O QUE ESTE ARQUIVO **NÃO** RESOLVE
+#
+# A aplicação precisa de `DB_HOST` e `CDC_DB_HOST` apontando para o ALIAS
+# (`pgbouncer`), e não para o nome do serviço no painel. O nome que o painel
+# mostra — algo como `baseempresarial-pgbouncer-kycdun` — **não resolve em
+# DNS**; quem resolve é o alias abaixo e o nome do container.
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
+  # O nome do serviço importa: no formato curto de `networks:` o Compose usa o
+  # nome do serviço como alias de rede. O alias explícito mais abaixo torna
+  # isso independente de renomear o serviço.
   pgbouncer:
     image: ghcr.io/brasildatahub/pgbouncer:1
     restart: unless-stopped
@@ -65,21 +78,22 @@ services:
       PGB_DEFAULT_POOL_SIZE: "20"
       PGB_MAX_CLIENT_CONN: "400"
 
-    # Publicar em 127.0.0.1 é para DIAGNÓSTICO do host (SHOW POOLS) e para o
-    # túnel SSH. A aplicação NÃO passa por aqui — ela alcança o container pela
-    # rede, por DNS. Remova esta seção se não quiser a porta no host.
-    ports:
-      - "127.0.0.1:6432:6432"
-
     networks:
       dokploy-network:
-        # É este alias que vai em DB_HOST/CDC_DB_HOST da aplicação. Sem ele,
-        # só o nome do container resolveria — e esse nome carrega o prefixo do
-        # projeto, que o painel escolhe e pode mudar entre deploys.
         aliases:
+          # É este nome que vai em DB_HOST/CDC_DB_HOST da aplicação.
+          #
+          # No formato curto (`networks: [dokploy-network]`) o alias sai de
+          # graça, porque é igual ao nome do serviço — e some no dia em que
+          # alguém renomear o serviço. Declarado aqui, ele não depende disso.
           - pgbouncer
 
     healthcheck:
+      # `SHOW LISTS` no console de administração: prova que o processo está no
+      # ar E que o `PGB_USER` autentica. Sem healthcheck o container aparece
+      # "Up" mesmo com o pooler recusando todas as conexões — que é
+      # exatamente o estado que ninguém percebe.
+      #
       # `$$` porque o Compose interpola `$`: o container precisa receber
       # `${PGB_PASSWORD}` literal para o shell dele expandir.
       test: ["CMD-SHELL", "PGPASSWORD=$${PGB_PASSWORD} psql -h 127.0.0.1 -p 6432 -U $${PGB_USER} -d pgbouncer -tAc 'SHOW LISTS' > /dev/null"]
@@ -87,6 +101,19 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+    # Sem `ports:`. A aplicação alcança o container pela REDE, por DNS — a porta
+    # no host nunca esteve no caminho dela.
+    #
+    # O preço é que o diagnóstico passa a ser por `docker exec`, e que um túnel
+    # SSH para a 6432 deixa de ter o que alcançar:
+    #
+    #   docker exec -e PGPASSWORD=<senha> <container> \
+    #     psql -h 127.0.0.1 -p 6432 -U postgres -d pgbouncer -c 'SHOW POOLS;'
+    #
+    # Para reativar a porta (e o túnel), acrescente:
+    #   ports:
+    #     - "127.0.0.1:6432:6432"
 
     logging:
       driver: json-file
