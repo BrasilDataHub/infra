@@ -165,6 +165,21 @@ INSTALL_MOTD="true"
 AUTO="false"
 DRY_RUN="false"
 FORCE="false"
+# Recriar container é uma decisão SEPARADA de reaplicar configuração, e fundir as
+# duas num `FORCE` só custou downtime que ninguém pediu: `--update` — o modo
+# normal de reexecução, o que o README manda usar — passava `--force-recreate`
+# em TODO serviço, inclusive num Postgres de 156 GB cuja definição não mudara.
+#
+# O preço não é só o restart. Um `--update` para acrescentar um alvo ao
+# Prometheus derruba o cursor server-side de um ETL em andamento, que morre com
+# `AdminShutdown` a horas do início — e o `--add-service`, cujo próprio
+# comentário promete "acrescenta um serviço SEM tocar nos outros", recriava
+# todos eles.
+#
+# Sem `--force-recreate` o Compose compara a definição desejada com a atual e
+# recria só o que mudou: perfil novo, imagem nova, overlay novo. É o mesmo
+# raciocínio que `--metrics-only` já aplicava sozinho, generalizado.
+RECREATE="false"
 WEBHOOK_URL=""
 
 LOG_FILE=""
@@ -480,7 +495,9 @@ while [[ $# -gt 0 ]]; do
         --skip-system-update) SKIP_SYSTEM_UPDATE="true"; shift ;;
         --auto|--non-interactive) AUTO="true"; shift ;;
         --dry-run) DRY_RUN="true"; shift ;;
-        -f|--force) FORCE="true"; shift ;;
+        # O único modo que recria por decreto: "refaz do zero" inclui o
+        # container, mesmo que a definição não tenha mudado.
+        -f|--force) FORCE="true"; RECREATE="true"; shift ;;
         --ref) REF="$2"; shift 2 ;;
         --docker-version) DOCKER_VERSION="$2"; shift 2 ;;
         --docker-data-root) DOCKER_DATA_ROOT="$2"; shift 2 ;;
@@ -2189,7 +2206,7 @@ start_services() {
         # --metrics-only acrescenta o exporter sem --force-recreate: o Compose
         # compara a definição desejada com a atual e recria apenas o que mudou,
         # ou seja, só o container novo. O banco não é tocado.
-        if [[ "$FORCE" == "true" && "$METRICS_ONLY" != "true" ]]; then
+        if [[ "$RECREATE" == "true" && "$METRICS_ONLY" != "true" ]]; then
             run docker compose -p "$s" "${compose_args[@]}" up -d --force-recreate
         else
             run docker compose -p "$s" "${compose_args[@]}" up -d
@@ -2452,7 +2469,7 @@ EOF
     local compose_args=(--project-directory "$mdir" -f "$mdir/docker-compose.yml")
     [[ -f "$override" ]] && compose_args+=(-f "$override")
     local up_args=(up -d)
-    [[ "$FORCE" == "true" ]] && up_args+=(--force-recreate)
+    [[ "$RECREATE" == "true" ]] && up_args+=(--force-recreate)
     if ! run docker compose -p monitoring "${compose_args[@]}" "${up_args[@]}"; then
         warn "monitoring não subiu — o provisionamento segue sem observabilidade."
         warn "Veja 'bdh logs monitoring' e depois rode: bash setup.sh --metrics-only"

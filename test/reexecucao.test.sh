@@ -159,6 +159,46 @@ else
     nok "MONITORING_BIND_IP não é gravado no estado — a herança acima é letra morta"
 fi
 
+# --- 2d. recriar container é decisão separada de reaplicar configuração ----
+# `--update` e `--add-service` marcavam FORCE=true, e FORCE=true virava
+# `--force-recreate` em TODO serviço. O modo que o README manda usar derrubava
+# um Postgres de 156 GB cuja definição não mudara, e o `--add-service` — cujo
+# comentário promete "sem tocar nos outros" — recriava todos eles.
+#
+# O custo real não é o restart: é o ETL com cursor server-side que morre com
+# `AdminShutdown` a horas do início.
+verifica_recreate() {
+    local flag="$1" esperado="$2" desc="$3"
+    (
+        carregar
+        # shellcheck disable=SC2086  # a flag precisa ser dividida em palavras
+        parse_args $flag >/dev/null 2>&1 || true
+        [[ "$RECREATE" == "$esperado" ]] || printf 'RECREATE=%s' "$RECREATE"
+    ) > "$TMP/rc"
+    if [[ ! -s "$TMP/rc" ]]; then ok "$desc"; else nok "$desc — $(cat "$TMP/rc")"; fi
+}
+if declare -f parse_args >/dev/null 2>&1; then
+    verifica_recreate "--update"                 "false" "--update NÃO força recriação (Compose recria só o que mudou)"
+    verifica_recreate "--add-service opensearch" "false" "--add-service NÃO recria os serviços que já existiam"
+    verifica_recreate "--force"                  "true"  "--force recria por decreto (é o que 'do zero' significa)"
+else
+    # A análise de flags não é uma função isolável: afirma-se sobre o código.
+    if grep -q 'update) UPDATE_MODE="true"; FORCE="true"; RECREATE="true"' "$RAIZ/setup.sh"; then
+        nok "--update voltou a forçar recriação de todos os serviços"
+    else
+        ok "--update não marca RECREATE"
+    fi
+    grep -q -- '-f|--force) FORCE="true"; RECREATE="true"' "$RAIZ/setup.sh" \
+        && ok "--force é o único modo que recria por decreto" \
+        || nok "--force deixou de marcar RECREATE"
+    grep -q '\[\[ "\$RECREATE" == "true" \]\] && up_args+=(--force-recreate)' "$RAIZ/setup.sh" \
+        && ok "o monitoring usa RECREATE, não FORCE" \
+        || nok "o monitoring voltou a recriar por FORCE"
+    grep -q 'if \[\[ "\$RECREATE" == "true" && "\$METRICS_ONLY" != "true" \]\]' "$RAIZ/setup.sh" \
+        && ok "os serviços de dados usam RECREATE, não FORCE" \
+        || nok "os serviços de dados voltaram a recriar por FORCE"
+fi
+
 # `--bind-ip 0.0.0.0` é o caso que prova que a distinção não pode ser feita
 # olhando só o valor: ele é IDÊNTICO ao default, e ainda assim precisa vencer o
 # estado quando foi pedido de propósito.

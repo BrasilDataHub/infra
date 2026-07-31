@@ -306,16 +306,29 @@ alteraria.
 
 Há três modos, e escolher o errado é caro.
 
-| Comando | O que faz |
-|---|---|
-| `--update` | **o modo normal de reexecução.** Herda tudo do `.setup-state` e reaplica. Flag explícita sobrescreve; ausência **herda** |
-| `--add-service NOME` | acrescenta `opensearch`, `pgbouncer`, … sem tocar no que já existe. Implica `--update` |
-| `--force` | refaz `.env` e composes **do zero**, sem herdar nada |
+| Comando | O que faz | Recria containers? |
+|---|---|---|
+| `--update` | **o modo normal de reexecução.** Herda tudo do `.setup-state` e reaplica. Flag explícita sobrescreve; ausência **herda** | só o que mudou |
+| `--add-service NOME` | acrescenta `opensearch`, `pgbouncer`, … sem tocar no que já existe. Implica `--update` | só o serviço novo |
+| `--force` | refaz `.env` e composes **do zero**, sem herdar nada | **todos** |
 
 `--update` existe para eliminar um contorno que custava caro: antes dele, uma
 reexecução exigia repetir `--postgres-db`, `--bind-ip` e `--allow-from` **de
 cor**, e esquecer qualquer um recriava o banco, reexpunha as portas e esvaziava
 o firewall. Com ele, o estado da instalação original é a fonte da verdade.
+
+**A terceira coluna é o que separa os modos na prática.** Só `--force` passa
+`--force-recreate`; nos outros dois o Compose compara a definição desejada com
+a atual e recria apenas o que de fato mudou — perfil novo, imagem nova, overlay
+novo. Um `--update` que só reescreve um alvo do Prometheus não encosta no
+Postgres.
+
+> ⚠️ **Mesmo assim, `--update` não é operação de janela livre.** Ele recria o
+> que mudou, e "o que mudou" inclui o banco sempre que o perfil, a imagem ou um
+> overlay mudarem. Um restart do Postgres derruba conexões abertas — um ETL com
+> cursor server-side morre com `AdminShutdown` a horas do início. Rode
+> atualizações com os pipelines parados, ou depois de confirmar que não há
+> carga em andamento.
 
 Nenhum dos três **remove volumes**: os dados permanecem. Trocar o modo de volume
 (`named` ↔ `bind`) numa instalação existente é recusado, porque a troca não move
