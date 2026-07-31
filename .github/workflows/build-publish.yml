@@ -66,13 +66,144 @@ on:
       - "laravel/test/**"
       - ".github/workflows/build-publish.yml"
   workflow_dispatch:
+    inputs:
+      servico:
+        description: "Qual imagem republicar (todos = o repositório inteiro)"
+        type: choice
+        default: todos
+        options:
+          - todos
+          - postgres
+          - pgbackrest
+          - redis
+          - pgbouncer
+          - opensearch
+          - meilisearch
+          - monitoring
+          - laravel
 
 env:
   REGISTRY: ghcr.io
   NAMESPACE: brasildatahub
 
 jobs:
+  # Quais imagens este push realmente afeta.
+  #
+  # POR QUE ESTE JOB EXISTE: os `paths:` lá em cima são do WORKFLOW, não dos
+  # jobs. Eles decidem se o workflow roda — e, uma vez que roda, TODOS os jobs
+  # rodam junto. Na prática isso significava que mudar duas linhas do
+  # `redis/Dockerfile` reconstruía também as imagens de aplicação, cujo build
+  # multi-arch compila 14 extensões PHP sob emulação e leva dezenas de minutos.
+  #
+  # Aqui o diff do push é lido uma vez e vira um output por imagem; cada job de
+  # build ganha um `if:` sobre ele. Os `paths:` do topo continuam valendo como
+  # primeira peneira — um commit só de documentação não chega nem a este job.
+  #
+  # Mudar ESTE ARQUIVO não republica nada por si só, e é deliberado: era esse o
+  # caminho pelo qual um ajuste de comentário no workflow reconstruía a stack
+  # inteira. Para republicar à mão, use `workflow_dispatch` — ele aceita
+  # escolher uma imagem ou `todos`.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      postgres: ${{ steps.filtro.outputs.postgres }}
+      pgbackrest: ${{ steps.filtro.outputs.pgbackrest }}
+      redis: ${{ steps.filtro.outputs.redis }}
+      pgbouncer: ${{ steps.filtro.outputs.pgbouncer }}
+      opensearch: ${{ steps.filtro.outputs.opensearch }}
+      meilisearch: ${{ steps.filtro.outputs.meilisearch }}
+      monitoring: ${{ steps.filtro.outputs.monitoring }}
+      laravel: ${{ steps.filtro.outputs.laravel }}
+    steps:
+      # fetch-depth: 0 porque o `git diff` abaixo precisa do commit anterior ao
+      # push, que um checkout raso não traz.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: filtro
+        env:
+          # Via env, e não interpolado direto no `run`: é a forma segura de
+          # levar contexto do evento para dentro do shell.
+          EVENTO: ${{ github.event_name }}
+          ANTES: ${{ github.event.before }}
+          AGORA: ${{ github.sha }}
+          ESCOLHA: ${{ inputs.servico }}
+        run: |
+          set -euo pipefail
+
+          # Os mesmos recortes dos `paths:` do topo, agora por imagem. Cada
+          # padrão casa só ARQUIVO QUE ENTRA NA IMAGEM — README e docs de fora.
+          # Note `[^/]+\.sh$` no postgres: sem isso ele casaria também
+          # `postgres/backup/*.sh`, que é a imagem do pgbackrest, não a dele.
+          escopos() {
+            cat <<'MAPA'
+          postgres|^postgres/(Dockerfile$|[^/]+\.sh$|\.dockerignore$|initdb/|test/)
+          pgbackrest|^postgres/backup/(Dockerfile$|[^/]+\.sh$|test/)
+          redis|^redis/(Dockerfile|redis\.conf)$
+          pgbouncer|^pgbouncer/(Dockerfile$|[^/]+\.sh$|test/)
+          opensearch|^opensearch/(Dockerfile$|index/|test/)
+          meilisearch|^meilisearch/Dockerfile$
+          monitoring|^monitoring/(prometheus/|grafana/|alertmanager/|blackbox/|test/)
+          laravel|^laravel/(Dockerfile\.|php-extensions\.txt$|php/|caddy/|entrypoint[^/]*\.sh$|\.dockerignore$|test/)
+          MAPA
+          }
+
+          publica_tudo() {
+            local motivo="$1"
+            echo "::notice::$motivo — todas as imagens entram no build."
+            while IFS='|' read -r nome _; do
+              # `if`, e não `[ ... ] && ...`: sob `set -e`, um `&&` que resulta
+              # falso no ÚLTIMO comando do corpo do laço encerraria o script.
+              if [ -n "$nome" ]; then
+                echo "${nome}=true" >> "$GITHUB_OUTPUT"
+              fi
+            done < <(escopos)
+          }
+
+          if [ "$EVENTO" = "workflow_dispatch" ]; then
+              if [ "${ESCOLHA:-todos}" = "todos" ]; then
+                  publica_tudo "Execução manual sem filtro"
+              else
+                  echo "::notice::Execução manual: só ${ESCOLHA}."
+                  while IFS='|' read -r nome _; do
+                      if [ "$nome" = "$ESCOLHA" ]; then
+                          echo "${nome}=true"  >> "$GITHUB_OUTPUT"
+                      elif [ -n "$nome" ]; then
+                          echo "${nome}=false" >> "$GITHUB_OUTPUT"
+                      fi
+                  done < <(escopos)
+              fi
+              exit 0
+          fi
+
+          # Fail-safe: sem um ponto de partida válido não dá para saber o que
+          # mudou, e deixar de publicar em silêncio é pior do que publicar
+          # demais. Acontece em push forçado e no primeiro push de uma branch.
+          if [ -z "${ANTES:-}" ] || ! git cat-file -e "${ANTES}^{commit}" 2>/dev/null; then
+              publica_tudo "Sem commit anterior utilizável ($ANTES)"
+              exit 0
+          fi
+
+          ARQUIVOS="$(git diff --name-only "$ANTES" "$AGORA")"
+          echo "Arquivos no push:"
+          echo "$ARQUIVOS" | sed 's/^/  /'
+
+          while IFS='|' read -r nome padrao; do
+              [ -n "$nome" ] || continue
+              if printf '%s\n' "$ARQUIVOS" | grep -qE "$padrao"; then
+                  echo "${nome}=true" >> "$GITHUB_OUTPUT"
+                  echo "::notice::${nome}: será publicada."
+              else
+                  echo "${nome}=false" >> "$GITHUB_OUTPUT"
+              fi
+          done < <(escopos)
+
   postgres:
+    needs: changes
+    if: needs.changes.outputs.postgres == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -106,6 +237,8 @@ jobs:
   # ponto do repositório onde "o backup existe" deixa de ser uma afirmação e
   # passa a ser uma verificação.
   pgbackrest:
+    needs: changes
+    if: needs.changes.outputs.pgbackrest == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -131,6 +264,8 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/pgbackrest:17.10
 
   redis:
+    needs: changes
+    if: needs.changes.outputs.redis == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -158,6 +293,8 @@ jobs:
   # SET de sessão ou um prepared statement — e aí quebra de formas que não
   # mencionam o PgBouncer no erro.
   pgbouncer:
+    needs: changes
+    if: needs.changes.outputs.pgbouncer == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -183,6 +320,8 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/pgbouncer:1.24.1
 
   meilisearch:
+    needs: changes
+    if: needs.changes.outputs.meilisearch == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -208,6 +347,8 @@ jobs:
   # sobe um nó de verdade e as afirma antes de a imagem ser publicada — custa
   # segundos; descobrir o mesmo erro depois custa a reindexação inteira.
   opensearch:
+    needs: changes
+    if: needs.changes.outputs.opensearch == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -243,6 +384,8 @@ jobs:
   # são consumidas em tempo de BUILD, inclusive nas estações Apple Silicon da
   # equipe. Sem `arm64` no manifest, todo build local cairia em emulação.
   laravel:
+    needs: changes
+    if: needs.changes.outputs.laravel == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -321,6 +464,8 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/laravel-builder:${{ env.PHP_MINOR }}-${{ env.REVISION }}
 
   monitoring:
+    needs: changes
+    if: needs.changes.outputs.monitoring == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

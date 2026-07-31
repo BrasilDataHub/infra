@@ -19,6 +19,11 @@ on:
       - "meilisearch/metrics-key.sh"
       - "laravel/entrypoint*.sh"
       - "laravel/test/*.sh"
+      # O filtro por escopo mora dentro do build-publish.yml, e é o teste em
+      # test/filtro-build.test.sh que o lê e o verifica. Sem estas duas linhas,
+      # mexer no filtro não roda o teste que o protege.
+      - "test/filtro-build.test.sh"
+      - ".github/workflows/build-publish.yml"
       - ".github/workflows/lint-setup.yml"
   pull_request:
     paths:
@@ -34,6 +39,11 @@ on:
       - "meilisearch/metrics-key.sh"
       - "laravel/entrypoint*.sh"
       - "laravel/test/*.sh"
+      # O filtro por escopo mora dentro do build-publish.yml, e é o teste em
+      # test/filtro-build.test.sh que o lê e o verifica. Sem estas duas linhas,
+      # mexer no filtro não roda o teste que o protege.
+      - "test/filtro-build.test.sh"
+      - ".github/workflows/build-publish.yml"
   workflow_dispatch:
 
 jobs:
@@ -57,7 +67,8 @@ jobs:
           # start, e o `set -e` faz o container morrer sem log útil.
           shellcheck laravel/entrypoint.sh \
                      laravel/entrypoint-worker.sh \
-                     laravel/test/laravel-images.test.sh
+                     laravel/test/laravel-images.test.sh \
+                     test/filtro-build.test.sh
 
       # Cobre, entre outras coisas, se os blocos PG_* do script continuam
       # idênticos aos de postgres/docs/perfis.md e se as envs existem na imagem.
@@ -66,6 +77,14 @@ jobs:
 
       - name: Re-execução herda o estado
         run: bash test/reexecucao.test.sh
+
+      # Cada push só deve reconstruir o que ele tocou. Sem esta verificação, um
+      # padrão frouxo no `build-publish.yml` volta a fazer um commit de README
+      # custar dezenas de minutos de build multi-arch — e um padrão estreito
+      # demais faz o oposto, mais perigoso: a imagem deixa de publicar em
+      # silêncio.
+      - name: Filtro por escopo do build
+        run: bash test/filtro-build.test.sh
 
       - name: Ajuda não falha
         run: bash setup.sh --help > /dev/null

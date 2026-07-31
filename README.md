@@ -442,6 +442,29 @@ repositório permanece privado. A CI
 (`.github/workflows/build-publish.yml`) builda e publica a cada push na
 `main` que toque a pasta do serviço.
 
+**Só a imagem afetada é reconstruída.** Os `paths:` do topo do workflow são do
+workflow, não dos jobs: eles decidem se ele roda — e, uma vez disparado, todos
+os jobs rodariam junto. Um job `changes` lê o diff do push e libera cada build
+individualmente, para que mudar duas linhas do `redis/Dockerfile` não reconstrua
+as imagens de aplicação, cujo build multi-arch compila 14 extensões PHP sob
+emulação e leva dezenas de minutos.
+
+Duas consequências que valem saber:
+
+- **commit de documentação não publica nada** — nem `README.md`, nem `docs/`,
+  nem os overlays de compose e os `profiles/*.env`, que não entram em imagem
+  nenhuma;
+- **mudar o próprio `build-publish.yml` também não republica**, e é deliberado:
+  era esse o caminho pelo qual um ajuste de comentário reconstruía a stack
+  inteira. Para republicar à mão use **`workflow_dispatch`**, que aceita
+  escolher uma imagem ou `todos`.
+
+O mapa de escopos vive dentro do workflow e é verificado por
+[`test/filtro-build.test.sh`](test/filtro-build.test.sh), que o lê de lá em vez
+de manter uma cópia — uma cópia divergiria no primeiro serviço novo. O teste
+protege os dois lados do erro: padrão frouxo custa tempo de build à toa; padrão
+estreito demais faz a imagem **deixar de publicar em silêncio**.
+
 ```bash
 docker pull ghcr.io/brasildatahub/postgres:17
 docker pull ghcr.io/brasildatahub/redis:7
