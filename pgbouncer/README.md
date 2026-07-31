@@ -92,6 +92,15 @@ do PHP em modo nativo falha com `prepared statement does not exist`. O default
 aqui é **200**, folgado para o conjunto de consultas desta aplicação, e custa
 memória no PgBouncer, não no banco.
 
+Medido em 31/07/2026 contra o PgBouncer 1.24.1, a partir do container de uma
+aplicação Laravel, em duas conexões e dois bancos: **15/15 consultas OK com
+`PDO::ATTR_EMULATE_PREPARES` em `false`**. Com `max_prepared_statements`
+configurado, emular no driver deixa de ser necessário — e `false` é o valor
+melhor, porque preserva a reutilização de plano do lado do servidor.
+
+Quem baixar este valor para `0` precisa ligar a emulação na aplicação no mesmo
+movimento.
+
 ### `ignore_startup_parameters`
 
 ```ini
@@ -120,6 +129,33 @@ torna o diagnóstico caro.
 | `PGB_PASSWORD` | — | senha em texto. **Obrigatória** |
 | `PGB_DB_PORT` | `5432` | porta do Postgres |
 | `PGB_PASSWORD_SCRAM` | — | verificador SCRAM pronto (`SCRAM-SHA-256$...`). **Preferível** à senha em texto; gerar exige o Postgres |
+
+### Mais de um banco, mais de um usuário
+
+Uma aplicação com dois bancos no mesmo servidor precisa dos **dois declarados**:
+o PgBouncer roteia pelo `dbname` do handshake e recusa o que não estiver na
+seção `[databases]` com `no such database`. O mesmo vale para o usuário, que é
+recusado no handshake se não estiver no `userlist`.
+
+| Variável | Default | Descrição |
+|---|---|---|
+| `PGB_EXTRA_DATABASES` | — | bancos adicionais, separados por `;`. `nome` usa o `PGB_DB_HOST`; `nome=host` usa outro |
+| `PGB_EXTRA_USERS` | — | usuários adicionais, `usuario=senha`, separados por `;` |
+
+```bash
+PGB_EXTRA_DATABASES="baseempresarial"
+PGB_EXTRA_USERS="dados_read=<senha>"
+```
+
+**Sem isto, a única saída é apontar tudo para o superusuário** — o que troca um
+pooler por uma escalação de privilégio. Uma conexão que era somente-leitura
+passa a poder escrever em qualquer tabela.
+
+Cada par (database, usuário) tem pool **próprio** de `default_pool_size`
+conexões: dois bancos com um usuário cada são `2 × 20 = 40` conexões reais no
+pior caso. Confira contra o `max_connections` do servidor antes de crescer.
+
+Senha com `;` ou `=` não passa por `PGB_EXTRA_USERS`.
 
 ### Dimensionamento
 
@@ -155,6 +191,16 @@ torna o diagnóstico caro.
 | `PGB_LOG_DISCONNECTIONS` | `0` | idem |
 | `APP_NETWORK` | `baseempresarial` | rede da aplicação, para que Octane e Horizon alcancem o pooler pelo nome |
 | `LOG_MAX_SIZE` / `LOG_MAX_FILE` | `50m` / `3` | teto de log do json-file driver |
+
+## O que NÃO mandar pelo pooler
+
+Consultas que seguram a conexão por minutos — exportações, geração de sitemap,
+relatórios que varrem a base inteira. Em `transaction` pooling elas ocupam um
+slot durante toda a varredura, e o `query_wait_timeout` passa a devolver erro
+para as requisições que ficam na fila. O pooler existe para muitas conexões
+curtas; carga longa é o caso em que ele piora as coisas.
+
+Dê a essas cargas uma conexão direta ao Postgres, com o mesmo usuário.
 
 ## Diagnóstico
 

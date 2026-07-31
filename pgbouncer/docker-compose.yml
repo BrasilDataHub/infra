@@ -41,6 +41,13 @@ services:
       PGB_USER: ${PGB_USER:?defina PGB_USER}
       PGB_PASSWORD: ${PGB_PASSWORD:?defina PGB_PASSWORD}
       PGB_PASSWORD_SCRAM: ${PGB_PASSWORD_SCRAM:-}
+      # Bancos e usuários ADICIONAIS no mesmo servidor. Uma aplicação com dois
+      # bancos precisa dos dois declarados: o PgBouncer roteia pelo `dbname` do
+      # handshake e recusa o que não estiver aqui.
+      #   PGB_EXTRA_DATABASES="baseempresarial"
+      #   PGB_EXTRA_USERS="dados_read=senha"
+      PGB_EXTRA_DATABASES: ${PGB_EXTRA_DATABASES:-}
+      PGB_EXTRA_USERS: ${PGB_EXTRA_USERS:-}
       PGB_POOL_MODE: ${PGB_POOL_MODE:-transaction}
       PGB_DEFAULT_POOL_SIZE: ${PGB_DEFAULT_POOL_SIZE:-20}
       PGB_MAX_CLIENT_CONN: ${PGB_MAX_CLIENT_CONN:-400}
