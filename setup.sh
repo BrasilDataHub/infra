@@ -540,7 +540,10 @@ VM_MAX_MAP_COUNT="262144"; shift ;;
         # Host do PROMETHEUS: de onde coletar o que está nas outras máquinas.
         --metrics-scrape) METRICS_SCRAPE="$2"; METRICS_ENABLED="true"; _explicita METRICS_SCRAPE; shift 2 ;;
         --host-label) HOST_LABEL="$2"; _explicita HOST_LABEL; shift 2 ;;
-        --metrics-bind-ip) MONITORING_BIND_IP="$2"; shift 2 ;;
+        # `_explicita` é obrigatório aqui: sem ele, o valor herdado do
+        # `.setup-state` venceria a flag recém-passada, e mudar a interface do
+        # painel viraria uma operação sem efeito.
+        --metrics-bind-ip) MONITORING_BIND_IP="$2"; _explicita MONITORING_BIND_IP; shift 2 ;;
         --alert-slack-webhook) ALERT_SLACK_WEBHOOK="$2"; _explicita ALERT_SLACK_WEBHOOK; shift 2 ;;
         --alert-slack-channel) ALERT_SLACK_CHANNEL="$2"; _explicita ALERT_SLACK_CHANNEL; shift 2 ;;
         --alert-webhook-url) ALERT_WEBHOOK_URL="$2"; _explicita ALERT_WEBHOOK_URL; shift 2 ;;
@@ -1368,6 +1371,7 @@ load_state() {
             # é uma decisão que precisa ser tomada, nunca herdada de um estado antigo.
             METRICS_ENABLED)  [[ "$valor" == "true" ]] && METRICS_ENABLED="true" ;;
             MONITORING_ENABLED) [[ "$METRICS_ENABLED" == "true" ]] && MONITORING_ENABLED="$valor" ;;
+            MONITORING_BIND_IP) foi_explicita MONITORING_BIND_IP || MONITORING_BIND_IP="$valor" ;;
             METRICS_PUBLISH_IP) foi_explicita METRICS_PUBLISH_IP || { METRICS_PUBLISH_IP="$valor"; MONITORING_ENABLED="false"; } ;;
             METRICS_SCRAPE)     foi_explicita METRICS_SCRAPE     || METRICS_SCRAPE="$valor" ;;
         esac
@@ -2147,6 +2151,14 @@ write_env_files() {
             if [[ "$METRICS_ENABLED" == "true" ]]; then
                 printf 'METRICS_PROFILE=%s\n' "$METRICS_PROFILE"
                 printf 'MONITORING_ENABLED=%s\n' "$MONITORING_ENABLED"
+                # A interface do Grafana. Sem ela no estado, o contrato de
+                # load_state ("ausência HERDA") tinha um buraco: quem publicou o
+                # painel numa interface alcançável — a VPN, a rede privada — via
+                # o PRÓXIMO `--update` devolvê-lo a 127.0.0.1, e o único aviso
+                # era o painel parar de responder. O default de fábrica é
+                # loopback justamente porque o Prometheus não tem autenticação,
+                # e é por isso que reverter em silêncio parecia inofensivo.
+                printf 'MONITORING_BIND_IP=%s\n' "$MONITORING_BIND_IP"
                 # Sem estas duas no estado, um `--update` num desenho
                 # distribuído despublicaria os exporters e apagaria os alvos
                 # remotos: o Prometheus do outro host perderia tudo, em silêncio.

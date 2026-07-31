@@ -105,6 +105,60 @@ else
     nok "precedência errada:$(cat "$TMP/r2")"
 fi
 
+# --- 2b. a interface do painel sobrevive ao --update -----------------------
+# `MONITORING_BIND_IP` era gravado no `.env` do monitoring e NÃO no
+# `.setup-state`, e `load_state` não tinha caso para ele. O efeito: quem
+# publicou o Grafana numa interface alcançável — a VPN, a rede privada — via o
+# PRÓXIMO `--update` devolvê-lo a 127.0.0.1. Nada falhava; o painel só parava
+# de responder, e o default de fábrica é loopback justamente porque o
+# Prometheus não tem autenticação, o que faz a reversão parecer inofensiva.
+mkdir -p "$TMP/wd-mon"
+cat > "$TMP/wd-mon/.setup-state" <<STATE
+SERVICES=postgres
+WORKDIR=$TMP/wd-mon
+METRICS_ENABLED=true
+MONITORING_ENABLED=true
+METRICS_PROFILE=metricas-512mb
+MONITORING_BIND_IP=100.113.167.6
+STATE
+(
+    carregar
+    WORKDIR="$TMP/wd-mon"
+    load_state >/dev/null 2>&1
+    [[ "$MONITORING_BIND_IP" == "100.113.167.6" ]] \
+        || printf 'MONITORING_BIND_IP=%s' "$MONITORING_BIND_IP"
+) > "$TMP/r2b"
+if [[ ! -s "$TMP/r2b" ]]; then
+    ok "a interface do painel é herdada (era o defeito: voltava a 127.0.0.1)"
+else
+    nok "interface do painel não herdada: $(cat "$TMP/r2b")"
+fi
+
+# E o inverso: a flag tem de vencer o estado. Sem `_explicita` na análise de
+# `--metrics-bind-ip`, o valor herdado venceria a flag recém-passada e mudar a
+# interface do painel viraria uma operação sem efeito nenhum.
+(
+    carregar
+    WORKDIR="$TMP/wd-mon"
+    MONITORING_BIND_IP="127.0.0.1"; _explicita MONITORING_BIND_IP
+    load_state >/dev/null 2>&1
+    [[ "$MONITORING_BIND_IP" == "127.0.0.1" ]] \
+        || printf 'MONITORING_BIND_IP=%s' "$MONITORING_BIND_IP"
+) > "$TMP/r2c"
+if [[ ! -s "$TMP/r2c" ]]; then
+    ok "--metrics-bind-ip explícito vence o estado (inclusive para voltar ao loopback)"
+else
+    nok "a flag não venceu o estado: $(cat "$TMP/r2c")"
+fi
+
+# O estado precisa CONTER o que promete herdar. O teste acima passaria com o
+# script gravando o valor em lugar nenhum, porque a fixture é escrita à mão.
+if grep -q "printf 'MONITORING_BIND_IP=%s" "$RAIZ/setup.sh"; then
+    ok "o setup.sh grava MONITORING_BIND_IP no .setup-state"
+else
+    nok "MONITORING_BIND_IP não é gravado no estado — a herança acima é letra morta"
+fi
+
 # `--bind-ip 0.0.0.0` é o caso que prova que a distinção não pode ser feita
 # olhando só o valor: ele é IDÊNTICO ao default, e ainda assim precisa vencer o
 # estado quando foi pedido de propósito.
