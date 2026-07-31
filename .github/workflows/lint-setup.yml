@@ -124,6 +124,45 @@ jobs:
           printf '%s' "$comb" | yq -e '.services.postgres.environment.PG_ARCHIVE_MODE == "on"'
           printf '%s' "$comb" | yq -e '.services.postgres.environment.PG_ARCHIVE_COMMAND | test("archive-push")'
 
+      # Repositório LOCAL (repo1-type=posix). O que este passo protege é uma
+      # falha silenciosa e cara: com `posix`, o repositório precisa estar montado
+      # nos DOIS serviços, porque quem executa `archive-push` é o servidor
+      # Postgres, não o sidecar. Montado só no sidecar, o `backup` funciona, o
+      # `info` reporta sucesso, e TODO segmento de WAL falha ao ser arquivado —
+      # até o pg_wal encher o mesmo NVMe do PGDATA.
+      #
+      # Com `repo1-type=s3` isso não aparece: os dois falam com o bucket pela
+      # rede e nenhum mount é necessário. É exatamente por isso que a regressão
+      # passaria despercebida sem este passo.
+      - name: Overlay de repositório local monta o repo nos DOIS serviços
+        run: |
+          comb=$(POSTGRES_DB=d POSTGRES_PASSWORD=p PGBACKREST_STANZA=dados-cnpj \
+                 BDH_BACKUP_REPO_DIR=/mnt/bdh-backup/pgbackrest \
+                 docker compose -f postgres/docker-compose.yml \
+                                -f postgres/docker-compose.backup.yml \
+                                -f postgres/docker-compose.backup-local.yml config)
+          # o alvo é o caminho de DENTRO do container, nos dois serviços
+          printf '%s' "$comb" | yq -e \
+            '[.services.postgres.volumes[]   | select(.target == "/var/lib/pgbackrest")] | length == 1'
+          printf '%s' "$comb" | yq -e \
+            '[.services.pgbackrest.volumes[] | select(.target == "/var/lib/pgbackrest")] | length == 1'
+          # e precisa ser gravável: o archive-push escreve aqui
+          printf '%s' "$comb" | yq -e \
+            '[.services.postgres.volumes[] | select(.target == "/var/lib/pgbackrest" and .read_only == true)] | length == 0'
+
+      # Sem a variável, o overlay tem de RECUSAR a subir. Um default silencioso
+      # aqui faria o Docker criar um diretório vazio no disco raiz e o backup
+      # rodaria para o lugar errado, enchendo o mesmo NVMe do PGDATA.
+      - name: Overlay de repositório local exige BDH_BACKUP_REPO_DIR
+        run: |
+          if POSTGRES_DB=d POSTGRES_PASSWORD=p PGBACKREST_STANZA=dados-cnpj \
+             docker compose -f postgres/docker-compose.yml \
+                            -f postgres/docker-compose.backup.yml \
+                            -f postgres/docker-compose.backup-local.yml config -q 2>/dev/null; then
+            echo "ERRO: o overlay aceitou subir sem BDH_BACKUP_REPO_DIR" >&2
+            exit 1
+          fi
+
       # O princípio central desta entrega: ligar métricas não pode recriar um
       # container de banco de centenas de GB. Se alguém acrescentar uma chave ao
       # serviço `postgres` dentro do overlay, ou puser uma variável de métricas

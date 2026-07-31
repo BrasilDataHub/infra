@@ -224,22 +224,27 @@ tests:
   # A trava do roadmap 20: este alerta tem de estar VERDE e notificando ANTES de
   # `archive_mode` virar `on`. Os testes abaixo provam as duas metades — que ele
   # dispara com o arquivamento parado, e que NÃO dispara com um atraso normal.
+  # `interval: 1m`, e não 10m, por causa do staleness do Prometheus: uma série
+  # sem amostra por mais de 5 min é considerada obsoleta e some da avaliação.
+  # Com amostras de 10 em 10 minutos a série ficava stale entre elas e o
+  # `for: 10m` nunca completava — o teste falhava sem que a regra estivesse
+  # errada. O incremento de 600s/min comprime 6h30 de idade em 40 minutos de
+  # tempo simulado.
   - interval: 1m
-    name: "arquivamento de WAL parado por mais de 5 minutos dispara"
+    name: "arquivamento de WAL parado por mais de 6h30 dispara"
     input_series:
-      # idade crescendo 60s por minuto: o archive_command parou de funcionar
       - series: 'pg_stat_archiver_last_archive_age{instance="pg:9187"}'
-        values: "0+60x20"
+        values: "0+600x60"
     alert_rule_test:
-      # em 5m a idade é 300 — o limiar é `> 300`, ainda não bateu
-      - eval_time: 5m
+      # em 39m a idade é 23400 — o limiar é `> 23400`, ainda não bateu
+      - eval_time: 39m
         alertname: ArquivamentoDeWalParado
         exp_alerts: []
-      # passa de 300 em 6m, e o `for: 5m` só o entrega em 11m
-      - eval_time: 10m
+      # passa de 23400 em 40m (24000), e o `for: 10m` só o entrega em 50m
+      - eval_time: 45m
         alertname: ArquivamentoDeWalParado
         exp_alerts: []
-      - eval_time: 12m
+      - eval_time: 51m
         alertname: ArquivamentoDeWalParado
         exp_alerts:
           - exp_labels:
@@ -247,8 +252,8 @@ tests:
               runbook: postgres/backup/README.md
               instance: pg:9187
             exp_annotations:
-              summary: "Nenhum WAL arquivado há mais de 5 minutos"
-              description: "O pg_wal está retendo segmentos. Verifique `docker logs postgres-postgres-1 | grep archive` e `pgbackrest --stanza=<stanza> check`. Se o repositório estiver inacessível, o disco do banco enche — meça o espaço livre AGORA com `df -h` no volume do PGDATA antes de investigar a causa."
+              summary: "Nenhum WAL arquivado há mais de 6h30"
+              description: "Nem a escrita normal nem o `check` de 6h do pgBackRest fecharam um segmento. O pg_wal pode estar retendo segmentos. Verifique `docker logs postgres-postgres-1 | grep archive` e `pgbackrest --stanza=<stanza> check`. Se o repositório estiver inacessível, o disco do banco enche — meça o espaço livre AGORA com `df -h` no volume do PGDATA antes de investigar a causa. Num banco de escrita rara, confirme antes se o sidecar do pgBackRest está no ar: sem o `check` periódico, um banco ocioso não fecha segmento e este alerta dispara sem haver falha."
 
   - interval: 1m
     name: "arquivamento normal com archive_timeout=60s não gera alerta"
@@ -258,6 +263,40 @@ tests:
         values: "0 60 120 0 60 120 0 60 120 0 60 120 0 60 120 0 60 120 0 60"
     alert_rule_test:
       - eval_time: 19m
+        alertname: ArquivamentoDeWalParado
+        exp_alerts: []
+
+  # O caso que motivou o limiar de 6h30, e a razão de ele não poder ser 300s.
+  #
+  # `dados_cnpj` recebe carga uma vez por mês e é leitura pura entre elas.
+  # `archive_timeout=60s` NÃO fecha um segmento nesse regime: ele só age quando
+  # houve alguma escrita de WAL desde o último. Sem escrita, o PostgreSQL não
+  # gera segmento vazio — deliberadamente.
+  #
+  # Quem fecha o segmento nesse banco é o `check` do pgBackRest, a cada 6h. A
+  # série resultante é esta serra longa: sobe até ~6h e volta a zero. Com o
+  # limiar antigo de 300s isso era um `critical` permanente com o sistema
+  # perfeitamente saudável — medido em 31/07/2026, o alerta subiu em 6 minutos
+  # com `failed_count=0` e o último segmento arquivado com sucesso.
+  - interval: 1m
+    name: "banco de escrita rara: serra de 6h do check do pgBackRest não alerta"
+    input_series:
+      # Idade crescendo 60s por minuto — o relógio correndo sem ninguém
+      # escrever — e voltando a zero quando o `check` de 6h fecha um segmento.
+      # Dois ciclos completos, com pico de 21.540s (5h59) em cada.
+      - series: 'pg_stat_archiver_last_archive_age{instance="pg:9187"}'
+        values: "0+60x359 0+60x359"
+    alert_rule_test:
+      # topo do primeiro ciclo, logo antes do check fechar o segmento
+      - eval_time: 359m
+        alertname: ArquivamentoDeWalParado
+        exp_alerts: []
+      # depois do reset, subindo de novo
+      - eval_time: 500m
+        alertname: ArquivamentoDeWalParado
+        exp_alerts: []
+      # topo do segundo ciclo
+      - eval_time: 719m
         alertname: ArquivamentoDeWalParado
         exp_alerts: []
 
