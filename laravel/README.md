@@ -1,0 +1,191 @@
+# laravel
+
+Imagens base das aplicações Laravel da BrasilDataHub — a camada que os
+verticais (`baseempresarial`, `baseescolar`, `basehospitalar`, …) herdam em vez
+de reconstruir.
+
+| Imagem | Base | Papel |
+|---|---|---|
+| `ghcr.io/brasildatahub/laravel-app:8.4` | `dunglas/frankenphp:1.12-php8.4-bookworm` | runtime **web** — Octane + Caddy |
+| `ghcr.io/brasildatahub/laravel-worker:8.4` | `php:8.4-cli-alpine` | runtime **worker** — fila, Horizon, scheduler, Reverb |
+| `ghcr.io/brasildatahub/laravel-builder:8.4` | `laravel-app` + Node 22 | **build** — Composer e npm/Vite |
+
+## Por que elas existem
+
+Até julho de 2026 cada projeto carregava um `Dockerfile` de 107 linhas e um
+`Dockerfile.worker` de 73 que instalavam **as mesmas 14 extensões PHP** em
+distribuições diferentes. Num runner sem cache — que é o caso de todo build
+limpo — essa camada é de longe a mais cara do build, e é a que menos muda. Era
+construída duas vezes por projeto, e seria construída duas vezes por vertical.
+
+Além do custo, havia o risco: duas listas mantidas à mão, uma no Dockerfile do
+app e outra no do worker. Nada as obrigava a concordar, e uma divergência não
+aparece no build — aparece como job de fila estourando `Class not found`, com o
+container web funcionando perfeitamente ao lado.
+
+Aqui a lista é **um arquivo**, [`php-extensions.txt`](php-extensions.txt), lido
+pelos dois runtimes, e a paridade entre eles é afirmada no CI antes de qualquer
+publicação.
+
+### O que mudou, medido
+
+Build limpo (`docker builder prune -af` antes de cada um, `--no-cache`) das duas
+imagens do Base Empresarial, no mesmo host (Apple Silicon, OrbStack):
+
+| | antes | depois | |
+|---|---|---|---|
+| imagem web | 83 s | **21 s** | −75% |
+| imagem worker | 92 s | **13 s** | −84% |
+| **total** | **175 s** | **34 s** | **−81%** |
+| tamanho da imagem web | 1,38 GB | **1,14 GB** | −240 MB |
+| tamanho da imagem worker | 925 MB | **704 MB** | −221 MB |
+| instruções no Dockerfile web | 71 | **32** | −55% |
+| instruções no Dockerfile worker | 55 | **24** | −56% |
+
+O "depois" tem as imagens base presentes no host, que é o cenário real: elas
+chegam por `docker pull` e não são reconstruídas a cada deploy. O tempo que
+sumiu é o de instalar as 14 extensões duas vezes.
+
+Os tamanhos caem porque o segundo `composer install` deixou de existir e o
+contexto passou a ser copiado duas vezes em vez de três — camadas que antes
+guardavam cópias do mesmo conteúdo.
+
+## O que vai na imagem e o que vem da aplicação
+
+Mesma divisão dos demais módulos do repositório.
+
+| Na imagem (decisão de stack) | Na aplicação (decisão de projeto) |
+|---|---|
+| versão do PHP, do FrankenPHP e do Composer | `composer.json` / `composer.lock` |
+| as 14 extensões PHP | `package.json` / `package-lock.json` |
+| tuning do OPcache (`php/99-custom.ini`) | código, views, rotas |
+| `Caddyfile` genérico de Octane | `public/frankenphp-worker.php` |
+| entrypoints (web e worker) | `public/build` gerado pelo Vite |
+| `curl`, `unzip`, `sqlite3`/`sqlite` | `public/version.json` |
+| `WORKDIR /var/www/html`, `EXPOSE 8000`, healthcheck | limites de memória e CPU, réplicas |
+
+## Este módulo não é um serviço
+
+Diferente de `postgres/`, `redis/` ou `opensearch/`, aqui **não há**
+`docker-compose.yml`, `profiles/*.env`, entrada no `setup.sh`, `job_name` no
+Prometheus nem dashboard no Grafana. A ausência é deliberada, não esquecimento:
+uma imagem base não sobe sozinha e não é provisionada numa VPS — ela é herdada
+por um `FROM` no Dockerfile de uma aplicação. Quem define limites, réplicas,
+volumes e variáveis é o compose **do projeto** que a consome.
+
+## Como uma aplicação usa
+
+O caminho completo, com os dois Dockerfiles prontos para copiar, está em
+[docs/uso-em-novas-aplicacoes.md](docs/uso-em-novas-aplicacoes.md). Em resumo:
+
+```dockerfile
+FROM ghcr.io/brasildatahub/laravel-builder:8.4 AS builder
+WORKDIR /app
+COPY composer.json composer.lock ./
+RUN composer install --no-interaction --no-dev --no-scripts --no-autoloader
+COPY package.json package-lock.json .npmrc ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM ghcr.io/brasildatahub/laravel-app:8.4
+WORKDIR /var/www/html
+COPY --from=builder /app/vendor ./vendor
+COPY . .
+COPY --from=builder /app/public/build ./public/build
+RUN composer dump-autoload --optimize --no-dev --no-interaction \
+    && chown -R www-data:www-data storage
+```
+
+O worker é ainda mais curto — `FROM ghcr.io/brasildatahub/laravel-worker:8.4`,
+`composer install`, `COPY . .`, `dump-autoload`.
+
+**O builder deriva do app**, e isso é o que faz o `vendor/` gerado nele servir
+como vendor de produção: mesmo PHP, mesmas extensões. Foi o que permitiu
+eliminar o segundo `composer install` e o `--ignore-platform-reqs`, que existia
+apenas porque o antigo estágio `composer:2` não tinha as extensões do projeto.
+
+## Variáveis de ambiente
+
+Lidas pelos entrypoints em tempo de execução. Nenhuma precisa ser definida para
+a imagem subir; os defaults são os de produção.
+
+### Comuns aos dois runtimes
+
+| Variável | Default | O que controla |
+|---|---|---|
+| `APP_ENV` | `production` | em `production` liga `opcache.validate_timestamps=0` e roda `artisan optimize`; fora dele roda `optimize:clear`, porque o código chega por bind mount |
+| `RUN_SETUP_TASKS` | `true` | `storage:link` + `optimize`/`optimize:clear` no start |
+| `RUN_MIGRATIONS` | `false` | `artisan migrate --force` no start |
+| `ARTISAN` | `php -d variables_order=EGPCS /var/www/html/artisan` | como o artisan é invocado |
+| `OPCACHE_JIT_BUFFER_SIZE` | vazio (JIT desligado) | liga o JIT sem rebuild, para remedição |
+| `OPCACHE_JIT_MODE` | `tracing` | modo do JIT, escrito junto do buffer |
+
+### Só no `laravel-app`
+
+| Variável | Default | O que controla |
+|---|---|---|
+| `APP_COMMAND` | `artisan octane:start --server=frankenphp --host=0.0.0.0 --port=8000 --caddyfile=/etc/caddy/Caddyfile` | o processo do container |
+| `CADDY_SERVER_SERVER_NAME` | `:8000` | endereço em que o Caddy escuta |
+| `CADDY_SERVER_LOG_LEVEL` | `warn` | verbosidade do log de acesso |
+| `CADDY_SERVER_WATCH_DIRECTIVES` | vazio | reinício automático do worker Octane ao mudar arquivo — só faz sentido em desenvolvimento |
+| `CADDY_SERVER_EXTRA_DIRECTIVES`, `CADDY_EXTRA_CONFIG`, `CADDY_GLOBAL_OPTIONS` | vazio | pontos de extensão do Caddyfile |
+| `CADDY_SERVER_ADMIN_PORT` | `2019` | porta da API admin do Caddy |
+
+`APP_PUBLIC_PATH` **não** se define: quem a injeta é o próprio Octane ao subir
+o Caddy, e o Caddyfile da imagem a lê de lá.
+
+### Só no `laravel-worker`
+
+| Variável | Default | O que controla |
+|---|---|---|
+| `CONTAINER_ROLE` | `worker` | `worker`, `horizon`, `scheduler` ou `reverb` |
+| `SCHEDULER_MODE` | `run` | `run` (execução única) ou `loop` (a cada 60 s) |
+| `WORKER_COMMAND` | `artisan queue:work -vv --tries=3 --sleep=5 --timeout=300 --delay=10` | comando do papel `worker` |
+| `HORIZON_COMMAND` | `artisan horizon` | comando do papel `horizon` |
+| `SCHEDULER_COMMAND` | `artisan schedule:run --no-interaction` | comando do papel `scheduler` |
+
+## Por que o worker é Alpine e o app é Debian
+
+É o ambiente em que o worker desta organização já rodava, e a escolha foi
+**mantida deliberadamente** na refatoração: trocar a libc de um processo que
+executa jobs de longa duração é risco sem contrapartida imediata.
+
+O preço é real e vale estar escrito: são duas árvores de camadas, as extensões
+compilam duas vezes, e nada além do teste de paridade impede que os dois
+runtimes divirjam. É esse teste que torna a escolha segura — ele roda no CI
+antes de qualquer push, e compara `php -m` das duas imagens linha a linha.
+
+Unificar os dois sobre a base Debian continua sendo a melhoria de maior impacto
+disponível aqui, e o caminho está aberto: `laravel-app` já traz um PHP CLI
+completo.
+
+## Multi-arch
+
+As três imagens publicam `linux/amd64` **e** `linux/arm64` — diferente dos
+módulos de infraestrutura deste repositório, que são só `amd64`. O motivo é que
+estas imagens são consumidas em **tempo de build**, inclusive na estação de
+desenvolvimento, e as estações da equipe são Apple Silicon. Sem `arm64` no
+manifest, todo build local cairia em emulação.
+
+O custo aparece no CI: compilar as extensões para `arm64` sob QEMU é lento. É
+aceitável porque a imagem muda raramente — e é exatamente por isso que os
+filtros de `paths:` no workflow são estreitos, por arquivo que entra na imagem.
+
+## Versionamento
+
+Duas tags por imagem, como no resto do repositório: `:8.4` acompanha a revisão
+corrente e `:8.4-r1` é imutável. A política, e quando incrementar a revisão,
+estão em [docs/versionamento.md](docs/versionamento.md).
+
+## Testes
+
+```bash
+bash laravel/test/laravel-images.test.sh
+```
+
+Builda as três imagens e afirma: paridade de extensões entre app e worker, as
+extensões da lista presentes nas duas, as diretivas de `99-custom.ini`
+aplicadas, Composer respondendo, entrypoints executáveis, `Caddyfile` no lugar
+que o Octane espera, `bash` no worker, PHP thread-safe no app e Node 22 no
+builder. É o gate que roda no CI antes da publicação.

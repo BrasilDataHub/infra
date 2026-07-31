@@ -1,0 +1,53 @@
+# Extensões PHP das imagens de aplicação da BrasilDataHub.
+#
+# UMA lista, lida pelos DOIS runtimes (Dockerfile.app e Dockerfile.worker).
+# Antes desta refatoração a lista estava escrita duas vezes, no Dockerfile do
+# app e no do worker — e os dois rodam distribuições diferentes (Debian/glibc e
+# Alpine/musl). Nada impedia que divergissem, e uma divergência aqui não
+# aparece no build: aparece como job de fila que falha com "Class not found"
+# depois de a aplicação já estar no ar, porque o container web tinha a extensão
+# e o worker não. O teste em test/laravel-images.test.sh afirma a paridade.
+#
+# Formato: um nome por linha, comentários com `#`. Os Dockerfiles fazem
+# `grep -vE '^[[:space:]]*(#|$)'` e passam o resultado ao install-php-extensions.
+#
+# Ao ACRESCENTAR uma extensão, incremente a revisão da imagem — ver
+# docs/versionamento.md. Ao REMOVER, confira antes se nenhum projeto consumidor
+# a usa: as imagens são compartilhadas entre os verticais.
+
+# Concorrência e sinais. `pcntl` é exigido pelo Octane e pelo Horizon: sem ela
+# o `queue:work` não consegue tratar SIGTERM e o container morre sem drenar o
+# job em andamento. `posix` e `sockets` acompanham.
+pcntl
+posix
+sockets
+
+# Bancos. `pdo_pgsql` é o que a stack usa em produção; `pdo_mysql` e
+# `pdo_sqlite` ficam porque a suíte de testes roda em SQLite e porque remover
+# um driver de uma imagem compartilhada é mudança que quebra outro vertical.
+pdo_mysql
+pdo_pgsql
+pdo_sqlite
+
+# Cache e fila. O `redis` nativo (phpredis) — o predis é PHP puro e não
+# depende desta extensão, mas o driver nativo é o caminho rápido.
+redis
+
+# Formatação e texto. `intl` é dependência dura do Laravel para número, data e
+# collation em pt-BR.
+intl
+calendar
+
+# Imagens, arquivos e planilhas. `gd`, `zip` e `exif` sustentam upload de
+# imagem e o maatwebsite/excel.
+gd
+zip
+exif
+
+# Aritmética de precisão — dinheiro e cálculo de participação societária não
+# podem passar por float.
+bcmath
+
+# Profiler amostral. É o que o Sentry usa para profiling de produção; sem ela
+# o SDK degrada em silêncio e as traces chegam sem amostras de CPU.
+excimer

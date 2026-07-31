@@ -17,6 +17,8 @@ on:
       - "monitoring/**"
       - "postgres/initdb/*.sh"
       - "meilisearch/metrics-key.sh"
+      - "laravel/entrypoint*.sh"
+      - "laravel/test/*.sh"
       - ".github/workflows/lint-setup.yml"
   pull_request:
     paths:
@@ -30,6 +32,8 @@ on:
       - "monitoring/**"
       - "postgres/initdb/*.sh"
       - "meilisearch/metrics-key.sh"
+      - "laravel/entrypoint*.sh"
+      - "laravel/test/*.sh"
   workflow_dispatch:
 
 jobs:
@@ -48,6 +52,12 @@ jobs:
                      meilisearch/metrics-key.sh \
                      monitoring/grafana/vendorizar.sh \
                      monitoring/test/prometheus-config.test.sh
+          # Os entrypoints das imagens de aplicação. Eles decidem se o container
+          # sobe: um erro de sintaxe aqui não aparece no build da imagem, só no
+          # start, e o `set -e` faz o container morrer sem log útil.
+          shellcheck laravel/entrypoint.sh \
+                     laravel/entrypoint-worker.sh \
+                     laravel/test/laravel-images.test.sh
 
       # Cobre, entre outras coisas, se os blocos PG_* do script continuam
       # idênticos aos de postgres/docs/perfis.md e se as envs existem na imagem.

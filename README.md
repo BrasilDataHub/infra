@@ -13,9 +13,15 @@ Este repositório centraliza a configuração da stack Docker utilizada por algu
 | OpenSearch | `ghcr.io/brasildatahub/opensearch:3` — o motor de busca, mapping versionado, perfis `compartilhada-8gb` e `dedicada-16gb` | [`opensearch/`](opensearch/README.md) |
 | Meilisearch | `ghcr.io/brasildatahub/meilisearch:1.34` — wrapper pinado, perfis `busca-512mb`–`busca-16gb`. **Em substituição** pelo OpenSearch | [`meilisearch/`](meilisearch/) |
 | Observabilidade | `prometheus:3`, `grafana:13`, `alertmanager` e `blackbox-exporter` — **opcional**, perfis `metricas-512mb`–`metricas-8gb` | [`monitoring/`](monitoring/) |
+| Aplicação (Laravel) | `ghcr.io/brasildatahub/laravel-app:8.4` (FrankenPHP + Octane), `laravel-worker:8.4` (fila, Horizon, scheduler) e `laravel-builder:8.4` (Composer + Node, só build) — a stack de aplicação que os verticais **herdam** em vez de reconstruir ([uso em novas aplicações](laravel/docs/uso-em-novas-aplicacoes.md), [versionamento](laravel/docs/versionamento.md)) | [`laravel/`](laravel/README.md) |
 
 Cada pasta tem seu README com as variáveis de configuração, os perfis por
 máquina e o passo a passo de implantação.
+
+> **`laravel/` é a exceção da lista**, e de propósito: são imagens **base**, não
+> serviços. Não têm compose, perfil, entrada no `setup.sh` nem alvo no
+> Prometheus — quem as consome é um `FROM` no Dockerfile de uma aplicação, e
+> quem define limites, réplicas e variáveis é o compose do projeto.
 
 > **Implantando do zero?** A ordem entre os repositórios da operação
 > (`plataforma`, `baseempresarial-services`, `baseempresarial-web`) e o que
@@ -427,4 +433,12 @@ repositório permanece privado. A CI
 docker pull ghcr.io/brasildatahub/postgres:17
 docker pull ghcr.io/brasildatahub/redis:7
 docker pull ghcr.io/brasildatahub/meilisearch:1.34
+docker pull ghcr.io/brasildatahub/laravel-app:8.4
+docker pull ghcr.io/brasildatahub/laravel-worker:8.4
+docker pull ghcr.io/brasildatahub/laravel-builder:8.4
 ```
+
+As três imagens de aplicação são as únicas publicadas em **multi-arch**
+(`linux/amd64` e `linux/arm64`): são consumidas em tempo de build, inclusive nas
+estações Apple Silicon da equipe. As de infraestrutura rodam só em servidor e
+continuam `amd64`.

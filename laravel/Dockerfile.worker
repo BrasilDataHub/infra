@@ -1,0 +1,67 @@
+# Runtime de worker das aplicações Laravel da BrasilDataHub
+# (ghcr.io/brasildatahub/laravel-worker): PHP CLI, sem servidor web.
+#
+# Cobre os quatro papéis que o entrypoint conhece, escolhidos por CONTAINER_ROLE
+# no start: `worker` (queue:work), `horizon`, `scheduler` e `reverb`. Uma imagem
+# só — o que muda entre eles é variável de ambiente, não conteúdo.
+#
+# POR QUE ALPINE, e não a mesma base Debian do laravel-app: é o ambiente em que
+# o worker desta organização já roda, e a escolha foi mantida deliberadamente
+# nesta refatoração para não trocar a libc de um processo que executa jobs de
+# longa duração. O preço é real e vale registrar: são duas árvores de camadas,
+# as extensões compilam duas vezes, e nada além do teste de paridade em
+# test/laravel-images.test.sh impede que os dois runtimes divirjam. É esse
+# teste que torna a escolha segura — ele roda no CI antes de qualquer push.
+#
+# `HEALTHCHECK NONE` é intencional: um worker não atende porta. Sem isso o
+# Docker herdaria o healthcheck do PHP oficial e o container ficaria eternamente
+# `unhealthy`, poluindo o `docker ps` e qualquer alerta baseado nele.
+
+# Todas as versões num bloco só, e ANTES do primeiro FROM: um ARG declarado
+# depois de um FROM pertence àquele estágio e não é visível nos FROM seguintes.
+#
+# Pinar o instalador importa: sem tag, ele mudava a cada build, e é ele quem
+# decide como cada extensão é compilada.
+ARG PHP_VERSION=8.4
+ARG PHP_EXTENSION_INSTALLER_VERSION=2.11.12
+ARG COMPOSER_VERSION=2
+
+# Dois estágios só para poder versionar o que vem de fora: o `--from` de um
+# COPY não aceita expansão de variável, então a única forma de a versão ser um
+# ARG é ela aparecer num FROM.
+FROM mlocati/php-extension-installer:${PHP_EXTENSION_INSTALLER_VERSION} AS extension-installer
+
+FROM composer:${COMPOSER_VERSION} AS composer
+
+FROM php:${PHP_VERSION}-cli-alpine
+
+COPY --from=extension-installer /usr/bin/install-php-extensions /usr/local/bin/
+
+# O MESMO arquivo que o Dockerfile.app usa. É esta linha que faz a paridade
+# entre web e worker ser uma propriedade do repositório, e não uma coincidência
+# entre duas listas mantidas à mão.
+COPY php-extensions.txt /tmp/php-extensions.txt
+RUN install-php-extensions $(grep -vE '^[[:space:]]*(#|$)' /tmp/php-extensions.txt | tr '\n' ' ') \
+    && rm /tmp/php-extensions.txt
+
+# `bash` não é conforto: o entrypoint usa `local` e `[[`, que o `ash` do Alpine
+# não implementa da mesma forma. Sem ele o container não sobe.
+RUN apk add --no-cache \
+    bash \
+    curl \
+    unzip \
+    sqlite
+
+COPY --from=composer /usr/bin/composer /usr/local/bin/composer
+
+COPY php/99-custom.ini /usr/local/etc/php/conf.d/99-custom.ini
+
+WORKDIR /var/www/html
+
+COPY entrypoint-worker.sh /usr/local/bin/entrypoint
+RUN chmod +x /usr/local/bin/entrypoint
+
+ENTRYPOINT ["/usr/local/bin/entrypoint"]
+
+ENV CONTAINER_ROLE=worker
+HEALTHCHECK NONE
