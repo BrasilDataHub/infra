@@ -185,6 +185,29 @@ Três travas impedem que o ensaio toque produção: recusa de volume igual ao de
 produção, recusa de porta ocupada e recusa de restaurar sobre o `pg1-path` da
 stanza.
 
+> ⚠️ **Com repositório `posix`, o ensaio precisa de `EXTRA_MOUNTS`.** Os
+> containers que ele cria são **novos**: eles não herdam o mount que o
+> [`docker-compose.backup-local.yml`](../docker-compose.backup-local.yml) deu ao
+> Postgres e ao sidecar. A origem é o `BDH_BACKUP_REPO_DIR` do `.env`, e o
+> destino é o `repo1-path` do `pgbackrest.conf`:
+>
+> ```bash
+> EXTRA_MOUNTS="-v /mnt/bdh-backup/pgbackrest:/var/lib/pgbackrest" \
+>   bash postgres/backup/restore-drill.sh --stanza dados-cnpj --db dados_cnpj \
+>       --tabela estabelecimento --esperado 72318968
+> ```
+>
+> Sem isso o pgBackRest abre um `/var/lib/pgbackrest` vazio e responde
+> `ERROR: [075]: no backup set found to restore`, com o hint
+> `has a stanza-create been performed?` — uma mensagem que manda procurar um
+> backup ausente quando o backup existe e íntegro, e o que falta é o mount.
+> Desde 07/2026 o script **recusa começar** nesse caso, dizendo isso. Com
+> `repo1-type=s3` nada disso se aplica: o repositório é um endpoint.
+>
+> O volume `bdh_pg_restore` **não é removido** no fim (só o container é), e ele
+> tem o tamanho do PGDATA restaurado. Apague-o quando terminar de inspecionar:
+> `docker volume rm bdh_pg_restore`.
+
 > **Detalhe que já quebrou o ensaio uma vez:** o `restore` grava em
 > `postgresql.auto.conf` um `restore_command` com o `--pg1-path` usado na
 > restauração. O cluster restaurado precisa ser iniciado com o PGDATA **no

@@ -104,6 +104,47 @@ checar_isolamento() {
     fi
 
     [ -d "$CONF_DIR" ] || die "$CONF_DIR não existe no host — sem configuração do pgBackRest."
+
+    # REPOSITÓRIO POSIX SEM MOUNT — o erro que este bloco existe para traduzir.
+    #
+    # Com `repo1-type=posix` o repositório é um caminho de filesystem, e os
+    # containers que este script cria são NOVOS: eles não herdam o mount que o
+    # docker-compose.backup-local.yml deu ao Postgres e ao sidecar. Sem
+    # EXTRA_MOUNTS, o pgBackRest abre `/var/lib/pgbackrest` vazio e responde:
+    #
+    #     ERROR: [075]: no backup set found to restore
+    #     HINT: has a stanza-create been performed?
+    #
+    # Ou seja: a mensagem manda procurar um backup que não existe, quando o
+    # backup existe e o que falta é o mount. Verificado em 31/07/2026, com um
+    # full de 47,2 GB registrado e íntegro no repositório.
+    local repo_tipo repo_caminho
+    repo_tipo="$(sed -n 's/^[[:space:]]*repo1-type[[:space:]]*=[[:space:]]*//p' \
+                 "$CONF_DIR/pgbackrest.conf" 2>/dev/null | head -1)"
+    if [ "${repo_tipo:-s3}" = "posix" ]; then
+        repo_caminho="$(sed -n 's/^[[:space:]]*repo1-path[[:space:]]*=[[:space:]]*//p' \
+                        "$CONF_DIR/pgbackrest.conf" 2>/dev/null | head -1)"
+        repo_caminho="${repo_caminho:-/var/lib/pgbackrest}"
+        # O alvo do mount é o caminho de DENTRO do container, que é o que está
+        # no pgbackrest.conf; o de origem é do host e o script não tem como
+        # adivinhá-lo — por isso a checagem é "há mount para este alvo?", e não
+        # "o caminho existe no host".
+        case " ${EXTRA_MOUNTS[*]+${EXTRA_MOUNTS[*]}} " in
+            *":${repo_caminho} "*|*":${repo_caminho}:"*) ;;
+            *)
+                die "repo1-type=posix e o repositório NÃO está montado nos containers do ensaio.
+   O restore falharia com 'no backup set found to restore', que sugere um
+   backup ausente — mas o que falta é o mount: os containers deste script são
+   novos e não herdam o do docker-compose.backup-local.yml.
+
+   Informe a origem no host (o BDH_BACKUP_REPO_DIR do .env do postgres):
+     EXTRA_MOUNTS=\"-v /caminho/no/host:${repo_caminho}\" bash \$0 ...
+
+   Com repo1-type=s3 esta checagem não se aplica: lá o repositório é um
+   endpoint e nenhum mount é necessário."
+                ;;
+        esac
+    fi
 }
 
 limpar() {
