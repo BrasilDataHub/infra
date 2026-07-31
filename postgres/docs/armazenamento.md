@@ -122,23 +122,47 @@ sdb  · 344 GB    backup + insumos + N−1        ~249 GB      (72 %)
 É isto que o volume de 344 GB garante: **espaço para manter o N−1 sem apertar o
 disco do banco**, em vez de precisar dropá-lo assim que a nova geração sobe.
 
-### `max_wal_size` durante a carga
+### `max_wal_size`
 
 `max_wal_size` é `sighup` — muda com `SELECT pg_reload_conf()`, sem restart.
 
-Reduzir para 8 GB durante a janela libera até 24 GB. O custo é mais checkpoints
-durante a carga, que é justamente quando a escrita é mais pesada. Use quando a
-folga for necessária, e devolva o valor ao fim:
+**Reduzi-lo não devolve espaço já ocupado.** O `pg_wal` guarda dois tipos de
+segmento, e só um deles o checkpoint remove:
 
-```sql
-ALTER SYSTEM SET max_wal_size = '8GB';
-SELECT pg_reload_conf();
--- ao fim da carga
-ALTER SYSTEM RESET max_wal_size;
-SELECT pg_reload_conf();
+```
+ segmento atual .................. 000000010000001E000000F8
+ atrás do LSN atual (histórico) ..     1 segmento  =   16 MB
+ à frente (pré-alocados) .........  1847 segmentos =   28 GB
 ```
 
-Acompanhe `CheckpointsForcadosDemais` enquanto estiver reduzido.
+O checkpoint só reavalia o que ficou **atrás** do LSN. Os segmentos à frente já
+foram renomeados para uso futuro e só voltam a ser avaliados quando o WAL avança
+até eles — o que exige escrita, não tempo. Num cluster ocioso o `pg_wal` fica no
+tamanho em que estava, qualquer que seja o `max_wal_size`.
+
+Então o parâmetro é um **teto para o próximo ciclo**, não uma alavanca de
+emergência. Para liberar `pg_wal` agora, a única via é gerar WAL suficiente para
+consumir os pré-alocados — o que a carga mensal faz sozinha.
+
+Onde definir: `PG_MAX_WAL_SIZE` no `.env` do serviço, que sobrevive a um
+`bdh up`. Um `ALTER SYSTEM` é aplicado mais rápido, mas escreve em
+`postgresql.auto.conf` e passa a divergir do que o perfil declara:
+
+```bash
+# no .env do serviço, e depois um reload
+sed -i 's/^PG_MAX_WAL_SIZE=.*/PG_MAX_WAL_SIZE=8GB/' .env
+docker exec <container> sed -i 's/^max_wal_size = .*/max_wal_size = 8GB/' \
+  /etc/postgresql/postgresql.conf
+docker exec <container> psql -U postgres -Atc 'select pg_reload_conf()'
+```
+
+Mantenha `PG_MIN_WAL_SIZE` bem abaixo do máximo: com os dois iguais, o cluster
+nunca recicla para baixo.
+
+O custo de reduzir é mais checkpoints forçados durante a escrita pesada.
+Acompanhe pelo `num_requested` de `pg_stat_checkpointer` e pelo alerta
+`CheckpointsForcadosDemais` — um `num_requested` que se aproxima do `num_timed`
+indica que o teto está apertado para a carga.
 
 ### Geração N−1 no volume
 
@@ -198,8 +222,10 @@ O upgrade de instância custa **20× mais por GB** e vem com CPU e RAM que a car
 não pede. O volume é a via de expansão sempre que o dado couber no perfil de I/O
 dele.
 
-**O que o volume não resolve:** espaço para o `PGDATA` em produção. Para isso, as
-saídas são a poda de índices e o ajuste temporário de `max_wal_size`.
+**O que o volume não resolve:** espaço para o `PGDATA` em produção. Para isso a
+saída é a poda de índices sem uso. Reduzir `max_wal_size` baixa o teto do
+próximo ciclo, mas **não devolve o `pg_wal` já alocado** — ver a seção do
+parâmetro acima.
 
 ## Alertas
 
