@@ -159,6 +159,28 @@ else
     nok "MONITORING_BIND_IP não é gravado no estado — a herança acima é letra morta"
 fi
 
+# --- 2f. o alvo do serviço que saiu é removido ------------------------------
+# O bloco de alvos só ESCREVIA, e o comentário dele promete o contrário:
+# "serviço ausente não deixa arquivo... o job fica sem alvo em vez de ficar
+# `up == 0` para sempre". A promessa valia para instalação nova, não para
+# reexecução: quem tirou um serviço de `--services` ficava com o arquivo antigo
+# e um job vermelho permanente no Prometheus.
+#
+# Observado ao substituir Meilisearch por OpenSearch: `meilisearch` seguia como
+# alvo `down`, e alvo cronicamente vermelho ensina que vermelho é normal.
+if grep -q 'alvo obsoleto removido' "$RAIZ/setup.sh"; then
+    ok "o alvo de um serviço removido é apagado do diretório de targets"
+else
+    nok "alvos locais só são escritos, nunca removidos — job fica up==0 para sempre"
+fi
+# A remoção tem de cobrir os mesmos jobs que a escrita cobre; um job escrito e
+# nunca removido é o defeito de volta, só que para outro serviço.
+for _job in postgres redis meilisearch opensearch; do
+    grep -q "for job_local in .*$_job" "$RAIZ/setup.sh" \
+        || nok "o job '$_job' é escrito mas não entra na limpeza"
+done
+ok "a limpeza cobre os mesmos jobs locais que a escrita"
+
 # --- 2e. sem --allow-from, o after.rules não é tocado ----------------------
 # A remoção do bloco de `after.rules` ficava ACIMA da guarda de `ALLOW_FROM`
 # vazio. Numa execução sem a flag — que é exatamente o `--update` de rotina — o

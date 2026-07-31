@@ -2387,6 +2387,28 @@ setup_metrics() {
             && printf '[{"targets":["cadvisor:8080"],"labels":{"host":"%s"}}]\n' "$hl" \
                > "$mdir/targets/cadvisor.json"
     fi
+
+    # O ALVO DO SERVIÇO QUE SAIU. O bloco acima só ESCREVE, e o comentário lá em
+    # cima promete o contrário: "serviço ausente não deixa arquivo, o job fica
+    # sem alvo em vez de ficar `up == 0` para sempre". A promessa valia para
+    # instalação nova e não para reexecução — quem tirou um serviço de
+    # `--services` ficava com o arquivo antigo e um job vermelho permanente.
+    #
+    # E alvo cronicamente vermelho é pior que alvo nenhum: ele ensina que
+    # vermelho no painel é normal, que é como um alerta de verdade passa
+    # despercebido. O caminho dos alvos REMOTOS já removia o arquivo obsoleto;
+    # faltava a metade local.
+    local job_local
+    for job_local in postgres redis meilisearch opensearch; do
+        service_selected "$job_local" && continue
+        [[ -f "$mdir/targets/${job_local}.json" ]] || continue
+        run rm -f "$mdir/targets/${job_local}.json"
+        info "alvo obsoleto removido: ${job_local} (o serviço não está mais neste host)"
+    done
+    # A chave de métricas do Meilisearch acompanha o alvo dele: deixada para
+    # trás, é um segredo em disco para um serviço que não existe mais.
+    service_selected meilisearch || run rm -f "$mdir/secrets/meili-metrics.key"
+    [[ "$METRICS_CONTAINERS" == "true" ]] || run rm -f "$mdir/targets/cadvisor.json"
     # --- alvos REMOTOS (serviços em outras máquinas) --------------------------
     # Um arquivo por job, com sufixo `-remoto`: o glob do prometheus.yml é
     # `<job>*.json`, então ele casa sem que os alvos locais sejam sobrescritos —
