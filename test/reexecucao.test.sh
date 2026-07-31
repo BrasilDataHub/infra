@@ -159,6 +159,30 @@ else
     nok "MONITORING_BIND_IP não é gravado no estado — a herança acima é letra morta"
 fi
 
+# --- 2e. sem --allow-from, o after.rules não é tocado ----------------------
+# A remoção do bloco de `after.rules` ficava ACIMA da guarda de `ALLOW_FROM`
+# vazio. Numa execução sem a flag — que é exatamente o `--update` de rotina — o
+# arquivo perdia o bloco, a chain viva era preservada, e o script anunciava
+# "PRESERVADA": verdade só até o próximo boot, quando a chain nasce vazia e as
+# portas dos containers passam a aceitar a internet inteira, com o `ufw status`
+# ainda exibindo `active`.
+#
+# O teste é sobre ORDEM no arquivo, porque é a ordem que era o defeito.
+linha_guarda=$(grep -n 'if \[\[ -z "\$ALLOW_FROM" \]\]; then' "$RAIZ/setup.sh" | head -1 | cut -d: -f1)
+linha_remocao=$(grep -n 'sed -i "/\${begin_re}/,/\${end_re}/d"' "$RAIZ/setup.sh" | head -1 | cut -d: -f1)
+if [[ -n "$linha_guarda" && -n "$linha_remocao" ]] && (( linha_remocao > linha_guarda )); then
+    ok "a remoção do bloco de after.rules vem DEPOIS da guarda de ALLOW_FROM vazio"
+else
+    nok "a remoção do bloco (linha ${linha_remocao:-?}) precede a guarda (linha ${linha_guarda:-?}): um --update sem --allow-from apaga a persistência do firewall"
+fi
+
+# E o aviso para quem JÁ está nesse estado: chain restrita, arquivo sem bloco.
+if grep -q 'NÃO está persistida em' "$RAIZ/setup.sh"; then
+    ok "avisa quando a chain está restrita mas não persistida"
+else
+    nok "sem aviso para chain viva sem bloco em after.rules"
+fi
+
 # --- 2d. recriar container é decisão separada de reaplicar configuração ----
 # `--update` e `--add-service` marcavam FORCE=true, e FORCE=true virava
 # `--force-recreate` em TODO serviço. O modo que o README manda usar derrubava

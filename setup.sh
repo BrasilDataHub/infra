@@ -2633,13 +2633,24 @@ configure_firewall() {
         return 0
     fi
 
-    # Remove o bloco de uma execução anterior (idempotência), seja qual for o
-    # nome do script que o escreveu.
-    if grep -qE "$begin_re" "$rules_file" 2>/dev/null; then
-        sed -i "/${begin_re}/,/${end_re}/d" "$rules_file"
-    fi
-
-    # A ORDEM AQUI JÁ FOI UM DEFEITO. A versão anterior esvaziava a chain e só
+    # A ORDEM AQUI JÁ FOI UM DEFEITO DUAS VEZES, e a segunda sobreviveu à
+    # correção da primeira.
+    #
+    # A remoção do bloco anterior de `after.rules` ficava ACIMA da checagem de
+    # `ALLOW_FROM` logo abaixo. O efeito, numa execução sem a flag: o arquivo
+    # perdia o bloco, a chain viva era preservada — e o script anunciava
+    # "PRESERVADA", o que era verdade só até o próximo boot. Depois dele, a
+    # chain nasce vazia, o `ufw status` segue `active`, e as portas dos
+    # containers aceitam a internet inteira.
+    #
+    # Encontrado num host real em 31/07/2026: chain viva com as regras certas,
+    # `after.rules` sem bloco nenhum. O host tinha passado por um `--update` de
+    # rotina, que é justamente a execução que não repete `--allow-from`.
+    #
+    # A regra completa é: sem `ALLOW_FROM`, não tocar em NADA — nem na chain,
+    # nem no arquivo que a reconstrói.
+    #
+    # A ORDEM ORIGINAL JÁ ERA UM DEFEITO. A versão anterior esvaziava a chain e só
     # depois checava `ALLOW_FROM`: numa execução sem a flag — que é o caso de
     # `--metrics-only` sem repetir todas as flags da instalação original — o
     # firewall dos containers era APAGADO e não reconstruído. As três portas de
@@ -2654,11 +2665,28 @@ configure_firewall() {
         if iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j DROP'; then
             warn "sem --allow-from: a chain DOCKER-USER existente foi PRESERVADA."
             warn "para alterá-la, repita --allow-from com a lista completa de origens."
+            # Preservar a chain VIVA não basta: ela é recriada vazia a cada boot,
+            # e quem a repovoa é o bloco em after.rules. Uma chain restrita sem
+            # bloco no arquivo é um host que está protegido AGORA e deixa de
+            # estar no próximo reboot — sem nada no `ufw status` que o denuncie.
+            if ! grep -qE "$begin_re" "$rules_file" 2>/dev/null; then
+                warn "  ATENÇÃO: a chain está restrita mas NÃO está persistida em ${rules_file}."
+                warn "  No próximo boot ela nasce vazia e as portas ficam abertas."
+                warn "  Corrija reexecutando com a lista de origens, por exemplo:"
+                warn "    --allow-from \$(iptables -S DOCKER-USER | awk '/-j RETURN/ && /-s/ {print \$4}' | sort -u | paste -sd,)"
+            fi
         else
             warn "portas publicadas acessíveis de qualquer origem (sem --allow-from)"
             warn "as três portas de dados aceitam conexão da internet inteira."
         fi
         return 0
+    fi
+
+    # Remove o bloco de uma execução anterior (idempotência), seja qual for o
+    # nome do script que o escreveu. DEPOIS da guarda acima: chegar aqui
+    # significa que há `ALLOW_FROM` e que o bloco será reescrito logo abaixo.
+    if grep -qE "$begin_re" "$rules_file" 2>/dev/null; then
+        sed -i "/${begin_re}/,/${end_re}/d" "$rules_file"
     fi
 
     # RECONSTRUÇÃO A PARTIR DO ESTADO. Com `ALLOW_FROM` herdado do
