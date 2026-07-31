@@ -143,10 +143,45 @@ ok "restore concluído em $((FIM_RESTORE - INICIO_RESTORE))s"
 # ---------------------------------------------------------------------------
 # 2 · Recovery
 # ---------------------------------------------------------------------------
-# Sem `-c config_file`: o cluster restaurado usa o postgresql.conf que está
-# dentro do PGDATA. É o de initdb, com defaults modestos — e é o que se quer num
-# ensaio, porque não depende de nenhuma env do deploy de produção.
+# Cinco parâmetros do cluster de ORIGEM são obrigatórios no recovery, e o
+# Postgres se recusa a abrir com qualquer um deles menor:
 #
+#   FATAL: recovery aborted because of insufficient parameter settings
+#   DETAIL: max_connections = 100 is a lower setting than on the primary
+#           server, where its value was 150.
+#
+# Eles viajam no `pg_control` do backup, e é de lá que os lemos — não do
+# deploy de produção. Assim o ensaio continua não dependendo de nenhuma env do
+# host, e ao mesmo tempo funciona com qualquer valor que a origem tenha.
+#
+# Subir com os defaults do initdb faz o recovery falhar em TODO cluster que
+# tenha mexido em algum dos cinco, que é praticamente todo cluster de produção.
+log "lendo do backup os parâmetros que o recovery exige"
+CONTROLDATA="$(docker run --rm \
+    --entrypoint pg_controldata \
+    -v "${RESTORE_VOLUME}:/restore" \
+    ${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"} \
+    "$IMAGEM" /restore 2>/dev/null)" \
+    || die "não foi possível ler o pg_control do PGDATA restaurado"
+
+# `pg_controldata` imprime "max_connections setting:  150". O `-c` só entra
+# quando o valor foi lido: um `-c max_connections=` vazio impede o Postgres de
+# subir, e um default chutado aqui reintroduziria o mesmo defeito.
+PARAMS=()
+for par in max_connections max_worker_processes max_wal_senders \
+           max_prepared_xacts max_locks_per_xact; do
+    valor="$(printf '%s\n' "$CONTROLDATA" \
+             | sed -n "s/^${par} setting:[[:space:]]*\([0-9]\{1,\}\)$/\1/p" | head -1)"
+    [ -n "$valor" ] || continue
+    case "$par" in
+        max_prepared_xacts)   nome=max_prepared_transactions ;;
+        max_locks_per_xact)   nome=max_locks_per_transaction ;;
+        *)                    nome="$par" ;;
+    esac
+    PARAMS+=(-c "${nome}=${valor}")
+    log "  ${nome} = ${valor} (da origem)"
+done
+
 # A porta é publicada em 127.0.0.1 e não em 0.0.0.0: um cluster restaurado tem a
 # MESMA senha do de produção, e publicá-lo na interface externa por dez minutos
 # é o tipo de atalho que vira incidente.
@@ -167,7 +202,7 @@ docker run -d --name "$NOME_TMP" \
     -v "${CONF_DIR}:/etc/pgbackrest:ro" \
     -p "127.0.0.1:${RESTORE_PORT}:5432" \
     ${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"} \
-    "$IMAGEM" postgres >/dev/null \
+    "$IMAGEM" postgres ${PARAMS[@]+"${PARAMS[@]}"} >/dev/null \
     || die "não foi possível subir o Postgres temporário"
 
 log "esperando o recovery terminar (pode levar tanto quanto o volume de WAL a aplicar)"
