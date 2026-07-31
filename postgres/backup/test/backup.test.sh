@@ -197,10 +197,19 @@ else
     nok "o cron não está rodando"
 fi
 
-# O healthcheck do compose, executado COMO O DOCKER EXECUTA: usuário padrão do
-# container (root) e a mesma linha de comando. Rodá-lo aqui como `postgres`
-# deixaria passar a única forma de ele quebrar — o pgBackRest recusa comandos
-# sob root, e a recusa sai pelo stdout, onde o `jq` a lê como se fosse JSON.
+# O healthcheck é extraído aqui e AFIRMADO depois do primeiro backup — ver
+# `checar_healthcheck`, chamada logo após o `--type=full`.
+#
+# A ordem é o ponto. Rodá-lo aqui, com a stanza recém-criada e nenhum backup
+# ainda, testava duas coisas ao mesmo tempo e reprovava pela errada: o
+# `pgbackrest info` de uma stanza sem backup devolve `status.code = 2`
+# ("no valid backups"), então o `jq -e '.code == 0'` falha mesmo com o `su` e o
+# usuário perfeitamente corretos. O que este bloco existe para pegar é OUTRA
+# coisa — o pgBackRest recusando comandos sob root —, e essa falha some no meio.
+#
+# Que um sidecar sem backup nenhum fique `unhealthy` é o comportamento
+# desejado, e não um defeito a contornar: `start_period` é de 2 min e o passo 4
+# do README manda rodar o primeiro full logo depois de subir.
 HC="$(python3 - "$RAIZ/postgres/docker-compose.backup.yml" <<'PY'
 import json, re, sys
 texto = open(sys.argv[1], encoding='utf-8').read()
@@ -209,14 +218,21 @@ print(json.loads(linha.group(1))[1] if linha else '')
 PY
 )"
 HC="${HC//\$\$/\$}"
-if [ -z "$HC" ]; then
-    nok "não achei o healthcheck em docker-compose.backup.yml"
-elif docker exec -e PGBACKREST_STANZA="$STANZA" "${PREFIXO}-sidecar" sh -c "$HC" >/dev/null 2>&1; then
-    ok "o healthcheck do compose passa com o usuário que o Docker usa"
-else
-    nok "o healthcheck do compose FALHA como o Docker o executa — o container fica unhealthy para sempre"
-    docker exec -e PGBACKREST_STANZA="$STANZA" "${PREFIXO}-sidecar" sh -c "$HC" 2>&1 | head -3 | sed 's/^/      /'
-fi
+[ -n "$HC" ] || nok "não achei o healthcheck em docker-compose.backup.yml"
+
+# Executado COMO O DOCKER EXECUTA: usuário padrão do container (root) e a mesma
+# linha de comando. Rodá-lo como `postgres` deixaria passar a única forma de ele
+# quebrar — o pgBackRest recusa comandos sob root, e a recusa sai pelo stdout,
+# onde o `jq` a lê como se fosse JSON.
+checar_healthcheck() {
+    [ -n "$HC" ] || return 0
+    if docker exec -e PGBACKREST_STANZA="$STANZA" "${PREFIXO}-sidecar" sh -c "$HC" >/dev/null 2>&1; then
+        ok "o healthcheck do compose passa com o usuário que o Docker usa"
+    else
+        nok "o healthcheck do compose FALHA como o Docker o executa — o container fica unhealthy para sempre"
+        docker exec -e PGBACKREST_STANZA="$STANZA" "${PREFIXO}-sidecar" sh -c "$HC" 2>&1 | head -3 | sed 's/^/      /'
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # Backup completo
@@ -230,6 +246,10 @@ else
     nok "backup --type=full falhou"
     docker exec -u postgres "${PREFIXO}-sidecar" pgbackrest --stanza="$STANZA" info 2>&1 | sed 's/^/      /'
 fi
+
+# Agora sim: com um backup no repositório, `info` devolve status 0 e o que
+# sobra para o healthcheck reprovar é o que ele existe para pegar.
+checar_healthcheck
 
 PROM="$TEXTFILE_DIR/pgbackrest.prom"
 if [ -f "$PROM" ]; then
