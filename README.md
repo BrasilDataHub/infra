@@ -7,10 +7,10 @@ Este repositório centraliza a configuração da stack Docker utilizada por algu
 | Serviço | Imagem | Documentação |
 |---|---|---|
 | PostgreSQL | `ghcr.io/brasildatahub/postgres:17` — imagem única, tuning por envs `PG_*`, perfis **dedicados** de 8 a 128 GB e o **compartilhado** `compartilhada-14gb`, todos com NVMe local ([perfis](postgres/docs/perfis.md), [deploy](postgres/docs/deploy.md), [troubleshooting](postgres/docs/troubleshooting.md), [preparação do host](postgres/docs/host.md)) | [`postgres/`](postgres/) |
-| Backup | `pgBackRest` como sidecar do Postgres — backup físico, WAL archiving, PITR e **restore ensaiado** que mede o RTO real | [`postgres/backup/`](postgres/backup/README.md) |
+| Backup | `ghcr.io/brasildatahub/pgbackrest:17` — sidecar do Postgres: backup físico, WAL archiving, PITR e **restore ensaiado** que mede o RTO real. Repositório em **object storage** ou em **volume local** | [`postgres/backup/`](postgres/backup/README.md) |
 | Redis | `ghcr.io/brasildatahub/redis:7` — perfis `cache-256mb`–`cache-2gb`; e o **par** cache/fila em instâncias separadas, com políticas incompatíveis entre si | [`redis/`](redis/README.md), [par](redis/README-par.md) |
 | PgBouncer | `ghcr.io/brasildatahub/pgbouncer:1` — transaction pooling, 400 clientes sobre 20 conexões reais. Roda no host da **aplicação** | [`pgbouncer/`](pgbouncer/README.md) |
-| OpenSearch | `ghcr.io/brasildatahub/opensearch:3` — o motor de busca, mapping versionado, perfil `compartilhada-8gb` | [`opensearch/`](opensearch/README.md) |
+| OpenSearch | `ghcr.io/brasildatahub/opensearch:3` — o motor de busca, mapping versionado, perfis `compartilhada-8gb` e `dedicada-16gb` | [`opensearch/`](opensearch/README.md) |
 | Meilisearch | `ghcr.io/brasildatahub/meilisearch:1.34` — wrapper pinado, perfis `busca-512mb`–`busca-16gb`. **Em substituição** pelo OpenSearch | [`meilisearch/`](meilisearch/) |
 | Observabilidade | `prometheus:3`, `grafana:13`, `alertmanager` e `blackbox-exporter` — **opcional**, perfis `metricas-512mb`–`metricas-8gb` | [`monitoring/`](monitoring/) |
 
@@ -158,9 +158,13 @@ root e altera o sistema.
 ### Como o `--auto` dimensiona a máquina
 
 Todos os perfis vêm em `auto`, e o dimensionamento é **coordenado**: Redis,
-Meilisearch e métricas são escolhidos pela RAM, e o **Postgres fica com o que
-sobra** — a [fórmula de reserva](postgres/docs/perfis.md#fórmula-de-reserva)
-aplicada sozinha. Com `--services postgres`, ele recebe a máquina inteira.
+Meilisearch, OpenSearch e métricas são escolhidos primeiro, e o **Postgres fica
+com o que sobra** — a
+[fórmula de reserva](postgres/docs/perfis.md#fórmula-de-reserva) aplicada
+sozinha. Com `--services postgres`, ele recebe a máquina inteira.
+
+A tabela abaixo é o caso de `--services postgres,redis,meilisearch` (o default),
+mais observabilidade:
 
 | RAM do host | Postgres | Redis | Meilisearch | Métricas | Soma dos limites |
 |---|---|---|---|---|---|
@@ -169,10 +173,26 @@ aplicada sozinha. Com `--services postgres`, ele recebe a máquina inteira.
 | 64 GB | `dedicada-32gb` | `cache-2gb` | `busca-16gb` | `metricas-512mb` | ~53 GB |
 | 128 GB | `dedicada-64gb` | `cache-2gb` | `busca-16gb` | `metricas-512mb` | ~85 GB |
 
-O que sobra não é desperdício: vira page cache, que é exatamente o ativo pelo
-qual se paga uma máquina grande para banco de dados.
+**O OpenSearch não escolhe por RAM — escolhe por companhia.** Ele não entra na
+tabela acima porque a regra dele é de outra natureza: o que decide o perfil é
+estar ou não sozinho no host.
 
-Duas observações que costumam pegar de surpresa:
+| Situação | Perfil | Limite do container | Heap | vCPU |
+|---|---|---|---|---|
+| Ao lado de Postgres, Redis ou Meilisearch | `compartilhada-8gb` | 8 GiB | 4 GiB | 6 |
+| Sozinho no host, com **≥ 14 GiB** de RAM | `dedicada-16gb` | 10 GiB | 5 GiB | 4 |
+| Sozinho, mas abaixo de 14 GiB | `compartilhada-8gb` | 8 GiB | 4 GiB | 6 |
+
+O último caso não é engano: `dedicada-16gb` pede 10 GiB de limite, e numa máquina
+menor que isso o container simplesmente não subiria. Detalhe do porquê, e o que
+custa aplicar o perfil errado, em [`opensearch/README.md`](opensearch/README.md#perfis).
+
+O que sobra não é desperdício: vira page cache, que é exatamente o ativo pelo
+qual se paga uma máquina grande para banco de dados — e, no caso do OpenSearch, é
+onde os segmentos quentes do Lucene ficam residentes, já que o `mmap` não conta
+no RSS do cgroup.
+
+Algumas observações que costumam pegar de surpresa:
 
 - **8 GB não comporta os três serviços mais observabilidade.** `dedicada-8gb` é o
   piso do catálogo, então a soma estoura e o script avisa. As saídas são
@@ -188,36 +208,63 @@ Duas observações que costumam pegar de surpresa:
   [e se a máquina não tem o tamanho de nenhum perfil](postgres/docs/perfis.md#e-se-a-máquina-não-tem-o-tamanho-de-nenhum-perfil).
 
 **CPU não é limitada.** Postgres, Redis e Meilisearch sobem sem teto de CPU e
-usam todos os núcleos da máquina. A única exceção é o OpenSearch, limitado a 6
-vCPU porque foi dimensionado para dividir o host com o banco.
+usam todos os núcleos da máquina. A exceção é o OpenSearch, que traz teto em
+**os dois** perfis: 6 vCPU em `compartilhada-8gb` — dimensionado para dividir o
+host com o banco — e 4 vCPU em `dedicada-16gb`, que roda em máquina menor. O
+número está no `OS_CPU_LIMIT` de cada perfil.
 
 Qualquer perfil pode ser fixado à mão — `--pg-profile dedicada-32gb`,
 `--redis-profile cache-1gb`, `--meili-profile busca-4gb`,
-`--metrics-profile metricas-2gb` —, e `--profiles-dir` lê de um clone local.
+`--opensearch-profile dedicada-16gb`, `--metrics-profile metricas-2gb` —, e
+`--profiles-dir` lê de um clone local.
 
 Os valores de cada perfil ficam **só** nos arquivos `.env` versionados
 (`postgres/profiles/`, `redis/profiles/`, `meilisearch/profiles/`,
-`monitoring/profiles/`): o script os baixa em vez de embutir cópias, então doc,
-script e deploy manual usam exatamente os mesmos números.
+`opensearch/profiles/`, `monitoring/profiles/`): o script os baixa em vez de
+embutir cópias, então doc, script e deploy manual usam exatamente os mesmos
+números.
+
+> **Ao trocar de perfil, substitua o `.env` — não acrescente por baixo.** Um
+> `.env` com o perfil antigo seguido das variáveis do novo *funciona*, porque o
+> Compose faz a última definição vencer, mas passa a mentir sobre si mesmo: o
+> arquivo diz no cabeçalho que é um perfil e entrega outro. Foi assim que o
+> `bdh-search` acabou com o cabeçalho de `compartilhada-8gb` e os valores de
+> `dedicada-16gb` — e a ficha de infraestrutura passou a documentar 4 GiB de heap
+> onde rodavam 5.
 
 ### O que fica onde
 
 ```
 /opt/brasildatahub/                        (--workdir)
-├── services/
+├── services/                              um diretório por serviço provisionado
 │   ├── postgres/
 │   │   ├── docker-compose.yml             baixado deste repositório
+│   │   ├── docker-compose.metrics.yml     com --metrics
+│   │   ├── docker-compose.metrics-remote.yml
+│   │   ├── docker-compose.backup.yml      com o backup implantado
+│   │   ├── docker-compose.backup-local.yml  repositório em volume local
 │   │   ├── docker-compose.override.yml    só no modo --volumes bind
 │   │   └── .env                           gerado, chmod 600
 │   ├── redis/
-│   └── meilisearch/
+│   ├── meilisearch/
+│   ├── opensearch/                        com --services/--add-service opensearch
+│   ├── pgbouncer/                         idem
+│   └── monitoring/                        com --metrics
 ├── secrets/credentials.env                todas as credenciais, chmod 600
+├── .metrics-remote.env                    METRICS_BIND_IP, lido como ambiente
 ├── setup.log
 └── .setup-state                           ref, perfil, modo de volume, data
 /etc/brasildatahub/setup.conf              aponta para a raiz acima
 /usr/local/bin/bdh                          comandos de operação
 /etc/update-motd.d/99-brasildatahub         mensagem de login
+/etc/pgbackrest/pgbackrest.conf             só com o backup: fora do git, 0640, dono 999:999
 ```
+
+Os overlays não são opcionais na hora de subir: quem compõe a linha de comando é
+o `bdh`, e ele inclui **todos** os que existirem no diretório do serviço, nesta
+ordem — base → metrics → metrics-remote → backup → backup-local → override.
+Subir na mão com um `-f` a menos é como o `archive_mode` volta a `off` sem que
+nada acuse.
 
 Operar cada serviço é entrar no diretório dele e usar o Compose normalmente
 (`cd /opt/brasildatahub/services/postgres && docker compose logs -f`), ou usar os
@@ -313,8 +360,13 @@ O SSH é liberado **antes** de o firewall ser ativado, na porta detectada em
 ## Observabilidade
 
 Desligada por default. `--metrics` acrescenta Prometheus, Grafana, node exporter
-e um exporter por serviço; nada disso muda os composes de produção dos três
-serviços de dados.
+e um exporter por serviço; nada disso muda os composes de produção dos serviços
+de dados.
+
+Nem todo serviço precisa de exporter: **Meilisearch e OpenSearch publicam
+`/metrics` nativamente** e são raspados direto. **PgBouncer não é coletado hoje**
+— não há exporter nem alvo para ele, e as estatísticas ficam só no `SHOW STATS`
+do console de administração.
 
 ```bash
 # instalação nova, já com observabilidade
