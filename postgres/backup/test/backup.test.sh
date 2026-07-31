@@ -197,6 +197,27 @@ else
     nok "o cron não está rodando"
 fi
 
+# O healthcheck do compose, executado COMO O DOCKER EXECUTA: usuário padrão do
+# container (root) e a mesma linha de comando. Rodá-lo aqui como `postgres`
+# deixaria passar a única forma de ele quebrar — o pgBackRest recusa comandos
+# sob root, e a recusa sai pelo stdout, onde o `jq` a lê como se fosse JSON.
+HC="$(python3 - "$RAIZ/postgres/docker-compose.backup.yml" <<'PY'
+import json, re, sys
+texto = open(sys.argv[1], encoding='utf-8').read()
+linha = re.search(r'^\s*test:\s*(\[.*\])\s*$', texto, re.M)
+print(json.loads(linha.group(1))[1] if linha else '')
+PY
+)"
+HC="${HC//\$\$/\$}"
+if [ -z "$HC" ]; then
+    nok "não achei o healthcheck em docker-compose.backup.yml"
+elif docker exec -e PGBACKREST_STANZA="$STANZA" "${PREFIXO}-sidecar" sh -c "$HC" >/dev/null 2>&1; then
+    ok "o healthcheck do compose passa com o usuário que o Docker usa"
+else
+    nok "o healthcheck do compose FALHA como o Docker o executa — o container fica unhealthy para sempre"
+    docker exec -e PGBACKREST_STANZA="$STANZA" "${PREFIXO}-sidecar" sh -c "$HC" 2>&1 | head -3 | sed 's/^/      /'
+fi
+
 # ---------------------------------------------------------------------------
 # Backup completo
 # ---------------------------------------------------------------------------

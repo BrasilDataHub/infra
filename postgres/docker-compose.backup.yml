@@ -119,7 +119,12 @@ services:
     healthcheck:
       # `info` e não `check`: o `check` força uma troca de segmento de WAL, e um
       # healthcheck a cada 60s geraria um segmento por minuto para sempre.
-      test: ["CMD-SHELL", "pgbackrest --stanza=$${PGBACKREST_STANZA} info --output=json | jq -e '.[0].status.code == 0' > /dev/null"]
+      #
+      # `su postgres` não é opcional. O healthcheck do Docker roda como root, e o
+      # pgBackRest RECUSA `info` sob root — o erro sai pelo stdout e o `jq`
+      # recebe texto em vez de JSON. Qualquer comando de pgbackrest acrescentado
+      # aqui precisa do mesmo `su`.
+      test: ["CMD-SHELL", "su -s /bin/bash postgres -c \"pgbackrest --stanza=$${PGBACKREST_STANZA} info --output=json\" | jq -e '.[0].status.code == 0' > /dev/null"]
       interval: 5m
       timeout: 30s
       retries: 3
