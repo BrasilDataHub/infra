@@ -218,6 +218,49 @@ for _var in OS_BREAKER_FIELDDATA_LIMIT OS_BREAKER_TOTAL_LIMIT OS_BREAKER_REQUEST
         "$(awk -F= -v v="$_var" '$1==v{print $2}' "$REPO_ROOT/opensearch/profiles/dev-4gb.env")"
 done
 
+printf '\nTodo perfil do catálogo tem orçamento de vizinho\n'
+# `neighbor_budget_gb` tem um `*) printf 0`, e um perfil que cai nele não gera
+# erro nenhum: ele simplesmente não entra na soma, o `auto` do Postgres escolhe
+# um perfil maior do que cabe, e a conta só aparece como OOM-kill semanas
+# depois. Foi o que aconteceu DUAS vezes — com os perfis do par Redis
+# (`cache-768mb`, `fila-256mb`) e com o `dev-4gb` recém-criado.
+#
+# O teste não confere o NÚMERO, confere que o perfil é CONHECIDO. Quem
+# acrescentar um perfil ao catálogo sem acrescentá-lo à tabela falha aqui, na
+# CI, e não no host de alguém.
+_orcamento_zero=""
+for _p in $REDIS_PROFILES $MEILI_PROFILES $OPENSEARCH_PROFILES $METRICS_PROFILES; do
+    [[ "$(neighbor_budget_gb "$_p")" == "0" ]] && _orcamento_zero+=" $_p"
+done
+if [[ -n "$_orcamento_zero" ]]; then
+    fail "perfis no catálogo sem orçamento em neighbor_budget_gb:$_orcamento_zero"
+else
+    pass "todos os perfis de vizinho têm orçamento declarado"
+fi
+
+# O orçamento declarado não pode ser MENOR que o limite real do container: ele
+# é arredondado para cima de propósito ("melhor sobrar page cache do que
+# descobrir o erro como OOM-kill"), e um número para baixo desfaz a garantia.
+for _svc_prof in "redis:$REDIS_PROFILES" "meilisearch:$MEILI_PROFILES" "opensearch:$OPENSEARCH_PROFILES"; do
+    _svc="${_svc_prof%%:*}"
+    for _p in ${_svc_prof#*:}; do
+        _arq="$REPO_ROOT/$_svc/profiles/$_p.env"
+        [[ -f "$_arq" ]] || continue
+        # 512M -> 1 (arredonda para cima); 3G -> 3
+        _real=$(awk -F= '/_MEMORY_LIMIT=/{v=$2
+                   if (v ~ /M$/) {sub(/M$/,"",v); printf "%d", (v+1023)/1024}
+                   else          {sub(/G$/,"",v); printf "%d", v}
+                   exit}' "$_arq")
+        [[ -z "$_real" ]] && continue
+        if (( $(neighbor_budget_gb "$_p") < _real )); then
+            fail "$_p: orçamento $(neighbor_budget_gb "$_p") GB < limite real ${_real} GB"
+            _orcamento_baixo=sim
+        fi
+    done
+done
+[[ "${_orcamento_baixo:-nao}" == "nao" ]] \
+    && pass "nenhum orçamento declarado fica abaixo do limite real do container"
+
 # As configurações de ÍNDICE não podem vir do perfil do container: o OpenSearch
 # não as aceita em opensearch.yml. Havia um OS_MERGE_THREADS que ninguém lia.
 if grep -qE '^OS_MERGE_THREADS=' "$REPO_ROOT"/opensearch/profiles/*.env; then

@@ -891,6 +891,12 @@ neighbor_budget_gb() {
         cache-512mb)    printf '1' ;;
         cache-1gb)      printf '2' ;;
         cache-2gb)      printf '3' ;;
+        # Os dois perfis do PAR cache/fila (redis/docker-compose.par.yml). Eles
+        # estavam em REDIS_PROFILES e NÃO estavam aqui, então caíam no `*)` e
+        # valiam 0: quem subisse o par com `--redis-profile cache-768mb` teria o
+        # Postgres dimensionado como se o Redis não existisse.
+        cache-768mb)    printf '1' ;;
+        fila-256mb)     printf '1' ;;
         # Meilisearch — MEILI_MEMORY_LIMIT (valor de PICO de indexação)
         busca-512mb)    printf '1' ;;
         busca-1gb)      printf '1' ;;
@@ -909,6 +915,11 @@ neighbor_budget_gb() {
         # superdimensionaria o banco em 10 GiB — o erro apareceria como OOM-kill,
         # semanas depois. É exatamente o que já aconteceu com o perfil anterior.
         dedicada-16gb) printf '10' ;;
+        # O perfil de desenvolvimento. Ele SEMPRE divide o host — é a razão de
+        # existir —, então esta linha é a que mais importa das três: sem ela o
+        # `auto` do Postgres via "vizinhos 3 GB" num host onde o motor de busca
+        # já reservou 4, e o orçamento fechava com 4 GB que não existem.
+        dev-4gb)       printf '4' ;;
         # Observabilidade — Prometheus + Grafana + node exporter + exporters.
         # O cAdvisor entra à parte, em metrics_budget_gb().
         metricas-512mb) printf '2' ;;
