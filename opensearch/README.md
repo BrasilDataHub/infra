@@ -189,11 +189,34 @@ analisadores com texto real de razão social. 17 asserções.
 |---|---|---|---|---|
 | `compartilhada-8gb` | host de 31 GiB **dividido** com o PostgreSQL | 8 GiB | 4 GiB | 7,5 GiB |
 | `dedicada-16gb` | host de 15,6 GiB **só** do motor de busca | 10 GiB | 5 GiB | 4,1 GiB |
+| `dev-4gb` | **desenvolvimento**: host de ~16 GiB rodando a arquitetura inteira | 4 GiB | 2 GiB | ~1 GiB |
 
 O `setup.sh` escolhe sozinho (`--opensearch-profile auto`, o default), e a
 pergunta que ele faz **não é o tamanho da máquina — é com quem o motor divide
 o host**. Ao lado de Postgres, Redis ou Meilisearch, `compartilhada-8gb`;
 sozinho numa máquina de 14 GiB ou mais, `dedicada-16gb`.
+
+### `dev-4gb` não é escolhido pelo `auto`
+
+O terceiro perfil existe para uma máquina que os outros dois não atendem: a de
+desenvolvimento que roda **Postgres, OpenSearch, Redis, PgBouncer e
+observabilidade ao mesmo tempo** em ~16 GiB. Nela `compartilhada-8gb` não cabe
+— 7 GiB de Postgres mais 8 de OpenSearch já passam da RAM física, e quem decide
+o que morre é o OOM-killer.
+
+Ele é **explícito por design**: `--opensearch-profile dev-4gb`. O `auto` não o
+considera nem quando é o único que caberia, porque o host pequeno que roda tudo
+é exatamente onde o `auto` cairia nele — e 2 GiB de heap num servidor de
+verdade não falha na instalação, falha na carga mensal, com
+`circuit_breaking_exception` a horas de distância de quem escolheu o perfil.
+
+O que ele preserva de produção: breakers, watermarks, `number_of_shards` 6 e o
+mapping inteiro. O que ele **não** preserva, e por isso não serve de referência:
+
+- **latência.** Com ~1 GiB de page cache disputado com o PGDATA, busca fria vai
+  ao disco onde produção serve da memória. Medição feita aqui não transfere.
+- **tamanho de lote na carga.** O breaker `request` cai para ~800 MiB, e lotes
+  de `_bulk` acima de ~10 MB passam a ser rejeitados.
 
 ### Por que o perfil errado não é só conservador
 

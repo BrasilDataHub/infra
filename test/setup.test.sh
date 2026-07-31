@@ -177,6 +177,47 @@ check "sozinho no host → dedicada"            "dedicada-16gb"    "$(detect_ope
 check "sozinho em máquina de 8 GiB → compartilhada" "compartilhada-8gb" "$(detect_opensearch_profile 8)"
 check "sozinho em máquina de 30 GiB → dedicada"     "dedicada-16gb"     "$(detect_opensearch_profile 30)"
 
+# `dev-4gb` é ACEITO por --opensearch-profile e NUNCA escolhido pelo `auto`.
+#
+# As duas metades são o teste. Se ele saísse do catálogo, a máquina de
+# desenvolvimento que roda a arquitetura inteira ficaria sem perfil que caiba.
+# Se o `auto` passasse a escolhê-lo, o servidor pequeno que roda tudo — que é
+# exatamente onde o `auto` cairia nele — receberia 2 GiB de heap, e a falha
+# apareceria só na carga mensal, como `circuit_breaking_exception`.
+check "dev-4gb está no catálogo" "ok" \
+    "$(profile_valid dev-4gb "$OPENSEARCH_PROFILES" && echo ok)"
+check "o arquivo do perfil dev existe" "ok" \
+    "$([ -f "$REPO_ROOT/opensearch/profiles/dev-4gb.env" ] && echo ok)"
+check "dev-4gb dá menos heap que o compartilhado" "ok" \
+    "$(awk -F'-Xmx' '/^OS_JAVA_OPTS/{print $2+0}' "$REPO_ROOT/opensearch/profiles/dev-4gb.env" > /tmp/.dev
+       awk -F'-Xmx' '/^OS_JAVA_OPTS/{print $2+0}' "$REPO_ROOT/opensearch/profiles/compartilhada-8gb.env" > /tmp/.c
+       [ "$(cat /tmp/.dev)" -lt "$(cat /tmp/.c)" ] && echo ok)"
+# Nenhuma combinação de vizinhos e RAM pode produzi-lo.
+for _svcs in "postgres redis opensearch" "opensearch redis" "opensearch pgbouncer" "opensearch"; do
+    for _mem in 4 8 14 16 30 64; do
+        # shellcheck disable=SC2206  # a divisão em palavras é o que se quer aqui
+        SERVICES=($_svcs)
+        if [[ "$(detect_opensearch_profile "$_mem")" == "dev-4gb" ]]; then
+            fail "o auto escolheu dev-4gb (vizinhos: $_svcs, RAM: ${_mem} GiB)"
+            _auto_dev_ok=nao
+        fi
+    done
+done
+if [[ "${_auto_dev_ok:-sim}" == "sim" ]]; then
+    pass "o auto nunca escolhe dev-4gb, em nenhuma combinação de vizinhos e RAM"
+fi
+
+# Os breakers e as watermarks são os MESMOS de produção em todos os perfis. Um
+# ambiente de desenvolvimento que os afrouxa deixa de reproduzir a falha que ele
+# existe para antecipar — e `fielddata=0%` é o que transforma erro de consulta
+# em erro visível em vez de OOM.
+for _var in OS_BREAKER_FIELDDATA_LIMIT OS_BREAKER_TOTAL_LIMIT OS_BREAKER_REQUEST_LIMIT \
+            OS_WATERMARK_LOW OS_WATERMARK_HIGH OS_WATERMARK_FLOOD; do
+    check "$_var é igual em dev-4gb e em produção" \
+        "$(awk -F= -v v="$_var" '$1==v{print $2}' "$REPO_ROOT/opensearch/profiles/compartilhada-8gb.env")" \
+        "$(awk -F= -v v="$_var" '$1==v{print $2}' "$REPO_ROOT/opensearch/profiles/dev-4gb.env")"
+done
+
 # As configurações de ÍNDICE não podem vir do perfil do container: o OpenSearch
 # não as aceita em opensearch.yml. Havia um OS_MERGE_THREADS que ninguém lia.
 if grep -qE '^OS_MERGE_THREADS=' "$REPO_ROOT"/opensearch/profiles/*.env; then

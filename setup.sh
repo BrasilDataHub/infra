@@ -765,7 +765,11 @@ PG_PROFILES="dedicada-8gb dedicada-16gb dedicada-32gb dedicada-64gb dedicada-128
 # permite `allkeys-lru` num lado sem arriscar despejar job no outro.
 REDIS_PROFILES="cache-256mb cache-512mb cache-768mb cache-1gb cache-2gb fila-256mb"
 MEILI_PROFILES="busca-512mb busca-1gb busca-4gb busca-16gb"
-OPENSEARCH_PROFILES="compartilhada-8gb dedicada-16gb"
+# `dev-4gb` é aceito por --opensearch-profile mas NUNCA escolhido pelo `auto`
+# (ver detect_opensearch_profile): é o perfil da máquina de desenvolvimento que
+# roda a arquitetura inteira em ~16 GiB, e selecioná-lo sozinho num servidor de
+# verdade entregaria 2 GiB de heap onde a carga precisa de 4.
+OPENSEARCH_PROFILES="compartilhada-8gb dedicada-16gb dev-4gb"
 
 # O OpenSearch divide este host com outro serviço de dados?
 #
@@ -777,6 +781,13 @@ OPENSEARCH_PROFILES="compartilhada-8gb dedicada-16gb"
 # `pgbouncer` e `monitoring` não contam como vizinho de peso: o pooler cabe em
 # 128 MiB e os exporters em ~200 MiB. O que muda a conta é Postgres, Redis ou
 # Meilisearch dividindo a RAM.
+#
+# `dev-4gb` NÃO é candidato aqui, e a omissão é deliberada. Ele resolveria o
+# caso do host pequeno que roda tudo — que é justamente onde o `auto` cairia —,
+# mas ao custo de 2 GiB de heap. Num servidor de verdade isso aparece só na
+# carga mensal, como `circuit_breaking_exception` a horas de distância de quem
+# escolheu o perfil. Quem tem essa máquina passa `--opensearch-profile dev-4gb`
+# e assume a escolha por escrito.
 # O argumento é a RAM em GiB e existe para os testes — sem ele, lê a da máquina.
 # É o mesmo contrato de detect_pg_profile e dos demais: um teste que dependa da
 # RAM de quem o roda passa no laptop do autor e falha na CI.

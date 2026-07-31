@@ -182,6 +182,13 @@ estar ou não sozinho no host.
 | Ao lado de Postgres, Redis ou Meilisearch | `compartilhada-8gb` | 8 GiB | 4 GiB | 6 |
 | Sozinho no host, com **≥ 14 GiB** de RAM | `dedicada-16gb` | 10 GiB | 5 GiB | 4 |
 | Sozinho, mas abaixo de 14 GiB | `compartilhada-8gb` | 8 GiB | 4 GiB | 6 |
+| Máquina de **desenvolvimento** rodando a arquitetura inteira em ~16 GiB | `dev-4gb` | 4 GiB | 2 GiB | 2 |
+
+A última linha **não é automática**: `dev-4gb` só entra com
+`--opensearch-profile dev-4gb` explícito. É o único perfil que cabe num host
+pequeno com Postgres, Redis, PgBouncer e observabilidade juntos, e é também o
+que ninguém quer ver selecionado sozinho num servidor —
+[`opensearch/README.md`](opensearch/README.md#dev-4gb-não-é-escolhido-pelo-auto).
 
 O último caso não é engano: `dedicada-16gb` pede 10 GiB de limite, e numa máquina
 menor que isso o container simplesmente não subiria. Detalhe do porquê, e o que
