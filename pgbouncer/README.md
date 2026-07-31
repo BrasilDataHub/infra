@@ -7,10 +7,48 @@ Pool de conexões entre a aplicação e o Postgres, em **transaction pooling**.
 
 ## Onde ele roda
 
-**No host da aplicação (`bdh-apps`), não no host do banco.** Isso não é
-detalhe: o ganho do pooler é encurtar o caminho de abertura de conexão que o
-*cliente* percorre. Com ele do lado do banco, cada nova conexão do Octane ainda
-pagaria o RTT de rede antes de encontrar o pool.
+**No host da aplicação, não no host do banco.** O ganho do pooler é encurtar o
+caminho de abertura de conexão que o *cliente* percorre; do lado do banco, cada
+nova conexão do Octane pagaria o RTT de rede antes de encontrar o pool.
+
+O número de travessias de rede é o **mesmo** nos dois arranjos — o que muda é
+qual perna fica local:
+
+```
+no host da aplicação   app ─(local)─ pooler ─(rede)─ banco    ← a perna de rede é reusada
+no host do banco       app ─(rede)─ pooler ─(local)─ banco    ← a perna de rede é reaberta
+```
+
+Medido em 31/07/2026 (RTT de 0,483 ms entre os dois hosts, rede privada), do
+container da aplicação, com o pooler no host da aplicação:
+
+| | direto no banco | pelo pooler |
+|---|---|---|
+| abrir conexão + 1 consulta | 11,20 ms · p95 **14,35 ms** | 9,76 ms · p95 **10,12 ms** |
+| consulta em conexão persistente | 0,665 ms | 0,949 ms |
+
+Duas leituras, e as duas importam:
+
+- **Abrir é mais rápido e muito mais previsível** pelo pooler — o p95 cai 30%.
+  É o que o arranjo do lado do cliente compra.
+- **Cada consulta custa ~0,3 ms a mais.** É o salto extra pelo proxy mais o
+  `DISCARD ALL` por transação. Numa página com 10 consultas, ~3 ms sobre 60 ms.
+
+O pooler não é uma otimização de latência: ele **cobra** latência por consulta
+e paga com o teto de conexões. Ligá-lo com folga de conexões sobrando é perda
+líquida.
+
+### Quando mover para o host do banco passa a valer
+
+Com **mais de um host de aplicação**. Do lado do cliente, cada host tem o
+próprio pool: N hosts são `N × default_pool_size` conexões reais. Do lado do
+banco, um pooler serve todos com um pool só.
+
+O preço de mover: o pooler vira ponto único de falha para todas as aplicações
+(no lado do cliente ele cai junto com o host que já estava fora), a abertura de
+conexão passa a pagar RTT, e a porta `6432` precisa entrar no firewall do host
+do banco — a chain `DOCKER-USER` do `setup.sh` conhece 5432, 9100 e 9187, e
+**não** conhece a 6432.
 
 ## Subir
 
