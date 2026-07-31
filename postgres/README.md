@@ -38,7 +38,7 @@ para o lado do compose — a mesma fonte que o script de setup usa.
 Todos os perfis assumem **NVMe local** e a máquina dedicada ao Postgres. O
 número no nome é o **orçamento de RAM do Postgres**, não a RAM do host: se o
 host também rodar Redis ou Meilisearch, some os limites de container deles
-([fórmula](docs/perfis.md#fórmula-de-reserva)).
+([fórmula](docs/perfis.md#fórmula-de-reserva)). O layout de disco, o pico do ciclo mensal e as opções de expansão estão em [`docs/armazenamento.md`](docs/armazenamento.md).
 
 **Guia completo — arquivo de cada perfil, carga-alvo,
 justificativa de cada parâmetro, coexistência com outros serviços, limitações,

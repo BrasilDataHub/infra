@@ -96,6 +96,12 @@ groups:
   - name: host
     rules:
       - alert: DiscoQuaseCheio
+        # 15% livres = dispara a 85% de uso. O ciclo mensal não leva o disco do
+        # banco a esse patamar: a geração N−1 vai para o volume de backup, e o
+        # local acomoda só a geração corrente mais o pg_wal.
+        #
+        # Complementado por `EspacoCriticoNoBanco`, que olha espaço absoluto —
+        # em disco grande a porcentagem reage tarde demais.
         expr: |
           node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}
             / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"} < 0.15
@@ -108,15 +114,57 @@ groups:
             Este é o modo de falha mais perigoso da stack: o volume do Prometheus
             e o do Postgres dividem o mesmo NVMe, então uma explosão de
             cardinalidade enche o disco e derruba o BANCO, não o Prometheus.
-            Confira PROM_RETENTION_SIZE antes de culpar os dados.
+            Confira PROM_RETENTION_SIZE antes de culpar os dados. Plano de espaço
+            do ciclo mensal em postgres/docs/armazenamento.md.
+
+      - alert: EspacoCriticoNoBanco
+        # Espaço ABSOLUTO, e só no filesystem que hospeda o PGDATA.
+        #
+        # Porcentagem e espaço absoluto respondem a perguntas diferentes, e a
+        # porcentagem reage mais tarde quanto maior o disco. Este alerta garante
+        # um piso que não depende do tamanho do dispositivo: 15 GB não comportam
+        # um checkpoint grande nem o crescimento de `pg_wal` (que pode chegar a
+        # 32 GB pelo `max_wal_size`) em disco nenhum.
+        #
+        # `mountpoint="/"` porque é onde o PGDATA vive; o volume de backup tem
+        # perfil de crescimento previsível e não precisa deste limiar.
+        expr: |
+          node_filesystem_avail_bytes{fstype!~"tmpfs|overlay", mountpoint="/"}
+            < 15 * 1024 * 1024 * 1024
+        for: 10m
+        labels:
+          severity: critical
+          runbook: postgres/docs/armazenamento.md
+        annotations:
+          summary: "Menos de 15 GB livres no disco do banco ({{ $labels.host }})"
+          description: >-
+            Abaixo disto um checkpoint grande ou um crescimento de pg_wal enche o
+            disco e derruba o Postgres. Se estiver na janela da carga mensal,
+            confira o plano de espaço em postgres/docs/armazenamento.md; fora
+            dela, verifique se o archive_command está funcionando — WAL que não é
+            arquivado não é reciclado e cresce ignorando max_wal_size.
 
       - alert: DiscoEncheEm24h
         # predict_linear pega o crescimento antes de virar incidente. Janela de
         # 6h para não reagir a um pico pontual de ETL.
+        #
+        # A segunda condição — menos de 30% livres — existe porque
+        # `predict_linear` é regressão linear, e uma escrita em DEGRAU a domina.
+        # Um backup full escreve dezenas de GB de uma vez; a regressão sobre a
+        # janela lê isso como tendência e projeta o disco enchendo, mesmo com o
+        # volume quase vazio. Medido: um full de 47 GB num volume com 79% livres
+        # produziu previsão de −119 GB.
+        #
+        # Com a guarda, a previsão só alerta quando já há pouco espaço — que é
+        # quando ela de fato importa. Encher de verdade continua coberto por
+        # `DiscoQuaseCheio` e, no disco do banco, por `EspacoCriticoNoBanco`.
         expr: |
           predict_linear(
             node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}[6h], 24 * 3600
           ) < 0
+          and
+          node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"} < 0.30
         for: 30m
         labels:
           severity: warning

@@ -104,6 +104,126 @@ tests:
         alertname: ServidorSemColeta
         exp_alerts: []
 
+  # --- disco ----------------------------------------------------------------
+  # O par de limiares existe porque porcentagem e espaço absoluto respondem a
+  # perguntas diferentes. Estes testes travam os dois: que o alerta por
+  # porcentagem NÃO dispara no uso planejado do ciclo mensal, e que o absoluto
+  # dispara mesmo quando a porcentagem ainda parece confortável.
+  - interval: 1m
+    name: "disco em 80% de uso não dispara"
+    input_series:
+      # 48,5 GB livres de 242,5 GB = 20%
+      - series: 'node_filesystem_avail_bytes{fstype="ext4", mountpoint="/", host="bdh-data"}'
+        values: "48500000000+0x20"
+      - series: 'node_filesystem_size_bytes{fstype="ext4", mountpoint="/", host="bdh-data"}'
+        values: "242500000000+0x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: DiscoQuaseCheio
+        exp_alerts: []
+
+  - interval: 1m
+    name: "disco acima de 85% de uso dispara"
+    input_series:
+      # 30 GB livres de 242,5 GB = 12,4%
+      - series: 'node_filesystem_avail_bytes{fstype="ext4", mountpoint="/", host="bdh-data"}'
+        values: "30000000000+0x20"
+      - series: 'node_filesystem_size_bytes{fstype="ext4", mountpoint="/", host="bdh-data"}'
+        values: "242500000000+0x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: DiscoQuaseCheio
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              fstype: ext4
+              mountpoint: /
+              host: bdh-data
+            exp_annotations:
+              summary: "Menos de 15% livres em / (bdh-data)"
+              description: "Este é o modo de falha mais perigoso da stack: o volume do Prometheus e o do Postgres dividem o mesmo NVMe, então uma explosão de cardinalidade enche o disco e derruba o BANCO, não o Prometheus. Confira PROM_RETENTION_SIZE antes de culpar os dados. Plano de espaço do ciclo mensal em postgres/docs/armazenamento.md."
+
+  - interval: 1m
+    name: "espaço absoluto crítico dispara mesmo com a porcentagem confortável"
+    input_series:
+      # 14 GB livres num disco de 2 TB. O absoluto garante um piso que não
+      # depende do tamanho do dispositivo: quanto maior o disco, mais tarde a
+      # porcentagem reage — e 14 GB não comportam um checkpoint grande em disco
+      # nenhum.
+      - series: 'node_filesystem_avail_bytes{fstype="ext4", mountpoint="/", host="bdh-data"}'
+        values: "14000000000+0x20"
+      - series: 'node_filesystem_size_bytes{fstype="ext4", mountpoint="/", host="bdh-data"}'
+        values: "2000000000000+0x20"
+    alert_rule_test:
+      # 0,7% livres — o de porcentagem também dispara, e tudo bem
+      - eval_time: 15m
+        alertname: EspacoCriticoNoBanco
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              runbook: postgres/docs/armazenamento.md
+              fstype: ext4
+              mountpoint: /
+              host: bdh-data
+            exp_annotations:
+              summary: "Menos de 15 GB livres no disco do banco (bdh-data)"
+              description: "Abaixo disto um checkpoint grande ou um crescimento de pg_wal enche o disco e derruba o Postgres. Se estiver na janela da carga mensal, confira o plano de espaço em postgres/docs/armazenamento.md; fora dela, verifique se o archive_command está funcionando — WAL que não é arquivado não é reciclado e cresce ignorando max_wal_size."
+
+  - interval: 1m
+    name: "o alerta absoluto não olha o volume de backup, só o disco do banco"
+    input_series:
+      # volume de backup com 10 GB livres: abaixo do limiar absoluto, mas o
+      # mountpoint não é `/` e o perfil de crescimento dele é previsível.
+      - series: 'node_filesystem_avail_bytes{fstype="ext4", mountpoint="/mnt/bdh-backup", host="bdh-data"}'
+        values: "10000000000+0x20"
+      - series: 'node_filesystem_size_bytes{fstype="ext4", mountpoint="/mnt/bdh-backup", host="bdh-data"}'
+        values: "210000000000+0x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: EspacoCriticoNoBanco
+        exp_alerts: []
+
+  # O degrau do backup full é o falso positivo que a guarda de 30% elimina.
+  #
+  # `interval: 1m` porque o Prometheus considera uma série obsoleta após 5 min
+  # sem amostra. Com amostras espaçadas, a série some entre elas e o `for:` nunca
+  # completa — o teste passaria por ausência de dados, não por acerto da regra.
+  - interval: 1m
+    name: "escrita em degrau (backup full) em volume vazio não vira previsão de encher"
+    input_series:
+      # 4 h a 191,8 GB de 210 GB (91% livres), depois o full escreve 51,8 GB de
+      # uma vez. A regressão lê o degrau como tendência e projeta o disco
+      # enchendo; a guarda de 30% impede o alerta, porque ainda há 67% livres.
+      - series: 'node_filesystem_avail_bytes{fstype="ext4", mountpoint="/mnt/bdh-backup", host="bdh-data"}'
+        values: "191800000000+0x239 140000000000+0x99"
+      - series: 'node_filesystem_size_bytes{fstype="ext4", mountpoint="/mnt/bdh-backup", host="bdh-data"}'
+        values: "210000000000+0x339"
+    alert_rule_test:
+      - eval_time: 5h30m
+        alertname: DiscoEncheEm24h
+        exp_alerts: []
+
+  - interval: 1m
+    name: "queda sustentada com pouco espaço livre ainda dispara"
+    input_series:
+      # 50 GB de 210 GB (24%) caindo ~4 GB/h. Em 24 h a previsão fica bem abaixo
+      # de zero, e a série não chega a valores negativos dentro do teste.
+      - series: 'node_filesystem_avail_bytes{fstype="ext4", mountpoint="/", host="bdh-data"}'
+        values: "50000000000-66666666x339"
+      - series: 'node_filesystem_size_bytes{fstype="ext4", mountpoint="/", host="bdh-data"}'
+        values: "210000000000+0x339"
+    alert_rule_test:
+      - eval_time: 5h30m
+        alertname: DiscoEncheEm24h
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              fstype: ext4
+              mountpoint: /
+              host: bdh-data
+            exp_annotations:
+              summary: "/ de bdh-data deve encher em menos de 24h"
+
   # --- postgres -------------------------------------------------------------
   - interval: 1m
     name: "conexões acima de 85% do max_connections"
