@@ -1894,6 +1894,27 @@ write_env_files() {
         env_file="$dir/.env"
         [[ "$DRY_RUN" == "true" ]] && { _log "    ${C_DIM}[dry-run] escreveria $env_file a partir de $s/profiles/$(service_profile "$s").env${C_RESET}"; continue; }
 
+        # AS VARIÁVEIS DO BACKUP SOBREVIVEM À REESCRITA DO .env.
+        #
+        # `PGBACKREST_STANZA` e `BDH_BACKUP_REPO_DIR` não são geradas por este
+        # script — quem as escreve é o operador, seguindo backup/README.md. Como
+        # o `.env` é REGERADO do perfil a cada execução, um `--update` as
+        # apagava, e os dois overlays de backup usam `${VAR:?}`: o `up` seguinte
+        # falhava com "defina PGBACKREST_STANZA" e o banco ficava fora do ar até
+        # alguém reescrever as linhas à mão.
+        #
+        # Preservar é a única opção correta: o script não tem como recalcular o
+        # caminho do repositório nem o nome da stanza, e adivinhar um default
+        # aqui faria o backup rodar para o lugar errado — que é pior do que não
+        # rodar.
+        local -a preservadas=()
+        if [[ -f "$env_file" ]]; then
+            local linha_pres
+            while IFS= read -r linha_pres; do
+                preservadas+=("$linha_pres")
+            done < <(grep -E '^(PGBACKREST_[A-Z_]+|BDH_BACKUP_[A-Z_]+)=' "$env_file" 2>/dev/null || true)
+        fi
+
         # O .env é o arquivo do perfil (baixado do repositório, íntegro) mais o
         # que só o deploy sabe: senhas e rede. Mesma origem que a documentação
         # manda copiar num deploy manual.
@@ -1941,6 +1962,11 @@ write_env_files() {
                 printf 'PGBOUNCER_BIND_IP=%s\nPGBOUNCER_PORT=%s\n' "$PGBOUNCER_BIND_IP" "$PGBOUNCER_PORT"
                 ;;
             esac
+
+            if (( ${#preservadas[@]} )); then
+                printf '\n# --- backup: escritas pelo operador, preservadas na reexecução ---\n'
+                printf '%s\n' "${preservadas[@]}"
+            fi
 
         } > "$env_file"
         chmod 600 "$env_file"
@@ -2198,10 +2224,29 @@ start_services() {
     for s in "${SERVICES[@]}"; do
         dir="$(service_dir "$s")"
         compose_args=(--project-directory "$dir" -f "$dir/docker-compose.yml")
-        # Ordem: base → metrics → remote → override. O override do modo bind é o
-        # último a falar sobre volumes, exatamente como antes dos overlays.
+        # Ordem: base → metrics → remote → backup → backup-local → override. É a
+        # MESMA do `bdh` (ver a função `_compose` no heredoc do CLI), e essa
+        # igualdade não é cosmética.
+        #
+        # OS DOIS OVERLAYS DE BACKUP FALTAVAM AQUI, e o `bdh` os incluía. O
+        # resultado: qualquer `setup.sh --update` num host com backup implantado
+        # subia o Postgres com um `-f` a menos e devolvia `archive_mode` para
+        # `off`. O README já descreve esse desfecho como armadilha — "subir na
+        # mão com um `-f` a menos é como o `archive_mode` volta a off sem que
+        # nada acuse" — e era o próprio script que o fazia.
+        #
+        # Nada acusa mesmo: o container sobe saudável, o sidecar continua de pé,
+        # o `pgbackrest info` segue reportando o último backup como válido. O que
+        # some é o arquivamento contínuo — ou seja, o PITR. A perda só aparece
+        # quando alguém precisa restaurar para um ponto no tempo e descobre que
+        # não há WAL depois do último full.
+        #
+        # Verificado em 31/07/2026 num host real: um `--update` para publicar o
+        # pooler numa interface desligou o arquivamento do banco.
         [[ -f "$dir/docker-compose.metrics.yml" ]] && compose_args+=(-f "$dir/docker-compose.metrics.yml")
         [[ -f "$dir/docker-compose.metrics-remote.yml" ]] && compose_args+=(-f "$dir/docker-compose.metrics-remote.yml")
+        [[ -f "$dir/docker-compose.backup.yml" ]] && compose_args+=(-f "$dir/docker-compose.backup.yml")
+        [[ -f "$dir/docker-compose.backup-local.yml" ]] && compose_args+=(-f "$dir/docker-compose.backup-local.yml")
         [[ -f "$dir/docker-compose.override.yml" ]] && compose_args+=(-f "$dir/docker-compose.override.yml")
         # --metrics-only acrescenta o exporter sem --force-recreate: o Compose
         # compara a definição desejada com a atual e recria apenas o que mudou,

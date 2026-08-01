@@ -159,6 +159,61 @@ else
     nok "MONITORING_BIND_IP não é gravado no estado — a herança acima é letra morta"
 fi
 
+# --- 2g. o --update não pode desligar o arquivamento de WAL -----------------
+# O `subir_servicos` montava base → metrics → remote → override e OMITIA os dois
+# overlays de backup, que o `bdh` incluía. Efeito: qualquer `setup.sh --update`
+# num host com backup implantado subia o Postgres com um `-f` a menos e devolvia
+# `archive_mode` para `off`.
+#
+# Nada acusa. O container sobe saudável, o sidecar continua de pé, o
+# `pgbackrest info` segue reportando o último full como válido. O que some é o
+# arquivamento contínuo — o PITR —, e a perda só aparece quando alguém precisa
+# restaurar para um ponto no tempo. Observado num host real em 31/07/2026: um
+# `--update` para publicar o pooler numa interface desligou o arquivamento.
+for _ov in backup backup-local; do
+    if grep -q "docker-compose.${_ov}.yml\" \]\] && compose_args+=(-f \"\$dir/docker-compose.${_ov}.yml\")" "$RAIZ/setup.sh"; then
+        ok "subir_servicos inclui o overlay ${_ov}"
+    else
+        nok "subir_servicos NÃO inclui ${_ov} — um --update devolveria archive_mode a off"
+    fi
+done
+
+# A ordem dos overlays tem de ser a mesma nos dois lugares, senão o `bdh` e o
+# `setup.sh` produzem containers diferentes a partir dos mesmos arquivos.
+# Só as linhas que de fato APPENDAM em compose_args — comentários e o heredoc do
+# `bdh` citam os mesmos nomes e falseariam a leitura.
+# `sed 's/.*compose_args+=//'` descarta o teste `[[ -f ... ]]`, que cita o mesmo
+# nome de arquivo e apareceria duplicado na lista.
+_ordem_setup=$(grep -E 'compose_args\+=\(-f .*docker-compose\.[a-z-]+\.yml' "$RAIZ/setup.sh" \
+               | sed 's/.*compose_args+=//' \
+               | grep -oE 'docker-compose\.[a-z-]+\.yml' | paste -sd, -)
+_esperada="docker-compose.metrics.yml,docker-compose.metrics-remote.yml,docker-compose.backup.yml,docker-compose.backup-local.yml,docker-compose.override.yml"
+[[ "$_ordem_setup" == "$_esperada" ]] \
+    && ok "a ordem dos overlays é base → metrics → remote → backup → backup-local → override" \
+    || nok "ordem dos overlays divergente: $_ordem_setup"
+
+# E a MESMA ordem no `bdh`, que é quem sobe o serviço no dia a dia. As duas
+# listas divergirem significa que `bdh up` e `setup.sh` produzem containers
+# diferentes a partir dos mesmos arquivos — que é a forma mais confusa possível
+# de o archive_mode oscilar.
+_ordem_bdh=$(grep -E '(^|[^_])args\+=\(-f .*docker-compose\.[a-z-]+\.yml' "$RAIZ/setup.sh" \
+             | grep -v 'compose_args' | sed 's/.*args+=//' \
+             | grep -oE 'docker-compose\.[a-z-]+\.yml' | paste -sd, -)
+[[ "$_ordem_bdh" == "$_esperada" ]] \
+    && ok "o bdh monta os overlays na mesma ordem do setup.sh" \
+    || nok "o bdh diverge do setup.sh: $_ordem_bdh"
+
+# --- 2h. o .env regerado preserva o que o operador escreveu -----------------
+# `PGBACKREST_STANZA` e `BDH_BACKUP_REPO_DIR` são escritas à mão (backup/
+# README.md) e o `.env` é REGERADO do perfil a cada execução. Sem preservação, um
+# `--update` as apagava — e os overlays usam `${VAR:?}`, então o `up` seguinte
+# falhava com "defina PGBACKREST_STANZA" e o banco ficava FORA DO AR.
+if grep -q "PGBACKREST_\[A-Z_\]+|BDH_BACKUP_\[A-Z_\]+" "$RAIZ/setup.sh"; then
+    ok "o .env regerado preserva PGBACKREST_* e BDH_BACKUP_*"
+else
+    nok "o .env regerado apaga as variáveis de backup escritas pelo operador"
+fi
+
 # --- 2f. o alvo do serviço que saiu é removido ------------------------------
 # O bloco de alvos só ESCREVIA, e o comentário dele promete o contrário:
 # "serviço ausente não deixa arquivo... o job fica sem alvo em vez de ficar
