@@ -26,9 +26,14 @@
 
 # Bloco de versões antes do primeiro FROM: um ARG declarado depois de um FROM
 # pertence àquele estágio e não é visível nos FROM seguintes.
+# `BASE_TAG` aponta para a tag IMUTÁVEL, e não para a móvel `8.4`: um build
+# deste arquivo feito hoje e outro amanhã têm de produzir a mesma imagem — que é
+# a recomendação que docs/versionamento.md faz aos projetos consumidores, e que
+# não faria sentido este repositório não seguir. Quem publica passa `BASE_TAG`
+# explicitamente.
 ARG NODE_TAG=22-bookworm-slim
 ARG BASE_IMAGE=ghcr.io/brasildatahub/laravel-app
-ARG BASE_TAG=8.4
+ARG BASE_TAG=8.4-r3
 
 # Node vem COPIADO da imagem oficial, e não de um script de instalação: é a
 # mesma distribuição base (bookworm), então os binários são compatíveis, e a

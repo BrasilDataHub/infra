@@ -6,7 +6,7 @@ Duas tags por imagem, como nos demais módulos do repositório:
 
 ```
 ghcr.io/brasildatahub/laravel-app:8.4        # móvel — segue a revisão corrente
-ghcr.io/brasildatahub/laravel-app:8.4-r1     # imutável — nunca é reescrita
+ghcr.io/brasildatahub/laravel-app:8.4-r3     # imutável — nunca é reescrita
 ```
 
 `8.4` é a minor do PHP, que identifica a stack. `-rN` é o contador de revisão
@@ -41,10 +41,18 @@ gatilho de publicação.
 Como nas demais imagens da plataforma, a versão vive em lugares que **precisam
 concordar**:
 
-1. `tags:` do job `laravel` em `.github/workflows/build-publish.yml` — as duas
-   tags de cada imagem;
-2. o `ARG BASE_TAG` de `Dockerfile.builder`, que aponta para a `laravel-app`;
+1. `PHP_MINOR` e `REVISION` no `env:` global de
+   `.github/workflows/build-publish.yml` — de onde saem as duas tags de cada
+   uma das três imagens. Ficam no escopo global, e não no de um job, porque
+   agora são **três jobs** que precisam concordar na tag: um cria o manifest da
+   `laravel-app` e outro deriva dela;
+2. o `ARG BASE_TAG` de `Dockerfile.worker` e de `Dockerfile.builder`, que
+   apontam para a `laravel-app`;
 3. o `FROM` dos projetos consumidores.
+
+O `build.sh` da raiz **não** é um quarto lugar: ele lê as tags do próprio
+workflow a cada execução, e `test/catalogo-build.test.sh` afirma que essa
+leitura continua batendo.
 
 A tabela de imagens no [README do módulo](../README.md) e a linha na tabela
 **Serviços** do README da raiz mencionam apenas a tag móvel — não precisam ser
@@ -65,12 +73,12 @@ dia.
 O `FROM` de uma aplicação deve apontar para a **tag imutável**:
 
 ```dockerfile
-ARG BASE_TAG=8.4-r1
+ARG BASE_TAG=8.4-r3
 FROM ghcr.io/brasildatahub/laravel-app:${BASE_TAG}
 ```
 
 Assim o build é reprodutível: nenhuma imagem de aplicação muda porque a base
-mudou embaixo dela. Atualizar é um commit que troca `-r1` por `-r2` — visível
+mudou embaixo dela. Atualizar é um commit que troca `-r2` por `-r3` — visível
 no diff, revisável, e reversível.
 
 Usar a tag móvel `:8.4` funciona e é conveniente em desenvolvimento, mas em
@@ -80,13 +88,38 @@ que a tag `dunglas/frankenphp:1` causava antes desta refatoração.
 
 ## Publicação
 
-A CI publica a cada push na `main` que toque um arquivo que entra na imagem. Os
-três builds rodam **no mesmo job e em sequência**, porque `laravel-builder`
-deriva de `laravel-app` e precisa dela já publicada:
+A CI publica a cada push na `main` que toque um arquivo que entra na imagem, em
+quatro jobs encadeados:
 
 ```
-laravel-app  →  laravel-worker  →  laravel-builder
+laravel-teste ─→ laravel-app (amd64 e arm64, runners nativos)
+                     └→ laravel-app-manifest ─→ laravel-derivados (worker, builder)
 ```
 
-O teste-gate roda antes do primeiro push. Se ele falhar, nenhuma das três é
-publicada.
+A ordem é uma restrição real, não uma preferência: `laravel-worker` e
+`laravel-builder` fazem `FROM laravel-app` e precisam da **tag imutável desta
+execução** já publicada. Em paralelo, pegariam a imagem da publicação anterior —
+passariam verdes entregando a base errada.
+
+`laravel-app` é a única que compila alguma coisa, e por isso a única que ganha um
+runner por arquitetura. Cada um publica **por digest**, sem tag; a tag só nasce
+no `laravel-app-manifest`, quando as duas metades estão prontas. É o que impede
+que exista, em algum momento, uma tag pública apontando para uma imagem de
+arquitetura única.
+
+O teste-gate é o primeiro job, e tudo o mais depende dele. Se ele falhar,
+nenhuma das três é publicada.
+
+## Republicar à mão
+
+Pela CI, sem esperar um push:
+
+```bash
+gh workflow run build-publish.yml -f servico=laravel
+```
+
+Ou da sua máquina, com as mesmas tags:
+
+```bash
+bash build.sh laravel --push
+```

@@ -54,9 +54,9 @@ on:
       - "monitoring/blackbox/**"
       - "monitoring/test/**"
       # Imagens base de aplicação. Note o que NÃO está aqui: `laravel/README.md`
-      # e `laravel/docs/**`. Um build multi-arch destas imagens compila as 14
-      # extensões duas vezes, uma delas sob emulação — republicar isso a cada
-      # commit de documentação seria caro sem mudar um byte da imagem.
+      # e `laravel/docs/**`. Publicar estas três imagens compila as 14 extensões
+      # de fonte, uma vez por arquitetura — republicar isso a cada commit de
+      # documentação seria caro sem mudar um byte da imagem.
       - "laravel/Dockerfile.*"
       - "laravel/php-extensions.txt"
       - "laravel/php/**"
@@ -85,6 +85,22 @@ on:
 env:
   REGISTRY: ghcr.io
   NAMESPACE: brasildatahub
+  # As duas metades da tag das imagens de aplicação Laravel. `PHP_MINOR`
+  # identifica a stack; `REVISION` é o contador da imagem, incrementado quando
+  # muda extensão, ini, Caddyfile, entrypoint ou versão da base — ver
+  # laravel/docs/versionamento.md.
+  #
+  # Vivem no escopo GLOBAL, e não no `env:` de um job, porque a publicação das
+  # imagens de aplicação passou a ser feita por três jobs que precisam concordar
+  # na tag: `laravel-app-manifest` cria o manifest com ela, e `laravel-derivados`
+  # deriva dela. Duas cópias em dois `env:` divergiriam sem ninguém perceber — o
+  # sintoma seria um builder derivando de uma app que não é a desta execução.
+  #
+  # r3: `laravel-worker` deixou de ser Alpine e passou a derivar de
+  # `laravel-app`. Muda a libc, o PHP passa a ser ZTS e o conteúdo da imagem é
+  # outro — ver o cabeçalho de laravel/Dockerfile.worker.
+  PHP_MINOR: "8.4"
+  REVISION: "r3"
 
 jobs:
   # Quais imagens este push realmente afeta.
@@ -98,6 +114,11 @@ jobs:
   # Aqui o diff do push é lido uma vez e vira um output por imagem; cada job de
   # build ganha um `if:` sobre ele. Os `paths:` do topo continuam valendo como
   # primeira peneira — um commit só de documentação não chega nem a este job.
+  #
+  # Um escopo serve a UM ou a VÁRIOS jobs: os quatro jobs `laravel-*` respondem
+  # todos ao output `laravel`, e só o primeiro deles carrega o `if:` — os outros
+  # herdam a decisão pelo `needs:`, porque um job cujo `needs:` foi pulado é
+  # pulado junto.
   #
   # Mudar ESTE ARQUIVO não republica nada por si só, e é deliberado: era esse o
   # caminho pelo qual um ajuste de comentário no workflow reconstruía a stack
@@ -375,45 +396,185 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/opensearch:3
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/opensearch:3.3.0
 
-  # Imagens base das aplicações Laravel da org. Job ÚNICO e SEQUENCIAL, não uma
-  # matriz: o `laravel-builder` faz `FROM laravel-app`, então precisa dela já
-  # publicada. Numa matriz os três rodariam em paralelo e o builder pegaria a
-  # imagem da publicação ANTERIOR — passaria verde entregando a base errada.
+  # ---------------------------------------------------------------------------
+  # Imagens base das aplicações Laravel da org — quatro jobs encadeados
+  #
+  #   laravel-teste ─→ laravel-app (amd64 e arm64, runners NATIVOS)
+  #                         └→ laravel-app-manifest ─→ laravel-derivados
+  #
+  # Até agosto/2026 isto era UM job com três builds em sequência, cada um
+  # multi-arch sob QEMU. Levava 64 minutos, e a medição dizia exatamente onde:
+  #
+  #   #17 [linux/amd64 ...] RUN install-php-extensions ...  DONE   102.1s
+  #   #18 [linux/arm64 ...] RUN install-php-extensions ...  DONE  1764.8s
+  #
+  # As 14 extensões compilam de fonte, e o arm64 emulado é 17x mais lento que o
+  # amd64 nativo. Pior: compilavam DUAS vezes, porque o worker era Alpine.
+  #
+  # Duas mudanças eliminam as duas metades do problema:
+  #
+  # 1. O worker passou a derivar do app (ver laravel/Dockerfile.worker). Agora só
+  #    o `laravel-app` compila extensão; worker e builder são COPY em cima dela,
+  #    e custam segundos mesmo sob emulação.
+  # 2. O `laravel-app` deixou de ser emulado. Cada arquitetura builda no seu
+  #    runner NATIVO — `ubuntu-24.04-arm` é gratuito porque este repositório é
+  #    público — e um job de manifest junta as duas por digest.
+  #
+  # A ordem continua sendo uma restrição real, e é por isso que são jobs
+  # separados com `needs:` em vez de uma matriz solta: worker e builder fazem
+  # `FROM laravel-app` e precisam da tag imutável DESTA execução já publicada.
+  # Em paralelo, pegariam a imagem da publicação anterior — verde, entregando a
+  # base errada.
   #
   # Multi-arch aqui, e não nos módulos de infraestrutura, porque estas imagens
   # são consumidas em tempo de BUILD, inclusive nas estações Apple Silicon da
   # equipe. Sem `arm64` no manifest, todo build local cairia em emulação.
-  laravel:
+  # ---------------------------------------------------------------------------
+
+  # O gate. Job próprio, e não um step do build, porque a partir daqui o build
+  # se abre em dois runners: um teste que rodasse dentro de um deles não
+  # protegeria o outro. Nada é publicado se ele falhar — os três jobs abaixo
+  # dependem dele, direta ou transitivamente.
+  #
+  # Builda as três imagens na arquitetura nativa do runner, que é o que se quer:
+  # verificar rápido e barato antes de gastar os minutos dos builds de verdade.
+  laravel-teste:
     needs: changes
     if: needs.changes.outputs.laravel == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
-      packages: write
-    env:
-      # As duas metades da tag. `PHP_MINOR` identifica a stack; `REVISION` é o
-      # contador da imagem, incrementado quando muda extensão, ini, Caddyfile,
-      # entrypoint ou versão da base — ver laravel/docs/versionamento.md.
-      PHP_MINOR: "8.4"
-      # r2: Caddyfile ganhou `num_threads`/`max_threads` e o entrypoint passou a
-      # dimensionar workers e threads do FrankenPHP pela CPU e memória do
-      # container. Sem isso a aplicação atendia uma requisição por vez — ver
-      # laravel/README.md, "Os três FRANKENPHP_*, e por que existem".
-      REVISION: "r2"
     steps:
       - uses: actions/checkout@v4
 
-      # Roda ANTES de qualquer push, e é o único ponto onde a paridade entre o
-      # runtime web (Debian/glibc) e o worker (Alpine/musl) deixa de ser uma
-      # esperança e vira uma verificação. Uma extensão presente num e ausente no
-      # outro não quebra build nenhum: quebra um job de fila em produção, com
-      # "Class not found", enquanto o container web funciona ao lado.
       - name: Paridade de extensões, diretivas de PHP e toolchain
         run: bash laravel/test/laravel-images.test.sh
 
-      # QEMU só é necessário a partir daqui: o teste acima builda na arquitetura
-      # nativa do runner, que é o que se quer — verificar rápido antes de gastar
-      # os minutos da emulação.
+  # A única imagem que compila alguma coisa, e por isso a única que ganha um
+  # runner por arquitetura. SEM `setup-qemu-action`: se ele aparecer aqui de
+  # novo, é sinal de que a emulação voltou.
+  laravel-app:
+    needs: laravel-teste
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      # Um manifest com uma arquitetura só é pior do que manifest nenhum: os
+      # consumidores da outra caem em emulação sem aviso.
+      fail-fast: true
+      matrix:
+        include:
+          - { plataforma: linux/amd64, runner: ubuntu-24.04, arco: amd64 }
+          - { plataforma: linux/arm64, runner: ubuntu-24.04-arm, arco: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `push-by-digest`: sobe os blobs SEM criar tag. É o que permite quebrar o
+      # build em dois runners sem que exista, em momento algum, uma tag pública
+      # apontando para uma imagem de arquitetura única. A tag só nasce no job de
+      # manifest, quando as duas metades já estão prontas.
+      #
+      # O `scope` do cache é por arquitetura: um scope compartilhado faria os
+      # dois runners disputarem a mesma chave e se invalidarem em alternância.
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: laravel
+          file: laravel/Dockerfile.app
+          platforms: ${{ matrix.plataforma }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.NAMESPACE }}/laravel-app,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=laravel-app-${{ matrix.arco }}
+          cache-to: type=gha,mode=max,scope=laravel-app-${{ matrix.arco }}
+
+      # O digest vira o NOME de um arquivo vazio: é só isso que o job de
+      # manifest precisa saber de cada arquitetura, e assim o artefato não
+      # carrega conteúdo nenhum.
+      - name: Guarda o digest desta arquitetura
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-laravel-app-${{ matrix.arco }}
+          path: /tmp/digests/*
+          retention-days: 1
+          # Sem isto, uma arquitetura que não produzisse digest passaria
+          # despercebida e o manifest sairia com uma metade só.
+          if-no-files-found: error
+
+  # Junta os dois digests num manifest multi-arch e é aqui — e só aqui — que as
+  # tags de `laravel-app` passam a existir.
+  laravel-app-manifest:
+    needs: laravel-app
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-laravel-app-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # As duas tags de laravel-app. O `build.sh` da raiz lê estas linhas para
+      # saber o que publicar localmente — ver test/catalogo-build.test.sh, que
+      # afirma a concordância. Mudar a forma deste comando quebra o teste, que é
+      # o ponto: a alternativa seria o script publicar a tag errada em silêncio.
+      - name: Manifest multi-arch de laravel-app
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+              -t "${REGISTRY}/${NAMESPACE}/laravel-app:${PHP_MINOR}" \
+              -t "${REGISTRY}/${NAMESPACE}/laravel-app:${PHP_MINOR}-${REVISION}" \
+              $(printf "${REGISTRY}/${NAMESPACE}/laravel-app@sha256:%s " *)
+
+      - name: Confere as arquiteturas publicadas
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect \
+              "${REGISTRY}/${NAMESPACE}/laravel-app:${PHP_MINOR}-${REVISION}"
+
+  # Worker e builder: os dois fazem `FROM laravel-app`, os dois recebem os
+  # mesmos dois build-args e nenhum dos dois compila extensão. Por isso cabem
+  # numa matriz e num runner só — a emulação aqui custa segundos, não meia hora.
+  #
+  # `BASE_TAG` aponta para a tag IMUTÁVEL recém-publicada, e não para a móvel: é
+  # o que garante que os derivados desta execução venham da app desta execução.
+  laravel-derivados:
+    needs: laravel-app-manifest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        imagem: [worker, builder]
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
@@ -423,49 +584,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: laravel-app
+      - name: laravel-${{ matrix.imagem }}
         uses: docker/build-push-action@v6
         with:
           context: laravel
-          file: laravel/Dockerfile.app
-          platforms: linux/amd64,linux/arm64
-          push: true
-          cache-from: type=gha,scope=laravel-app
-          cache-to: type=gha,mode=max,scope=laravel-app
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/laravel-app:${{ env.PHP_MINOR }}
-            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/laravel-app:${{ env.PHP_MINOR }}-${{ env.REVISION }}
-
-      - name: laravel-worker
-        uses: docker/build-push-action@v6
-        with:
-          context: laravel
-          file: laravel/Dockerfile.worker
-          platforms: linux/amd64,linux/arm64
-          push: true
-          cache-from: type=gha,scope=laravel-worker
-          cache-to: type=gha,mode=max,scope=laravel-worker
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/laravel-worker:${{ env.PHP_MINOR }}
-            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/laravel-worker:${{ env.PHP_MINOR }}-${{ env.REVISION }}
-
-      # Aponta para a tag IMUTÁVEL recém-publicada, não para a móvel: é o que
-      # garante que o builder desta execução derive da app desta execução.
-      - name: laravel-builder
-        uses: docker/build-push-action@v6
-        with:
-          context: laravel
-          file: laravel/Dockerfile.builder
+          file: laravel/Dockerfile.${{ matrix.imagem }}
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
             BASE_IMAGE=${{ env.REGISTRY }}/${{ env.NAMESPACE }}/laravel-app
             BASE_TAG=${{ env.PHP_MINOR }}-${{ env.REVISION }}
-          cache-from: type=gha,scope=laravel-builder
-          cache-to: type=gha,mode=max,scope=laravel-builder
+          cache-from: type=gha,scope=laravel-${{ matrix.imagem }}
+          cache-to: type=gha,mode=max,scope=laravel-${{ matrix.imagem }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/laravel-builder:${{ env.PHP_MINOR }}
-            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/laravel-builder:${{ env.PHP_MINOR }}-${{ env.REVISION }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/laravel-${{ matrix.imagem }}:${{ env.PHP_MINOR }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/laravel-${{ matrix.imagem }}:${{ env.PHP_MINOR }}-${{ env.REVISION }}
 
   monitoring:
     needs: changes

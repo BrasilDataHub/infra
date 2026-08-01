@@ -7,7 +7,7 @@ de reconstruir.
 | Imagem | Base | Papel |
 |---|---|---|
 | `ghcr.io/brasildatahub/laravel-app:8.4` | `dunglas/frankenphp:1.12-php8.4-bookworm` | runtime **web** — Octane + Caddy |
-| `ghcr.io/brasildatahub/laravel-worker:8.4` | `php:8.4-cli-alpine` | runtime **worker** — fila, Horizon, scheduler, Reverb |
+| `ghcr.io/brasildatahub/laravel-worker:8.4` | `laravel-app` | runtime **worker** — fila, Horizon, scheduler, Reverb |
 | `ghcr.io/brasildatahub/laravel-builder:8.4` | `laravel-app` + Node 22 | **build** — Composer e npm/Vite |
 
 ## Por que elas existem
@@ -194,20 +194,45 @@ ausente, a imagem voltou ao comportamento de uma thread.
 | `HORIZON_COMMAND` | `artisan horizon` | comando do papel `horizon` |
 | `SCHEDULER_COMMAND` | `artisan schedule:run --no-interaction` | comando do papel `scheduler` |
 
-## Por que o worker é Alpine e o app é Debian
+## Por que o worker deriva do app (e não é mais Alpine)
 
-É o ambiente em que o worker desta organização já rodava, e a escolha foi
-**mantida deliberadamente** na refatoração: trocar a libc de um processo que
-executa jobs de longa duração é risco sem contrapartida imediata.
+Até agosto de 2026 o worker era `php:8.4-cli-alpine`: outra distribuição, outra
+libc, outra árvore de camadas. A escolha vinha do ambiente em que o worker desta
+organização já rodava, e havia sido mantida para não trocar a libc de um
+processo que executa jobs de longa duração.
 
-O preço é real e vale estar escrito: são duas árvores de camadas, as extensões
-compilam duas vezes, e nada além do teste de paridade impede que os dois
-runtimes divirjam. É esse teste que torna a escolha segura — ele roda no CI
-antes de qualquer push, e compara `php -m` das duas imagens linha a linha.
+O que mudou a conta foi a medição do CI. Publicar as três imagens levava **64
+minutos**, e o log dizia exatamente onde:
 
-Unificar os dois sobre a base Debian continua sendo a melhoria de maior impacto
-disponível aqui, e o caminho está aberto: `laravel-app` já traz um PHP CLI
-completo.
+```
+#17 [linux/amd64 …] RUN install-php-extensions …   DONE   102.1s
+#18 [linux/arm64 …] RUN install-php-extensions …   DONE  1764.8s
+```
+
+As 14 extensões compilam de fonte; o `arm64` emulado é **17× mais lento** que o
+`amd64` nativo. E compilavam quatro vezes por publicação — duas distribuições ×
+duas arquiteturas. Metade desse trabalho existia só porque o worker tinha base
+própria.
+
+Hoje `Dockerfile.worker` é `FROM laravel-app` mais um `COPY` do entrypoint. A
+compilação acontece uma vez, e a paridade de extensões deixou de ser uma
+afirmação verificada para ser **estrutural**: não há mais duas instalações que
+possam divergir.
+
+O que isso custou, e vale estar escrito tanto quanto o ganho:
+
+- **O worker roda PHP ZTS.** É o que o FrankenPHP exige e o que a base traz.
+  `queue:work` e o Horizon funcionam em ZTS; o custo é da ordem de alguns por
+  cento em execução single-thread. O teste-gate afirma o ZTS nas duas imagens,
+  para que uma volta a NTS apareça no CI e não num benchmark de fila meses
+  depois.
+- **A imagem do worker ficou maior**, e depende de onde se olha. Sozinha, saiu
+  de 66 MB para 199 MB comprimidos (`arm64`). Mas ela agora compartilha **todas**
+  as camadas com o `laravel-app`: num host que roda web e worker — o caso normal
+  —, o par saiu de 265 MB para 199 MB de camadas distintas. Só um host que rode
+  exclusivamente worker paga a diferença.
+- **O worker herda `EXPOSE 8000` e o binário do FrankenPHP.** Ambos inertes num
+  processo que não atende porta.
 
 ## Multi-arch
 
@@ -217,14 +242,34 @@ estas imagens são consumidas em **tempo de build**, inclusive na estação de
 desenvolvimento, e as estações da equipe são Apple Silicon. Sem `arm64` no
 manifest, todo build local cairia em emulação.
 
-O custo aparece no CI: compilar as extensões para `arm64` sob QEMU é lento. É
-aceitável porque a imagem muda raramente — e é exatamente por isso que os
-filtros de `paths:` no workflow são estreitos, por arquivo que entra na imagem.
+O custo disso no CI **era** a emulação: `arm64` sob QEMU, dezenas de minutos por
+imagem. Não é mais. O `laravel-app` builda cada arquitetura no seu **runner
+nativo** — `ubuntu-24.04` e `ubuntu-24.04-arm`, este último gratuito porque o
+repositório é público — e um job de manifest junta as duas por digest. Worker e
+builder continuam saindo de um runner só, e podem: eles não compilam nada.
+
+Os filtros de `paths:` no workflow continuam estreitos, por arquivo que entra na
+imagem. O motivo agora é outro: não é mais a emulação que custa caro, é a
+compilação em si.
+
+## Build local
+
+Publicar não é mais exclusividade do CI:
+
+```bash
+bash build.sh laravel            # as três, arquitetura nativa, sem publicar
+bash build.sh laravel-app        # só a base, para iterar num Dockerfile
+bash build.sh laravel --push     # multi-arch, no mesmo GHCR e com as mesmas tags
+```
+
+O script lê contexto, Dockerfile, plataformas e tags do próprio
+`build-publish.yml` — não guarda uma segunda cópia da configuração. Detalhes em
+`bash build.sh --help`.
 
 ## Versionamento
 
 Duas tags por imagem, como no resto do repositório: `:8.4` acompanha a revisão
-corrente e `:8.4-r1` é imutável. A política, e quando incrementar a revisão,
+corrente e `:8.4-r3` é imutável. A política, e quando incrementar a revisão,
 estão em [docs/versionamento.md](docs/versionamento.md).
 
 ## Testes
@@ -236,5 +281,7 @@ bash laravel/test/laravel-images.test.sh
 Builda as três imagens e afirma: paridade de extensões entre app e worker, as
 extensões da lista presentes nas duas, as diretivas de `99-custom.ini`
 aplicadas, Composer respondendo, entrypoints executáveis, `Caddyfile` no lugar
-que o Octane espera, `bash` no worker, PHP thread-safe no app e Node 22 no
-builder. É o gate que roda no CI antes da publicação.
+que o Octane espera, `bash` no worker, PHP thread-safe nos dois runtimes, o
+dimensionamento de workers do FrankenPHP com CPU e memória reais, e Node 22 no
+builder. É o gate que roda no CI antes da publicação — e o mesmo que o
+`build.sh` roda antes de um build local.

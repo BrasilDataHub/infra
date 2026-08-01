@@ -8,12 +8,20 @@
 # — falha depois, em produção, de formas que não mencionam a causa.
 #
 # A afirmação central é a PARIDADE DE EXTENSÕES entre laravel-app e
-# laravel-worker. Os dois rodam distribuições diferentes (Debian/glibc e
-# Alpine/musl) a partir de uma lista compartilhada, e é justamente por serem
-# ambientes distintos que a lista compartilhada não basta: uma extensão pode
-# existir para uma libc e não para a outra, ou compilar num e falhar no outro
-# sem derrubar o build. O sintoma seria um job de fila estourando "Class not
-# found" com o container web funcionando perfeitamente ao lado.
+# laravel-worker. Até agosto/2026 os dois rodavam distribuições diferentes
+# (Debian/glibc e Alpine/musl) a partir de uma lista compartilhada, e era este
+# teste que impedia a divergência: uma extensão pode existir para uma libc e não
+# para a outra, ou compilar num ambiente e falhar no outro sem derrubar o build.
+# O sintoma seria um job de fila estourando "Class not found" com o container web
+# funcionando perfeitamente ao lado.
+#
+# Desde que o worker passou a derivar do app, a paridade é ESTRUTURAL — há uma
+# instalação só. O teste continua porque o que ele afirma mudou de natureza, não
+# deixou de importar: que a lista de php-extensions.txt foi de fato instalada
+# (uma extensão que falhe em silêncio não derruba o build), que as diretivas
+# medidas do 99-custom.ini chegaram às três imagens, e que a toolchain do
+# builder continua de pé. Se um dia o worker voltar a ter base própria, a
+# afirmação de paridade volta a ser a que a torna segura.
 set -uo pipefail
 
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
@@ -42,11 +50,14 @@ echo "Build"
 docker build -q -f "$RAIZ/Dockerfile.app" -t "$IMG_APP" "$RAIZ" >/dev/null \
     || { echo "build de laravel-app falhou"; exit 1; }
 ok "laravel-app"
-docker build -q -f "$RAIZ/Dockerfile.worker" -t "$IMG_WORKER" "$RAIZ" >/dev/null \
+# Worker e builder derivam do app. Nos dois casos o BASE_IMAGE aponta para a
+# imagem recém-buildada, não para a publicada — senão o teste validaria a imagem
+# antiga do registry em vez da que está sendo proposta.
+docker build -q -f "$RAIZ/Dockerfile.worker" \
+    --build-arg BASE_IMAGE="$IMG_APP" --build-arg BASE_TAG=latest \
+    -t "$IMG_WORKER" "$RAIZ" >/dev/null \
     || { echo "build de laravel-worker falhou"; exit 1; }
 ok "laravel-worker"
-# O builder deriva do app; no CI e aqui ele aponta para a imagem recém-buildada,
-# não para a publicada — senão o teste validaria a imagem antiga do registry.
 docker build -q -f "$RAIZ/Dockerfile.builder" \
     --build-arg BASE_IMAGE="$IMG_APP" --build-arg BASE_TAG=latest \
     -t "$IMG_BUILDER" "$RAIZ" >/dev/null \
@@ -148,8 +159,11 @@ else
     nok "app: /etc/caddy/Caddyfile ausente"
 fi
 
-# `bash` no worker não é conforto: os entrypoints usam `local`, e o `ash` do
-# Alpine não o implementa da mesma forma.
+# `bash` no worker não é conforto: os entrypoints usam `local` e `[[`, e o
+# shebang de entrypoint-worker.sh é `#!/bin/bash`. Hoje ele vem da base Debian
+# herdada do app; a afirmação fica porque é o que quebra o start do container se
+# um dia a base mudar, e o erro seria "no such file or directory" apontando para
+# o entrypoint — que existe.
 if docker run --rm --entrypoint bash "$IMG_WORKER" -c 'exit 0' 2>/dev/null; then
     ok "worker: bash disponível (exigido pelo entrypoint)"
 else
@@ -158,11 +172,19 @@ fi
 
 # O FrankenPHP só roda com PHP thread-safe. Se um dia a base mudar para uma
 # variante NTS, o Octane falha no start com uma mensagem que não diz isso.
-if php_em "$IMG_APP" -r 'exit(PHP_ZTS ? 0 : 1);' 2>/dev/null; then
-    ok "app: PHP thread-safe (ZTS), exigido pelo FrankenPHP"
-else
-    nok "app: PHP não é thread-safe — o Octane/FrankenPHP não sobe"
-fi
+#
+# O worker é afirmado JUNTO desde que passou a derivar do app: ele herdou o ZTS,
+# e essa é a contrapartida registrada da unificação. Se um dia ele voltar a uma
+# base NTS, é aqui que a mudança aparece — e não num benchmark de fila meses
+# depois.
+for par in "$IMG_APP:app" "$IMG_WORKER:worker"; do
+    img="${par%:*}"; rotulo="${par##*:}"
+    if php_em "$img" -r 'exit(PHP_ZTS ? 0 : 1);' 2>/dev/null; then
+        ok "$rotulo: PHP thread-safe (ZTS)"
+    else
+        nok "$rotulo: PHP não é thread-safe"
+    fi
+done
 
 echo
 echo "Dimensionamento de workers do FrankenPHP"

@@ -437,8 +437,7 @@ perfis e alertas em [`monitoring/`](monitoring/).
 
 ## Publicação
 
-As imagens são **públicas** no GHCR (pull sem autenticação); este
-repositório permanece privado. A CI
+As imagens são **públicas** no GHCR (pull sem autenticação). A CI
 (`.github/workflows/build-publish.yml`) builda e publica a cada push na
 `main` que toque a pasta do serviço.
 
@@ -446,8 +445,8 @@ repositório permanece privado. A CI
 workflow, não dos jobs: eles decidem se ele roda — e, uma vez disparado, todos
 os jobs rodariam junto. Um job `changes` lê o diff do push e libera cada build
 individualmente, para que mudar duas linhas do `redis/Dockerfile` não reconstrua
-as imagens de aplicação, cujo build multi-arch compila 14 extensões PHP sob
-emulação e leva dezenas de minutos.
+as imagens de aplicação, que compilam 14 extensões PHP de fonte, uma vez por
+arquitetura.
 
 Duas consequências que valem saber:
 
@@ -478,3 +477,42 @@ As três imagens de aplicação são as únicas publicadas em **multi-arch**
 (`linux/amd64` e `linux/arm64`): são consumidas em tempo de build, inclusive nas
 estações Apple Silicon da equipe. As de infraestrutura rodam só em servidor e
 continuam `amd64`.
+
+O `arm64` delas é buildado em **runner nativo** (`ubuntu-24.04-arm`, gratuito
+para repositórios públicos), e não sob emulação. Não é detalhe: com QEMU, o
+passo que compila as extensões levava 1764 s contra 102 s no `amd64` nativo, e a
+publicação inteira passava de uma hora. Hoje leva minutos.
+
+## Build local
+
+O [`build.sh`](build.sh) faz na sua máquina o que a CI faz no runner — mesmos
+contextos, mesmos Dockerfiles, mesmas plataformas, mesmas tags:
+
+```bash
+bash build.sh --listar                # o catálogo de imagens, lido do workflow
+bash build.sh laravel                 # as 3 imagens do módulo, sem publicar
+bash build.sh laravel-app             # uma imagem só, para iterar
+bash build.sh monitoring/grafana      # por subdiretório
+bash build.sh laravel --push          # multi-arch, publicando no GHCR
+bash build.sh --help                  # todas as opções
+```
+
+Serve para não depender da fila do runner quando há pressa, e para testar uma
+mudança de Dockerfile antes de commitar. **Por padrão não publica**: builda na
+arquitetura da máquina e carrega no daemon local. Publicar exige `--push` e uma
+confirmação.
+
+Para publicar, uma vez por máquina: o GHCR exige escopo `write:packages`, que o
+`gh auth login` não pede por padrão — sem ele o login passa e o push falha com
+403.
+
+```bash
+gh auth refresh -h github.com -s write:packages
+bash build.sh laravel --push --login
+```
+
+Ele não guarda cópia da configuração das imagens — lê tudo do
+`build-publish.yml` a cada execução, e
+[`test/catalogo-build.test.sh`](test/catalogo-build.test.sh) afirma no CI que
+essa leitura continua batendo. Uma segunda cópia divergiria na primeira imagem
+nova, e o sintoma seria publicar a tag errada em silêncio.

@@ -23,6 +23,10 @@ on:
       # test/filtro-build.test.sh que o lê e o verifica. Sem estas duas linhas,
       # mexer no filtro não roda o teste que o protege.
       - "test/filtro-build.test.sh"
+      # Pelo mesmo motivo: o build.sh lê o catálogo de imagens do workflow, e é
+      # test/catalogo-build.test.sh que afirma que essa leitura continua batendo.
+      - "build.sh"
+      - "test/catalogo-build.test.sh"
       - ".github/workflows/build-publish.yml"
       - ".github/workflows/lint-setup.yml"
   pull_request:
@@ -43,6 +47,10 @@ on:
       # test/filtro-build.test.sh que o lê e o verifica. Sem estas duas linhas,
       # mexer no filtro não roda o teste que o protege.
       - "test/filtro-build.test.sh"
+      # Pelo mesmo motivo: o build.sh lê o catálogo de imagens do workflow, e é
+      # test/catalogo-build.test.sh que afirma que essa leitura continua batendo.
+      - "build.sh"
+      - "test/catalogo-build.test.sh"
       - ".github/workflows/build-publish.yml"
   workflow_dispatch:
 
@@ -69,6 +77,10 @@ jobs:
                      laravel/entrypoint-worker.sh \
                      laravel/test/laravel-images.test.sh \
                      test/filtro-build.test.sh
+          # O build local. Ele publica no mesmo registro que a CI, com as mesmas
+          # tags — um erro de quoting aqui não é um script que falha, é uma tag
+          # sobrescrita no GHCR.
+          shellcheck build.sh test/catalogo-build.test.sh
 
       # Cobre, entre outras coisas, se os blocos PG_* do script continuam
       # idênticos aos de postgres/docs/perfis.md e se as envs existem na imagem.
@@ -86,8 +98,17 @@ jobs:
       - name: Filtro por escopo do build
         run: bash test/filtro-build.test.sh
 
+      # O `build.sh` lê a configuração das imagens do próprio build-publish.yml,
+      # em vez de guardar uma segunda cópia. É uma leitura que falha calada: se o
+      # workflow mudar de forma, o catálogo sai a menos e o build local publica a
+      # tag errada — ou deixa de publicar uma imagem — sem erro nenhum.
+      - name: Catálogo de imagens do build local
+        run: bash test/catalogo-build.test.sh
+
       - name: Ajuda não falha
-        run: bash setup.sh --help > /dev/null
+        run: |
+          bash setup.sh --help > /dev/null
+          bash build.sh --help > /dev/null
 
       - name: Composes válidos
         run: |

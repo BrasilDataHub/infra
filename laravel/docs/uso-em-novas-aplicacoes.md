@@ -29,7 +29,7 @@ Apague-os ao migrar:
 ## `docker/Dockerfile` — a aplicação web
 
 ```dockerfile
-ARG BASE_TAG=8.4-r1
+ARG BASE_TAG=8.4-r3
 
 FROM ghcr.io/brasildatahub/laravel-builder:${BASE_TAG} AS builder
 WORKDIR /app
@@ -89,7 +89,7 @@ Não é preciso repetir `ENTRYPOINT`, `EXPOSE`, `HEALTHCHECK` nem copiar o
 ## `docker/Dockerfile.worker`
 
 ```dockerfile
-ARG BASE_TAG=8.4-r1
+ARG BASE_TAG=8.4-r3
 
 FROM ghcr.io/brasildatahub/laravel-worker:${BASE_TAG}
 WORKDIR /var/www/html
@@ -109,10 +109,21 @@ RUN set -eux; \
 ```
 
 O worker roda o próprio `composer install` em vez de copiar o `vendor/` do
-builder: o builder é Debian/glibc e o worker é Alpine/musl. O `vendor` do
-Composer é PHP puro e na prática funcionaria, mas reinstalar preserva a
-garantia sem depender dessa suposição — e o custo é baixo perto do que já se
-economizou nas extensões.
+builder. A razão original — builder Debian/glibc, worker Alpine/musl —
+**deixou de valer** em agosto/2026: o `laravel-worker` passou a derivar do
+`laravel-app`, e portanto do mesmo PHP e das mesmas extensões que o builder.
+
+Copiar o vendor do builder, como o Dockerfile web já faz, elimina um `composer
+install` por build de projeto:
+
+```dockerfile
+COPY --from=builder /app/vendor ./vendor
+```
+
+Isso exige acrescentar o estágio `builder` a este Dockerfile — hoje ele não tem
+nenhum. É uma mudança no repositório de cada vertical, não nesta imagem, e por
+isso está registrada aqui como caminho aberto e não como receita já aplicada:
+os projetos migram um de cada vez.
 
 ## `docker-compose.yml`
 

@@ -5,8 +5,8 @@
 #
 # O que ele protege: cada push só deve reconstruir as imagens que o push de fato
 # tocou. Sem isso, mudar duas linhas do `redis/Dockerfile` reconstrói também as
-# imagens de aplicação — e o build multi-arch delas compila 14 extensões PHP sob
-# emulação, o que leva dezenas de minutos por nada.
+# imagens de aplicação — e publicá-las compila 14 extensões PHP de fonte, uma vez
+# por arquitetura, por nada.
 #
 # O mapa de padrões é LIDO DO PRÓPRIO WORKFLOW, e não copiado para cá. Uma cópia
 # passaria a divergir no primeiro serviço novo, e o teste continuaria verde
@@ -39,25 +39,66 @@ echo
 echo "Filtro por escopo do build-publish.yml"
 echo
 
-# Todo serviço com job no workflow precisa de uma linha no mapa. Sem esta
-# verificação, um serviço novo entraria com `if: needs.changes.outputs.novo ==
-# 'true'` contra um output que nunca existe — e o job NUNCA rodaria, em silêncio.
+# Todo job precisa ser decidido por um output que o mapa produz. Sem esta
+# verificação há dois jeitos de errar, e os dois são silenciosos: um job novo com
+# `if: needs.changes.outputs.novo == 'true'` contra um output que nunca existe
+# NUNCA roda; e um job sem `if:` e sem `needs:` roda SEMPRE, inclusive nos pushes
+# que não o tocam.
+#
+# O escopo de um job nem sempre está no próprio `if:`. As imagens de aplicação
+# são publicadas por quatro jobs `laravel-*` encadeados, e só o primeiro carrega
+# a condição — os outros herdam a decisão pelo `needs:`, porque um job cujo
+# `needs:` foi pulado é pulado junto. Por isso a resolução abaixo sobe a cadeia
+# de `needs:` até achar quem decide, em vez de casar o nome do job com o nome do
+# escopo.
 echo "Cobertura"
 JOBS="$(python3 - "$WORKFLOW" <<'PY'
-import sys, yaml
-d = yaml.safe_load(open(sys.argv[1]))
-for nome in d["jobs"]:
+import re
+import sys
+
+import yaml
+
+jobs = yaml.safe_load(open(sys.argv[1]))["jobs"]
+
+
+def pais(nome):
+    n = jobs[nome].get("needs") or []
+    return [n] if isinstance(n, str) else list(n)
+
+
+def escopo(nome, visto=None):
+    """O output de `changes` que decide se este job roda."""
+    visto = visto if visto is not None else set()
+    if nome in visto or nome not in jobs:
+        return None
+    visto.add(nome)
+    achado = re.search(
+        r"needs\.changes\.outputs\.([A-Za-z0-9_-]+)", str(jobs[nome].get("if") or "")
+    )
+    if achado:
+        return achado.group(1)
+    for pai in pais(nome):
+        herdado = escopo(pai, visto)
+        if herdado:
+            return herdado
+    return None
+
+
+for nome in jobs:
     if nome != "changes":
-        print(nome)
+        print(f"{nome}|{escopo(nome) or ''}")
 PY
 )"
-for job in $JOBS; do
-    if printf '%s\n' "$MAPA" | grep -q "^${job}|"; then
-        ok "job '$job' tem padrão no mapa"
+while IFS='|' read -r job escopo; do
+    [ -n "$job" ] || continue
+    if [ -z "$escopo" ]; then
+        nok "job '$job' não é decidido por nenhum output de 'changes' — rodaria sempre"
+    elif printf '%s\n' "$MAPA" | grep -q "^${escopo}|"; then
+        ok "job '$job' decidido pelo escopo '$escopo'"
     else
-        nok "job '$job' NÃO tem padrão no mapa — nunca rodaria"
+        nok "job '$job' depende do escopo '$escopo', que não está no mapa — nunca rodaria"
     fi
-done
+done <<< "$JOBS"
 
 # Espelha o laço do workflow: dado um arquivo, quais escopos ele ativa.
 escopos_de() {
