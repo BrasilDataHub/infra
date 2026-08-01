@@ -24,7 +24,10 @@ de projeto e de fornecedor:
 | `cache-256mb` | 256mb | **512M** | projetos pequenos (ex.: Base Escolar): cache + fila leve |
 | `cache-512mb` | 512mb | **1G** | default da imagem; aplicação de produção com cache + Horizon (Base Empresarial) |
 | `cache-1gb` | 1gb | **2G** | cache pesado ou várias aplicações (um database lógico por app) |
-| `cache-2gb` | 2gb | **3G** | teto do catálogo; acima disso, separe instâncias por projeto |
+| `cache-2gb` | 2gb | **3G** | cache + fila numa instância só, em host de 8 GiB |
+| `cache-4gb` | 4gb | **5G** | instância **dedicada a cache** (`allkeys-lru`, sem AOF), host de 8 GiB ou mais — Base Empresarial |
+
+Acima de `cache-4gb`, separe instâncias por projeto em vez de crescer uma só.
 
 Cada perfil é um arquivo `.env` versionado em [`profiles/`](profiles/) —
 `maxmemory`, política de despejo e limite de container juntos. É o mesmo arquivo
@@ -41,9 +44,12 @@ curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/redis
 | `cache-512mb` | [`profiles/cache-512mb.env`](profiles/cache-512mb.env) |
 | `cache-1gb` | [`profiles/cache-1gb.env`](profiles/cache-1gb.env) |
 | `cache-2gb` | [`profiles/cache-2gb.env`](profiles/cache-2gb.env) |
+| `cache-4gb` | [`profiles/cache-4gb.env`](profiles/cache-4gb.env) |
 
-Use apenas UM perfil por deploy. Em todos eles `REDIS_MAXMEMORY_POLICY` fica em
-`volatile-lru` (ver decisões abaixo).
+Use apenas UM perfil por deploy. Os perfis até `cache-2gb` ficam em
+`volatile-lru` porque assumem cache **e** fila na mesma instância (ver decisões
+abaixo). O `cache-4gb` é o único que assume instância dedicada a cache, e por
+isso usa `allkeys-lru` e dispensa o AOF.
 
 Se o Redis dividir o host com o Postgres, é o **limite de container** da tabela
 acima (não o `maxmemory`) que entra na
@@ -66,12 +72,72 @@ memória.
 
 - **`volatile-lru`** — despeja só chaves **com TTL** (cache). As chaves de
   fila/Horizon não têm TTL e nunca são despejadas; por isso a política é
-  segura para cache+fila na mesma instância. `allkeys-lru` poderia descartar
-  jobs pendentes; `noeviction` faria writes de cache falharem no limite.
-  Instâncias **só de cache** (sem fila) podem usar `allkeys-lru` via
-  `REDIS_MAXMEMORY_POLICY`.
+  segura **para os jobs** com cache+fila na mesma instância. `allkeys-lru`
+  poderia descartar jobs pendentes; `noeviction` faria writes de cache falharem
+  no limite. Instâncias **só de cache** (sem fila) devem usar `allkeys-lru` via
+  `REDIS_MAXMEMORY_POLICY` — é o que o perfil `cache-4gb` já traz.
+  **Atenção ao que ela NÃO protege:** sessão tem TTL, então é despejável. Numa
+  instância compartilhada sob pressão, `volatile-lru` desloga usuário — foi o
+  que aconteceu em 28/07/2026 e é o motivo do [par de
+  instâncias](README-par.md). Com login desligado o efeito é inofensivo; ao
+  ligar login, a sessão precisa sair da instância de cache.
 - **`appendonly yes` (AOF, fsync a cada segundo)** — jobs enfileirados
-  sobrevivem a restart.
+  sobrevivem a restart. Numa instância **só de cache** é custo sem retorno:
+  desligue com `REDIS_APPENDONLY=no` e deixe só o RDB, que serve para o cache
+  voltar quente depois de um restart, não para durabilidade.
+
+## Parâmetros de kernel do host
+
+Valem para **qualquer** instância, e o Redis reclama de um deles no boot:
+
+```
+WARNING Memory overcommit must be enabled! Without it, a background save or
+replication may fail under low memory condition.
+```
+
+| Parâmetro | Valor | Por quê |
+|---|---|---|
+| `vm.overcommit_memory` | `1` | BGSAVE e rewrite do AOF fazem `fork()`. Com overcommit heurístico (`0`) o kernel avalia o tamanho **virtual** do pai e pode recusar o fork de um processo de vários GB mesmo com memória sobrando — o COW real medido foi de 4,7 MB |
+| Transparent Huge Pages | `never` | Com THP em `always` o kernel entrega páginas de 2 MB: no fork, tocar 1 byte copia 2 MB em vez de 4 KB. Vira latência em pico e memória muito acima do dataset |
+| `net.core.somaxconn` | `≥ 511` | Backlog de accept; o default do Debian 12 (4096) já atende |
+
+**O [`setup.sh`](../setup.sh) já aplica os dois** sempre que o Redis está entre
+os serviços selecionados (`configure_overcommit` e `configure_thp`), de forma
+idempotente e persistente. O que segue é o equivalente manual, para host que
+não passou pelo setup — o `sysctl.d` sozinho não cobre THP, que não é sysctl:
+
+```bash
+# 1) overcommit
+printf 'vm.overcommit_memory = 1\n' > /etc/sysctl.d/60-redis.conf
+sysctl -p /etc/sysctl.d/60-redis.conf
+
+# 2) THP: unit oneshot, porque /sys não é persistido por sysctl.d.
+#    Before=docker.service garante que vale antes de o Redis subir.
+cat > /etc/systemd/system/disable-thp.service <<'EOF'
+[Unit]
+Description=Desabilita Transparent Huge Pages (exigido pelo Redis)
+DefaultDependencies=no
+After=sysinit.target local-fs.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled'
+ExecStart=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/defrag'
+
+[Install]
+WantedBy=basic.target
+EOF
+systemctl daemon-reload && systemctl enable --now disable-thp.service
+```
+
+Conferir:
+
+```bash
+cat /proc/sys/vm/overcommit_memory              # 1
+cat /sys/kernel/mm/transparent_hugepage/enabled # always madvise [never]
+```
 
 ## Implantação
 

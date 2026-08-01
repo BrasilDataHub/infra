@@ -334,7 +334,10 @@ OPTIONS (serviços):
       --pg-profile PERFIL    auto | dedicada-8gb | dedicada-16gb | dedicada-32gb
                              | dedicada-64gb | dedicada-128gb   (default: auto)
       --redis-profile PERFIL auto | cache-256mb | cache-512mb | cache-1gb
-                             | cache-2gb                        (default: auto)
+                             | cache-2gb | cache-4gb            (default: auto)
+                             cache-4gb só para instância DEDICADA a cache:
+                             usa allkeys-lru, que descartaria job de fila.
+                             O `auto` nunca o escolhe — é opção explícita.
       --meili-profile PERFIL auto | busca-512mb | busca-1gb | busca-4gb
                              | busca-16gb                       (default: auto)
       --opensearch-profile PERFIL
@@ -783,7 +786,7 @@ PG_PROFILES="dedicada-8gb dedicada-16gb dedicada-32gb dedicada-64gb dedicada-128
 # cache-768mb e fila-256mb são o PAR do desenho de duas instâncias
 # (redis/docker-compose.par.yml): separar cache de fila+sessões é o que
 # permite `allkeys-lru` num lado sem arriscar despejar job no outro.
-REDIS_PROFILES="cache-256mb cache-512mb cache-768mb cache-1gb cache-2gb fila-256mb"
+REDIS_PROFILES="cache-256mb cache-512mb cache-768mb cache-1gb cache-2gb cache-4gb fila-256mb"
 MEILI_PROFILES="busca-512mb busca-1gb busca-4gb busca-16gb"
 # `dev-4gb` é aceito por --opensearch-profile mas NUNCA escolhido pelo `auto`
 # (ver detect_opensearch_profile): é o perfil da máquina de desenvolvimento que
@@ -911,6 +914,9 @@ neighbor_budget_gb() {
         cache-512mb)    printf '1' ;;
         cache-1gb)      printf '2' ;;
         cache-2gb)      printf '3' ;;
+        # cache-4gb é instância DEDICADA a cache (allkeys-lru, sem AOF); o
+        # limite de container do perfil é 5G.
+        cache-4gb)      printf '5' ;;
         # Os dois perfis do PAR cache/fila (redis/docker-compose.par.yml). Eles
         # estavam em REDIS_PROFILES e NÃO estavam aqui, então caíam no `*)` e
         # valiam 0: quem subisse o par com `--redis-profile cache-768mb` teria o
@@ -1529,10 +1535,15 @@ configure_sysctl() {
     [[ "$OS_FAMILY" == "linux" ]] || return 0
 
     # Só quando há serviço que precisa. Escrever sysctl num host que não roda
-    # OpenSearch é mexer em configuração de kernel sem motivo.
-    service_selected opensearch || return 0
+    # nenhum dos dois é mexer em configuração de kernel sem motivo.
+    service_selected opensearch || service_selected redis || return 0
 
     section "Parâmetros de kernel"
+
+    configure_overcommit
+    configure_thp
+
+    service_selected opensearch || return 0
 
     local arquivo=/etc/sysctl.d/99-brasildatahub.conf
     local atual
@@ -1573,6 +1584,99 @@ configure_sysctl() {
         printf 'vm.max_map_count=%s\n' "$alvo"
     } > "$arquivo"
     ok "persistido em ${arquivo}: ${alvo}"
+}
+
+# `vm.overcommit_memory=1`, exigido pelo Redis.
+#
+# O próprio Redis avisa no boot quando encontra outro valor:
+#
+#   WARNING Memory overcommit must be enabled! Without it, a background save
+#   or replication may fail under low memory condition.
+#
+# BGSAVE e rewrite do AOF fazem `fork()`. Com o overcommit heurístico (0), o
+# kernel decide olhando o tamanho VIRTUAL do pai — e pode recusar o fork de um
+# Redis de vários GB mesmo com memória de sobra, porque não tem como saber que
+# o filho vai tocar quase nada (o copy-on-write medido em produção foi de
+# 4,7 MB). O resultado é snapshot que não acontece e, sem snapshot, um restart
+# volta com o cache vazio.
+#
+# Arquivo próprio, e não o 99-brasildatahub.conf: aquele é reescrito inteiro
+# pela etapa do OpenSearch, e os dois serviços são selecionáveis em separado.
+configure_overcommit() {
+    service_selected redis || return 0
+
+    local arquivo=/etc/sysctl.d/60-redis.conf
+    local atual
+    atual="$(sysctl -n vm.overcommit_memory 2>/dev/null || printf '0')"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        _log "    ${C_DIM}[dry-run] vm.overcommit_memory: ${atual} → 1 e ${arquivo}${C_RESET}"
+        return 0
+    fi
+
+    if [[ "$atual" != "1" ]]; then
+        run sysctl -w vm.overcommit_memory=1
+        ok "vm.overcommit_memory: ${atual} → 1"
+    else
+        ok "vm.overcommit_memory já em 1"
+    fi
+
+    {
+        printf '# GERADO por setup.sh — não editar à mão.\n'
+        printf '# Exigido pelo Redis: sem overcommit, o fork() do BGSAVE pode ser\n'
+        printf '# recusado mesmo havendo memória livre. Ver redis/README.md.\n'
+        printf 'vm.overcommit_memory = 1\n'
+    } > "$arquivo"
+    ok "persistido em ${arquivo}"
+}
+
+# Transparent Huge Pages desligado, também exigido pelo Redis.
+#
+# Não é sysctl — vive em /sys, que o sysctl.d não cobre. Por isso uma unit
+# oneshot, com `Before=docker.service` para valer antes de qualquer container
+# subir e `WantedBy=basic.target` para valer também depois de um reboot.
+#
+# Com THP em `always` o kernel entrega páginas de 2 MB. No fork do snapshot,
+# escrever 1 byte copia 2 MB em vez de 4 KB: o processo incha muito além do
+# dataset e a latência sobe em pico, exatamente quando não se quer.
+configure_thp() {
+    service_selected redis || return 0
+
+    local unit=/etc/systemd/system/disable-thp.service
+    local atual
+    atual="$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || printf 'indisponível')"
+
+    # Kernel sem THP compilado (ou container sem /sys): nada a fazer, e não é erro.
+    if [[ "$atual" == "indisponível" ]]; then
+        ok "Transparent Huge Pages não exposto pelo kernel — nada a desligar"
+        return 0
+    fi
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        _log "    ${C_DIM}[dry-run] THP: ${atual} → never, via ${unit}${C_RESET}"
+        return 0
+    fi
+
+    cat > "$unit" <<'EOF'
+[Unit]
+Description=Desabilita Transparent Huge Pages (exigido pelo Redis)
+Documentation=https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency/
+DefaultDependencies=no
+After=sysinit.target local-fs.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled'
+ExecStart=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/defrag'
+
+[Install]
+WantedBy=basic.target
+EOF
+    run systemctl daemon-reload
+    run systemctl enable --now disable-thp.service
+    ok "Transparent Huge Pages: $(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)"
 }
 
 install_docker() {
