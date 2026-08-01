@@ -165,6 +165,65 @@ else
 fi
 
 echo
+echo "Dimensionamento de workers do FrankenPHP"
+
+# Por que isto é um teste-gate, e não um detalhe de configuração: sem
+# `num_threads` no Caddyfile o FrankenPHP mantém UMA thread de worker ativa e
+# serializa todas as requisições. Nada falha, nada é logado — o servidor
+# simplesmente atende um pedido por vez, com o resto da CPU parada. Foi assim
+# que o Base Empresarial rodou até 01/08/2026: sob 10 conexões por 30 s, uma
+# thread acumulou 22,4 s de CPU e as outras quatro não se moveram um tick.
+#
+# As duas diretivas no Caddyfile. Só `num` no bloco worker NÃO basta — foi
+# testado, e sem a linha global o comportamento não muda.
+for diretiva in num_threads max_threads; do
+    if docker run --rm --entrypoint grep "$IMG_APP" -qE "^[[:space:]]*${diretiva}[[:space:]]" /etc/caddy/Caddyfile 2>/dev/null; then
+        ok "app: Caddyfile declara ${diretiva}"
+    else
+        nok "app: Caddyfile sem ${diretiva} — o FrankenPHP serializa as requisições"
+    fi
+done
+
+# As funções de cálculo, exercitadas com a CPU e a memória REAIS do container.
+# É o que prova que o entrypoint lê o cgroup, e não `nproc`: num host de 8
+# núcleos, `nproc` responderia 8 mesmo com `--cpus 2` e o container abriria
+# quatro vezes mais worker do que pode executar.
+dimensionamento() {
+    docker run --rm "$@" --entrypoint bash "$IMG_APP" -c '
+        log() { echo "[$1] $2"; }
+        eval "$(sed -n "/^available_cpus()/,/^}/p;/^container_memory_mb()/,/^}/p;/^php_memory_limit_mb()/,/^}/p;/^configure_frankenphp_workers()/,/^}/p" /usr/local/bin/entrypoint)"
+        configure_frankenphp_workers >/dev/null
+        echo "${FRANKENPHP_WORKER_NUM}/${FRANKENPHP_NUM_THREADS}/${FRANKENPHP_MAX_THREADS}"
+    ' 2>/dev/null | tr -d '\r'
+}
+
+verifica_dimensionamento() {
+    local rotulo="$1" esperado="$2"; shift 2
+    local obtido; obtido="$(dimensionamento "$@")"
+    if [ "$obtido" = "$esperado" ]; then
+        ok "app: $rotulo → $obtido (workers/threads/teto)"
+    else
+        nok "app: $rotulo → '$obtido', esperado '$esperado'"
+    fi
+}
+
+# 2 CPUs: 2x2 workers, +2 de folga para o que não passa pelo worker script,
+# teto no dobro. É a configuração medida em produção (p50 −74%, vazão 2,5x).
+verifica_dimensionamento "2 CPUs, memória livre" "4/6/12" --cpus 2
+
+# 1 CPU: escala para baixo sem quebrar a ordem workers ≤ threads ≤ teto.
+verifica_dimensionamento "1 CPU, memória livre" "2/3/6" --cpus 1
+
+# Memória curta manda no teto: 1 GiB a 70% dá 716 MiB, e com `memory_limit` de
+# 256 MiB por thread cabem 2. A folga de uma thread não-worker sobrevive ao
+# corte — sem ela, worker e requisições comuns voltam a disputar thread.
+verifica_dimensionamento "2 CPUs, 1 GiB de memória" "1/2/2" --cpus 2 --memory 1g
+
+# O que vier definido por fora vence o cálculo, para quando a medição de um
+# projeto pedir outro número.
+verifica_dimensionamento "override explícito" "3/5/10" --cpus 2 -e FRANKENPHP_WORKER_NUM=3
+
+echo
 echo "Toolchain de build"
 
 node_ver="$(docker run --rm --entrypoint node "$IMG_BUILDER" --version 2>/dev/null | tr -d '\r')"

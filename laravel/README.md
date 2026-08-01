@@ -125,7 +125,11 @@ a imagem subir; os defaults são os de produção.
 
 | Variável | Default | O que controla |
 |---|---|---|
-| `APP_COMMAND` | `artisan octane:start --server=frankenphp --host=0.0.0.0 --port=8000 --caddyfile=/etc/caddy/Caddyfile` | o processo do container |
+| `APP_COMMAND` | `artisan octane:start --server=frankenphp … --workers=<calculado> --max-requests=500` | o processo do container |
+| `FRANKENPHP_WORKER_NUM` | `2 × CPU` | threads que servem o worker script |
+| `FRANKENPHP_NUM_THREADS` | `workers + CPU` | total de threads PHP do processo |
+| `FRANKENPHP_MAX_THREADS` | `2 × num_threads`, limitado pela memória | teto do autoscaling de threads |
+| `OCTANE_MAX_REQUESTS` | `500` | requisições por worker antes do reciclo |
 | `CADDY_SERVER_SERVER_NAME` | `:8000` | endereço em que o Caddy escuta |
 | `CADDY_SERVER_LOG_LEVEL` | `warn` | verbosidade do log de acesso |
 | `CADDY_SERVER_WATCH_DIRECTIVES` | vazio | reinício automático do worker Octane ao mudar arquivo — só faz sentido em desenvolvimento |
@@ -134,6 +138,51 @@ a imagem subir; os defaults são os de produção.
 
 `APP_PUBLIC_PATH` **não** se define: quem a injeta é o próprio Octane ao subir
 o Caddy, e o Caddyfile da imagem a lê de lá.
+
+#### Os três `FRANKENPHP_*`, e por que existem
+
+Nenhum precisa ser definido: o entrypoint calcula os três a partir da CPU e da
+memória que o container **realmente** tem — lê o cgroup, e não `nproc`, que
+enxerga o host inteiro e faria um container de 2 CPUs num host de 8 abrir quatro
+vezes mais worker do que consegue executar. O que ficar definido por fora vence
+o cálculo. A escolha vai na primeira linha do boot:
+
+```
+[INFO] FrankenPHP: 2 CPU(s), 4 workers, 6 threads (teto 12)
+```
+
+Existem porque, sem elas, **a aplicação atendia uma requisição por vez**. O
+Octane sobe com `--workers=auto`; `auto` vira `0` em
+`StartFrankenPhpCommand::workerCount()`, e com 0 a diretiva `num` fica **fora**
+do Caddyfile. Sem `num` e sem `num_threads` global, o FrankenPHP mantém uma
+única thread ativa e serializa tudo.
+
+Diagnosticado no Base Empresarial em 01/08/2026, em produção, sob carga
+sustentada de 10 conexões por 30 s: a thread `php-0` acumulou 22,4 s de CPU e as
+outras quatro **não se moveram um único tick**, com mais de um núcleo ocioso o
+tempo inteiro. Trinta requisições paralelas viraram uma escada linear de 1,84 s
+a 3,32 s — a assinatura de uma fila com um servidor só.
+
+Passar apenas `--workers=N` **não resolve**: foi testado com `num: 4` presente no
+config e o comportamento não mudou. É o `num_threads` do bloco global que
+destrava a distribuição — por isso ele vive no Caddyfile desta imagem.
+
+Medido no mesmo host, mesma imagem, mesmo banco, 2 vCPUs:
+
+| Concorrência | 1 worker (antes) | 4 workers (depois) | |
+|---|---|---|---|
+| 4 | p50 1,107 s · 25,9 req/s | **p50 0,291 s · 65,7 req/s** | p50 −74% |
+| 10 | p50 1,720 s · 19,9 req/s | **p50 0,620 s · 37,9 req/s** | p50 −64% |
+
+Como conferir depois de subir, em qualquer projeto:
+
+```bash
+docker exec <container> curl -s http://127.0.0.1:2019/config/ \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['apps']['frankenphp'])"
+```
+
+Tem de trazer `num_threads`, `max_threads` e `workers[0].num`. Se `num` vier
+ausente, a imagem voltou ao comportamento de uma thread.
 
 ### Só no `laravel-worker`
 

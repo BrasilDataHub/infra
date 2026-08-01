@@ -395,7 +395,11 @@ jobs:
       # contador da imagem, incrementado quando muda extensão, ini, Caddyfile,
       # entrypoint ou versão da base — ver laravel/docs/versionamento.md.
       PHP_MINOR: "8.4"
-      REVISION: "r1"
+      # r2: Caddyfile ganhou `num_threads`/`max_threads` e o entrypoint passou a
+      # dimensionar workers e threads do FrankenPHP pela CPU e memória do
+      # container. Sem isso a aplicação atendia uma requisição por vez — ver
+      # laravel/README.md, "Os três FRANKENPHP_*, e por que existem".
+      REVISION: "r2"
     steps:
       - uses: actions/checkout@v4
 
