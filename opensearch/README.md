@@ -226,6 +226,34 @@ mapping inteiro. O que ele **não** preserva, e por isso não serve de referênc
   este host, passe `OPENSEARCH_BULK_SIZE=1500` — o ajuste é no **cliente**, e
   não custa memória nenhuma.
 
+#### O gate de publicação reprova logo depois da carga, e não é o host
+
+Medido em 31/07/2026, ao publicar os 72,32 M documentos neste perfil: a sétima
+validação do `search-indexer` (`consultas_ouro`) reprovou com
+`filtro_uf_e_situacao: 386ms` e `prefixo_nome_fantasia: 272ms` contra o teto de
+200 ms — e o alias **não** foi promovido, que é o comportamento correto do gate.
+
+As mesmas consultas passaram sem nenhuma mudança de configuração depois de:
+
+1. devolver `refresh_interval` de `-1` para `30s` e o breaker `parent` de 85%
+   para o default — a janela de carga ainda estava aberta;
+2. um `_refresh`;
+3. **aquecer o page cache** lendo os arquivos de segmento do volume
+   (`find <volume> -type f | xargs -P4 cat > /dev/null`, 19 s para 13 GB);
+4. reexecutar só as validações:
+   `opensearch publicar --load-id AAAAMM --somente-validar`.
+
+O que a primeira medição capturou não foi a capacidade do host: foi um índice
+com a janela de carga aberta e os segmentos recém-escritos, ainda fora do page
+cache. **A conclusão errada aqui é cara** — ela leva a afrouxar o SLO das
+consultas de ouro, que é o único teste automático que separa "o índice existe"
+de "o índice serve". Aqueça e remeça antes de tocar no teto.
+
+Continua valendo que **latência medida neste perfil não transfere para
+produção**: lá são 7,5 GiB de page cache reservados, aqui ~1 GiB disputado com
+o PGDATA. O que o parágrafo acima afirma é só que o SLO É alcançável aqui, não
+que os números sejam comparáveis.
+
 ### Por que o perfil errado não é só conservador
 
 Aplicar `compartilhada-8gb` a um host dedicado deixa 10 GiB ociosos **e** faz o
