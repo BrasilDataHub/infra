@@ -3,14 +3,8 @@
 #
 #   bash test/filtro-build.test.sh
 #
-# O que ele protege: cada push só deve reconstruir as imagens que o push de fato
-# tocou. Sem isso, mudar duas linhas do `redis/Dockerfile` reconstrói também as
-# imagens de aplicação — e publicá-las compila 14 extensões PHP de fonte, uma vez
-# por arquitetura, por nada.
-#
-# O mapa de padrões é LIDO DO PRÓPRIO WORKFLOW, e não copiado para cá. Uma cópia
-# passaria a divergir no primeiro serviço novo, e o teste continuaria verde
-# testando uma regra que não é mais a que roda.
+# Cada push só deve reconstruir imagens cujos arquivos foram tocados.
+# O mapa de padrões é lido do próprio workflow (não duplicado aqui).
 set -uo pipefail
 
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
@@ -39,18 +33,7 @@ echo
 echo "Filtro por escopo do build-publish.yml"
 echo
 
-# Todo job precisa ser decidido por um output que o mapa produz. Sem esta
-# verificação há dois jeitos de errar, e os dois são silenciosos: um job novo com
-# `if: needs.changes.outputs.novo == 'true'` contra um output que nunca existe
-# NUNCA roda; e um job sem `if:` e sem `needs:` roda SEMPRE, inclusive nos pushes
-# que não o tocam.
-#
-# O escopo de um job nem sempre está no próprio `if:`. As imagens de aplicação
-# são publicadas por quatro jobs `laravel-*` encadeados, e só o primeiro carrega
-# a condição — os outros herdam a decisão pelo `needs:`, porque um job cujo
-# `needs:` foi pulado é pulado junto. Por isso a resolução abaixo sobe a cadeia
-# de `needs:` até achar quem decide, em vez de casar o nome do job com o nome do
-# escopo.
+# Todo job deve ser decidido por um output do mapa (direto ou via cadeia needs:).
 echo "Cobertura"
 JOBS="$(python3 - "$WORKFLOW" <<'PY'
 import re
@@ -127,8 +110,6 @@ verifica() { # arquivo, escopos esperados (separados por espaço, "" = nenhum)
 
 echo
 echo "Documentação nunca reconstrói imagem"
-# É o caso que originou este filtro: um commit de README não pode custar uma
-# hora de emulação.
 verifica "laravel/README.md"          ""
 verifica "laravel/docs/versionamento.md" ""
 verifica "README.md"                  ""
@@ -139,8 +120,6 @@ verifica "opensearch/README.md"       ""
 
 echo
 echo "O próprio workflow não republica a stack inteira"
-# Era por aqui que um ajuste de comentário reconstruía tudo. Para republicar de
-# propósito existe o workflow_dispatch, que aceita escolher a imagem.
 verifica ".github/workflows/build-publish.yml" ""
 verifica ".github/workflows/lint-setup.yml"    ""
 
@@ -157,9 +136,7 @@ verifica "monitoring/grafana/dashboards/x.json" "monitoring"
 
 echo
 echo "Postgres e pgbackrest não se confundem"
-# `postgres/*.sh` e `postgres/backup/*.sh` são imagens DIFERENTES e o segundo
-# mora dentro do diretório do primeiro. Um padrão frouxo faria todo commit do
-# sidecar reconstruir também o banco.
+# postgres/*.sh e postgres/backup/*.sh são imagens diferentes.
 verifica "postgres/Dockerfile"              "postgres"
 verifica "postgres/shm-guard.sh"            "postgres"
 verifica "postgres/initdb/01-extensions.sql" "postgres"
@@ -167,7 +144,7 @@ verifica "postgres/test/shm-guard.test.sh"  "postgres"
 verifica "postgres/backup/Dockerfile"       "pgbackrest"
 verifica "postgres/backup/entrypoint.sh"    "pgbackrest"
 verifica "postgres/backup/test/backup.test.sh" "pgbackrest"
-# Overlays de compose não entram em imagem nenhuma.
+# Overlays de compose não entram em imagem.
 verifica "postgres/docker-compose.backup.yml" ""
 verifica "redis/docker-compose.metrics.yml"   ""
 verifica "redis/profiles/cache-512mb.env"     ""

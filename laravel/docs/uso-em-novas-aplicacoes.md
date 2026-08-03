@@ -1,32 +1,28 @@
 # Usando as imagens base numa aplicação
 
-Receita para um vertical novo — Base Escolar, Base Hospitalar ou qualquer
-aplicação Laravel/Octane da organização — e para migrar uma existente.
+Receita para vertical novo (Laravel/Octane) ou migração. Imagens públicas no
+GHCR — `docker pull` sem autenticação.
 
-As imagens são **públicas** no GHCR: `docker pull` sem autenticação, e nenhuma
-credencial de registry no ambiente de deploy.
-
-## O que a aplicação precisa ter
+## O que a aplicação precisa
 
 | Arquivo | Por quê |
 |---|---|
-| `composer.json` + `composer.lock` | as dependências PHP; o `lock` é o que torna o build reprodutível |
-| `package.json` + `package-lock.json` | a toolchain do Vite |
-| `public/frankenphp-worker.php` | ponto de entrada do Octane; gerado por `artisan octane:install --server=frankenphp` |
-| `artisan` | o entrypoint aborta sem ele |
+| `composer.json` + `composer.lock` | dependências PHP; lock = build reprodutível |
+| `package.json` + `package-lock.json` | toolchain Vite |
+| `public/frankenphp-worker.php` | Octane (`artisan octane:install --server=frankenphp`) |
+| `artisan` | entrypoint aborta sem ele |
 | `.dockerignore` | sem ele o contexto vai a centenas de MB |
 
-## O que a aplicação **não** precisa mais ter
+## O que apagar na migração
 
-Estes vinham no repositório de cada projeto e agora moram na imagem base.
-Apague-os ao migrar:
+Moram na imagem base:
 
 - `docker/Caddyfile`
 - `docker/conf.d/custom.ini`
 - `docker/entrypoint.sh`
 - `docker/entrypoint-worker.sh`
 
-## `docker/Dockerfile` — a aplicação web
+## `docker/Dockerfile`
 
 ```dockerfile
 ARG BASE_TAG=8.4-r3
@@ -34,13 +30,10 @@ ARG BASE_TAG=8.4-r3
 FROM ghcr.io/brasildatahub/laravel-builder:${BASE_TAG} AS builder
 WORKDIR /app
 
-# Dependências antes do código, nos dois gerenciadores: mudar um .blade.php não
-# pode invalidar nem o vendor nem o node_modules.
 COPY composer.json composer.lock ./
 RUN composer install --no-interaction --no-dev --no-scripts --no-autoloader
 
-# `.npmrc` traz `ignore-scripts=true`. Se o projeto não tiver o arquivo, tire-o
-# desta linha — um `COPY` de arquivo inexistente falha o build.
+# Se não houver `.npmrc`, tire-o desta linha — COPY de arquivo inexistente falha.
 COPY package.json package-lock.json .npmrc ./
 RUN npm ci
 
@@ -50,20 +43,14 @@ RUN npm run build
 FROM ghcr.io/brasildatahub/laravel-app:${BASE_TAG}
 WORKDIR /var/www/html
 
-# O vendor vem PRONTO do builder. Ele deriva desta mesma imagem, então tem o
-# mesmo PHP e as mesmas extensões — não há segundo `composer install`.
 COPY --from=builder /app/vendor ./vendor
 COPY . .
 COPY --from=builder /app/public/build ./public/build
 
-# Sem --ignore-platform-reqs: extensão faltante quebra o build, não a produção.
-# É aqui que os scripts do Laravel (package:discover) rodam.
 RUN composer dump-autoload --optimize --no-dev --no-interaction \
     && chown -R www-data:www-data storage
 
-# POR ÚLTIMO, e isso importa: estes ARGs mudam a cada commit. Em qualquer
-# posição acima, invalidariam todas as camadas seguintes — inclusive o
-# dump-autoload, que é caro.
+# POR ÚLTIMO: ARGs mudam a cada commit e invalidariam camadas acima.
 ARG GIT_REF
 ARG GIT_SHA
 ARG BUILD_TIMESTAMP
@@ -83,8 +70,8 @@ RUN set -eux; \
         "${VERSION}" "${BUILD_TIMESTAMP}" "${SHORT_SHA}" > public/version.json
 ```
 
-Não é preciso repetir `ENTRYPOINT`, `EXPOSE`, `HEALTHCHECK` nem copiar o
-`Caddyfile`: tudo vem da base.
+Não repetir `ENTRYPOINT`, `EXPOSE`, `HEALTHCHECK` nem `Caddyfile` — vêm da base.
+Sem `--ignore-platform-reqs`: extensão faltante quebra o build, não a produção.
 
 ## `docker/Dockerfile.worker`
 
@@ -108,28 +95,11 @@ RUN set -eux; \
     ... # mesmo bloco de version.json do Dockerfile acima
 ```
 
-O worker roda o próprio `composer install` em vez de copiar o `vendor/` do
-builder. A razão original — builder Debian/glibc, worker Alpine/musl —
-**deixou de valer** em agosto/2026: o `laravel-worker` passou a derivar do
-`laravel-app`, e portanto do mesmo PHP e das mesmas extensões que o builder.
-
-Copiar o vendor do builder, como o Dockerfile web já faz, elimina um `composer
-install` por build de projeto:
-
-```dockerfile
-COPY --from=builder /app/vendor ./vendor
-```
-
-Isso exige acrescentar o estágio `builder` a este Dockerfile — hoje ele não tem
-nenhum. É uma mudança no repositório de cada vertical, não nesta imagem, e por
-isso está registrada aqui como caminho aberto e não como receita já aplicada:
-os projetos migram um de cada vez.
+O worker deriva de `laravel-app` (mesmo PHP/extensões que o builder). Caminho
+aberto nos verticais: copiar `vendor` do builder como no Dockerfile web
+(`COPY --from=builder /app/vendor ./vendor`), acrescentando estágio `builder`.
 
 ## `docker-compose.yml`
-
-Nada muda em relação ao formato que os projetos já usam: `context: .`,
-`dockerfile: docker/Dockerfile` (ou `.worker`), e os papéis do worker escolhidos
-por `CONTAINER_ROLE`:
 
 ```yaml
   worker:
@@ -144,14 +114,9 @@ por `CONTAINER_ROLE`:
       SCHEDULER_MODE: loop
 ```
 
-Limites de memória, CPU e réplicas continuam sendo decisão do projeto — a
-imagem base não opina sobre dimensionamento, pela mesma razão que
-`ghcr.io/brasildatahub/postgres` não embute `shared_buffers`.
+Limites de memória/CPU/réplicas = decisão do projeto.
 
-## `.dockerignore` recomendado
-
-O ponto de partida é o do Base Empresarial. Três itens merecem atenção porque
-já causaram problema:
+## `.dockerignore`
 
 ```
 vendor
@@ -164,16 +129,13 @@ public/hot
 !.env.example
 ```
 
-- **`vendor` e `node_modules` fora do contexto** — são reconstruídos no builder;
-  mandá-los ao daemon é o que fazia o contexto passar de 370 MB.
-- **`*.md` só alcança a raiz do contexto**: no Docker o `*` não atravessa `/`.
-  É o que mantém `resources/markdown/` na imagem, se o projeto servir conteúdo
-  de lá em runtime.
-- **Se o projeto usa `l5-swagger` com `generate_always = false`**, `storage/api-docs`
-  **não** pode entrar no `.dockerignore`: o JSON versionado é o que a rota
-  `/docs` serve em produção.
+- `vendor` / `node_modules` fora do contexto (reconstruídos no builder).
+- `*.md` no Docker não atravessa `/` — `resources/markdown/` permanece se
+  necessário em runtime.
+- Com `l5-swagger` e `generate_always = false`, **não** ignore
+  `storage/api-docs` — a rota `/docs` serve o JSON versionado.
 
-## Verificando a adoção
+## Verificação
 
 ```bash
 docker compose build
@@ -182,16 +144,7 @@ curl -f localhost:8000/up
 docker compose exec app php artisan about
 ```
 
-E o que de fato costuma quebrar numa migração:
-
-- uma página pública renderizando **com CSS** — prova que `public/build` chegou
-  à imagem;
-- `docker compose logs worker` mostrando o Horizon de pé;
-- `docker compose logs scheduler` mostrando o loop de 60 s;
-- `php -m` com as 14 extensões, se o projeto depender de alguma além delas.
-
-Se a aplicação precisar de uma extensão que não está em
-[`php-extensions.txt`](../php-extensions.txt), acrescente-a **lá** e publique
-uma revisão nova — não a instale no Dockerfile do projeto. Uma extensão
-instalada por fora reintroduz exatamente a divergência entre verticais que
-estas imagens existem para eliminar.
+Checklist de migração: página pública **com CSS**; Horizon e scheduler nos
+logs; `php -m` com as 14 extensões. Extensão nova →
+[`php-extensions.txt`](../php-extensions.txt) + revisão nova da imagem, não no
+Dockerfile do projeto.

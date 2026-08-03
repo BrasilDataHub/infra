@@ -1,53 +1,13 @@
-# Runtime de worker das aplicações Laravel da BrasilDataHub
-# (ghcr.io/brasildatahub/laravel-worker): a MESMA imagem do laravel-app, com
-# outro entrypoint e sem servidor web.
+# Runtime worker Laravel (ghcr.io/brasildatahub/laravel-worker): deriva do laravel-app.
 #
-# Cobre os quatro papéis que o entrypoint conhece, escolhidos por CONTAINER_ROLE
-# no start: `worker` (queue:work), `horizon`, `scheduler` e `reverb`. Uma imagem
-# só — o que muda entre eles é variável de ambiente, não conteúdo.
-#
-# POR QUE ELE DERIVA DO APP, e não mais de `php:8.4-cli-alpine`: até agosto/2026
-# os dois runtimes rodavam distribuições diferentes (Debian/glibc e Alpine/musl)
-# a partir da mesma lista de extensões. Eram duas árvores de camadas, as 14
-# extensões compilavam duas vezes, e nada além do teste de paridade impedia que
-# divergissem. O preço estava no CI: cada publicação compilava quatro vezes o
-# conjunto — duas distribuições × duas arquiteturas —, e metade disso sob
-# emulação QEMU, onde o passo que leva 102 s no amd64 nativo levava 1764 s.
-#
-# Derivando do app, essa metade desaparece: a compilação acontece uma vez, no
-# `laravel-app`, e esta imagem é um COPY em cima dela. A paridade de extensões
-# deixa de ser uma afirmação verificada e passa a ser estrutural — não há mais
-# como divergir, porque não há mais duas instalações.
-#
-# O QUE ISSO CUSTA, e vale estar escrito:
-#
-# - O worker passa a rodar PHP **ZTS** (thread-safe), que é o que o FrankenPHP
-#   exige e o que a base do app traz. `queue:work` e o Horizon funcionam em ZTS;
-#   o custo é da ordem de alguns por cento em execução single-thread. Foi a
-#   contrapartida aceita para eliminar a segunda compilação.
-# - A imagem herda `EXPOSE 8000` e o binário do FrankenPHP. Ambos inertes num
-#   processo que não atende porta, mas presentes — o worker ficou maior.
-#
-# `HEALTHCHECK NONE` é intencional, e agora é ainda mais necessário: sem ele o
-# container herdaria o healthcheck de `/up` do laravel-app e ficaria eternamente
-# `unhealthy`, poluindo o `docker ps` e qualquer alerta baseado nele.
+# Papéis via CONTAINER_ROLE: worker, horizon, scheduler, reverb.
+# Herda PHP ZTS, extensões e ini do app. HEALTHCHECK NONE evita herdar /up do app.
 
-# Bloco de versões antes do primeiro FROM: um ARG declarado depois de um FROM
-# pertence àquele estágio e não é visível nos FROM seguintes.
-#
-# O default aponta para a tag IMUTÁVEL, e não para a móvel `8.4`: um build deste
-# arquivo feito hoje e outro amanhã têm de produzir a mesma imagem. Quem publica
-# passa `BASE_TAG` explicitamente — o workflow aponta para a app da mesma
-# execução, e o teste-gate aponta para a que acabou de buildar localmente.
 ARG BASE_IMAGE=ghcr.io/brasildatahub/laravel-app
 ARG BASE_TAG=8.4-r3
 
 FROM ${BASE_IMAGE}:${BASE_TAG}
 
-# Tudo o que era instalado aqui já vem do app: as extensões de
-# php-extensions.txt, o `99-custom.ini`, o Composer, `curl`, `unzip`, `sqlite3`,
-# o `bash` que o entrypoint exige e o WORKDIR. Esta imagem acrescenta só o que
-# distingue um worker de um servidor web.
 COPY entrypoint-worker.sh /usr/local/bin/entrypoint
 RUN chmod +x /usr/local/bin/entrypoint
 

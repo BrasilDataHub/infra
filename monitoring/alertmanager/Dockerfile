@@ -1,17 +1,7 @@
-# Alertmanager da BrasilDataHub (ghcr.io/brasildatahub/alertmanager).
+# Alertmanager (ghcr.io/brasildatahub/alertmanager).
 #
-# POR QUE ALERTMANAGER E NÃO CONTACT POINT DO GRAFANA. O documento 05 §9.3-A
-# admite os dois. O runbook mensal (§9.4) decide: ele começa com "silence do
-# Alertmanager por 6 h" e termina com "remover o silence". Silence é um recurso
-# do Alertmanager; o alerting do Grafana só roteia regras GERENCIADAS PELO
-# GRAFANA, e as 18 regras desta stack são avaliadas pelo Prometheus.
-#
-# Custo: 128 MiB de limite. O orçamento de memória de 03 §3.2 fecha em 7.292
-# MiB de 7.987 no bdh-apps; com este serviço vai a 7.420 MiB. Continua dentro,
-# e está registrado como divergência no EXECUCAO.md.
-#
-# A política de roteamento (agrupamento, inibição, janela de ETL) vai na
-# IMAGEM; o destino da notificação é segredo e vem por env no start.
+# Política de roteamento na imagem; destino de notificação via env no start.
+# Silence é recurso do Alertmanager — as regras são avaliadas pelo Prometheus.
 
 FROM prom/alertmanager:v0.30.0
 

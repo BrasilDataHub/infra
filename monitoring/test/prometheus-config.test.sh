@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
-# Testes da configuração do Prometheus e dos dashboards do Grafana.
+# Testes da configuração do Prometheus e dashboards do Grafana.
 # Rodar: bash monitoring/test/prometheus-config.test.sh
 #
-# Roda na CI ANTES de publicar as imagens, pelo mesmo motivo do
-# shm-guard.test.sh: config inválida só se manifestaria como container em
-# restart loop no servidor, e um dashboard com datasource errado abre VAZIO sem
-# erro nenhum — ninguém percebe até precisar dele.
-#
-# Precisa de Docker (usa o promtool da imagem oficial) e de jq.
+# Precisa de Docker (promtool) e jq.
 set -uo pipefail
 
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
@@ -63,15 +58,7 @@ else
     nok "testes unitários dos alertas falharam — rode: promtool test rules"
 fi
 
-# Todo job de SERVIÇO usa file_sd: é o que faz um serviço não instalado ficar SEM
-# ALVO em vez de ficar `up == 0` para sempre, envenenando o alerta que mais
-# importa.
-#
-# Três exceções, todas com o mesmo argumento — o alvo vive no MESMO projeto
-# Compose que o Prometheus, então ou os dois existem ou nenhum existe:
-#   1. o job `prometheus` (127.0.0.1, responde mesmo com a rede doente);
-#   2. o job `alertmanager`;
-#   3. o bloco `alerting.alertmanagers`, que é destino e não alvo.
+# Job de serviço usa file_sd — exceções: prometheus, alertmanager e alerting.alertmanagers.
 estaticos="$(grep -c 'static_configs' "$RAIZ/prometheus/prometheus.yml")"
 if [ "$estaticos" -eq 3 ]; then
     ok "só prometheus e alertmanager são estáticos; o resto usa file_sd"
@@ -106,8 +93,7 @@ for campo in __param_target __param_module blackbox-exporter:9115; do
     fi
 done
 
-# O destino dos alertas. Antes deste roadmap, 18 regras eram avaliadas e não
-# iam a lugar nenhum; sem este bloco, voltariam a não ir.
+# Destino dos alertas configurado em alerting.alertmanagers.
 if grep -q 'alertmanagers:' "$RAIZ/prometheus/prometheus.yml"; then
     ok "há um Alertmanager configurado como destino dos alertas"
 else
@@ -125,9 +111,7 @@ fi
 echo
 echo "Alertmanager e blackbox_exporter"
 
-# `amtool check-config` já roda no entrypoint da imagem; aqui o que se valida é
-# a regra de negócio: o container tem de RECUSAR subir sem destino. Um
-# Alertmanager silencioso reproduz exatamente o estado que ele veio corrigir.
+# Alertmanager recusa subir sem destino de notificação.
 docker build -q -t bdh-test/alertmanager "$RAIZ/alertmanager" >/dev/null 2>&1
 if docker run --rm --entrypoint /usr/local/bin/generate-config.sh \
        bdh-test/alertmanager true >/dev/null 2>&1; then
@@ -144,8 +128,7 @@ else
     nok "a configuração gerada é inválida — rode o entrypoint à mão para ver o erro"
 fi
 
-# A janela de ETL precisa estar na config gerada, senão os cinco falsos
-# positivos legítimos da carga mensal acordam alguém toda madrugada de D0.
+# Janela mute_time_intervals para falsos positivos do ETL mensal.
 if docker run --rm -e ALERTMANAGER_WEBHOOK_URL=https://exemplo.invalido/hook \
        --entrypoint /usr/local/bin/generate-config.sh bdh-test/alertmanager \
        sh -c 'cat /etc/alertmanager/alertmanager.yml' 2>/dev/null \
@@ -163,8 +146,7 @@ else
     nok "blackbox.yml inválido"
 fi
 
-# Uma sonda por classe de SLO (05 §9.2). Se um módulo sumir, a classe fica sem
-# medição e o alerta correspondente nunca avalia nada.
+# Uma sonda blackbox por classe de SLO.
 for modulo in borda_hit condicional_304 empresa_por_cnpj hub_territorial \
               autocomplete busca anonima_sem_cookie; do
     if grep -q "^  ${modulo}:" "$RAIZ/blackbox/blackbox.yml"; then
@@ -240,10 +222,7 @@ for f in "$RAIZ"/grafana/dashboards/*.json; do
     ok "$nome — provisionável ($(jq -r '.uid' "$f"))"
 done
 
-# O motor de busca ficou de fora dos painéis até 29/07/2026: havia dashboard de
-# Postgres, de Redis e do host, o job `opensearch` coletava 719 séries, e nada
-# disso aparecia em lugar nenhum. Quem abria o Grafana concluía que o OpenSearch
-# não estava sendo monitorado — e não tinha como saber que estava.
+# Dashboard dedicado ao OpenSearch e métricas na visão geral.
 if [ -f "$RAIZ/grafana/dashboards/opensearch.json" ]; then
     ok "existe dashboard dedicado ao OpenSearch"
 else
@@ -256,9 +235,7 @@ else
     nok "a visão geral não cita nenhuma métrica do OpenSearch"
 fi
 
-# As métricas dos painéis precisam ser as MESMAS que as regras de alerta usam.
-# Divergir aqui é como ter dois relógios: o alerta dispara por uma série e o
-# painel desenha outra, e a investigação começa desconfiando do alerta.
+# Métricas de painel e alerta devem coincidir.
 for metrica in opensearch_cluster_status opensearch_jvm_mem_heap_used_percent \
                opensearch_fs_total_available_bytes opensearch_indices_search_query_count; do
     if grep -q "$metrica" "$RAIZ/grafana/dashboards/opensearch.json" \
@@ -269,10 +246,7 @@ for metrica in opensearch_cluster_status opensearch_jvm_mem_heap_used_percent \
     fi
 done
 
-# --- seção de infraestrutura da visão geral ----------------------------------
-# Ela é a única resposta do Grafana para "quais servidores existem e o que cada
-# um roda", e depende de três peças que podem ser removidas isoladamente sem
-# quebrar nada visível: a variável, o repeat da row e o rótulo host nas queries.
+# Seção por servidor: variável host de label_values(up, host).
 VISAO="$RAIZ/grafana/dashboards/bdh-visao-geral.json"
 
 if [ "$(jq -r '[.templating.list[]? | select(.name == "host")] | length' "$VISAO")" -eq 1 ]; then
@@ -309,18 +283,14 @@ else
     nok "só $n_filtra queries filtram por host — a seção por servidor agregaria a frota inteira"
 fi
 
-# O PSI morava na row de Meilisearch e não tem nada a ver com Meilisearch: é
-# métrica de máquina. Ao mover a row para o dashboard próprio, era o painel mais
-# fácil de perder junto — e ele é o que distingue "ETL pesado" de "disco no teto".
+# PSI é métrica de máquina — deve permanecer na visão geral.
 if grep -q 'node_pressure_io_stalled_seconds_total' "$VISAO"; then
     ok "a visão geral manteve a pressão de IO (PSI)"
 else
     nok "o painel de PSI sumiu da visão geral — foi junto com a row de Meilisearch"
 fi
 
-# O Meilisearch é opcional e está em substituição pelo OpenSearch: numa infra que
-# não o roda, o job fica sem alvo e os painéis ficavam permanentemente vazios na
-# página principal. Ele tem dashboard próprio, que se explica quando vazio.
+# Meilisearch opcional — painéis ficam no dashboard dedicado.
 if grep -q 'meilisearch_' "$VISAO"; then
     nok "a visão geral voltou a citar métricas de Meilisearch (elas têm dashboard próprio)"
 else

@@ -1,25 +1,9 @@
-# Sidecar de backup físico (ghcr.io/brasildatahub/pgbackrest) — pgBackRest +
-# agendador, no MESMO host do Postgres. A especificação está no README ao lado.
-#
-# Por que a base é `postgres:17.10` e não `debian:trixie-slim`, que seria menor:
-#
-#   1. UID. O sidecar monta o volume de dados do banco e precisa LER o PGDATA,
-#      que é 0700 do usuário `postgres` (uid 999 na imagem oficial). Numa base
-#      genérica seria preciso recriar o usuário com o uid exato — e um uid
-#      divergente só se manifesta como "permission denied" no primeiro backup.
-#   2. O repositório PGDG e sua chave já estão configurados, então a versão do
-#      pgBackRest é a mesma do banco sem repetir a configuração de apt.
-#   3. `psql` vem junto, e a validação de restore precisa dele.
-#
-#   Custo real ≈ 0: o host que roda o banco já tem essas camadas em disco.
+# Sidecar pgBackRest (ghcr.io/brasildatahub/pgbackrest). Base postgres:17.10 para uid 999 e PGDG.
 
 ARG PG_VERSION=17.10
 FROM postgres:${PG_VERSION}
 
-# MESMA versão da imagem do banco (../Dockerfile). Divergir aqui é possível — o
-# formato do repositório é estável — mas não há ganho, e uma versão do sidecar
-# mais NOVA que a do archive-push já apareceu como aviso de compatibilidade em
-# `pgbackrest check`.
+# Mesma versão da imagem do banco (../Dockerfile).
 ARG PGBACKREST_VERSION=2.59.0-1.pgdg13+1
 RUN set -eux; \
     apt-get update; \

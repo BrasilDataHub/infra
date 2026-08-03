@@ -1,18 +1,12 @@
 # Alertas de infraestrutura (host e coleta) — BrasilDataHub.
-#
-# Regra de ouro deste arquivo: monitoração que falha em silêncio é pior que
-# nenhuma. Por isso o primeiro grupo cobre a própria coleta, e usa `absent()`
-# além de `up == 0` — os dois pegam falhas diferentes:
-#
-#   up == 0        o alvo existe na configuração e não respondeu
-#   absent(up{…})  o alvo SUMIU da configuração (arquivo de target apagado,
-#                  serviço removido do host) — o `up == 0` nunca dispararia,
-#                  porque não há série nenhuma para avaliar.
+# Coleta primeiro: up==0 (alvo não responde) vs absent(up) (alvo sumiu da config).
 
 groups:
   - name: coleta
     rules:
       - alert: AlvoForaDoAr
+        # 5m: scrape isolado sob IO saturado pode estourar timeout de 10s.
+        # `host` vem do arquivo de alvos (não só external_labels).
         expr: up == 0
         for: 5m
         labels:
@@ -23,21 +17,9 @@ groups:
             O Prometheus não consegue coletar de {{ $labels.instance }}
             (job {{ $labels.job }}, servidor {{ $labels.host }}). Verifique com
             `bdh logs <serviço>` e `bdh metrics`.
-      # 5m e não 1m: sob ETL com IO saturado, um scrape pode estourar o
-      # scrape_timeout de 10s isoladamente. Alertar em cima disso geraria ruído
-      # constante e treinaria a operação a ignorar o alerta.
-      #
-      # O `host` vem do ARQUIVO DE ALVOS (setup.sh o escreve em cada um), não
-      # dos external_labels: estes só são aplicados a rótulos AUSENTES na saída,
-      # então o nome real da máquina vence e o do monitor fica como reserva para
-      # os alertas de `absent()`, que não têm série nenhuma de onde herdar.
 
       - alert: ServidorSemColeta
-        # `sum by (host)` e não `count(up == 1) == 0`: quando todos os alvos de
-        # uma máquina estão em 0, a série CONTINUA existindo com valor 0 — o
-        # grupo não some e a comparação avalia. É o que distingue "um exporter
-        # caiu" de "a máquina (ou a rede privada até ela) caiu inteira", e o
-        # segundo caso é o que o AlvoForaDoAr entrega como N alertas separados.
+        # sum by (host): distingue "um exporter caiu" de "máquina/rede inteira".
         expr: sum by (host) (up{host!=""}) == 0
         for: 5m
         labels:
@@ -50,8 +32,6 @@ groups:
             serviços. Confira `bdh metrics` no host do Prometheus.
 
       - alert: JobSemAlvo
-        # Vale para os jobs que o deploy declarou. Se o arquivo de target sumir,
-        # o job continua na config mas fica sem série — e nada mais avisaria.
         expr: absent(up{job="postgres"}) or absent(up{job="node"})
         for: 15m
         labels:
@@ -66,10 +46,7 @@ groups:
   - name: notificacao
     rules:
       - alert: AlertmanagerForaDoAr
-        # Sem ele, TODA regra desta stack volta ao estado anterior a este
-        # roadmap: avaliada, visível no Prometheus, e sem destino nenhum. É o
-        # único alerta que, ao disparar, não consegue ser entregue — daí o par
-        # com AlertmanagerSemDestino no Grafana.
+        # Sem AM, regras avaliam e não notificam. Par com AlertmanagerSemDestino no Grafana.
         expr: absent(up{job="alertmanager"}) or up{job="alertmanager"} == 0
         for: 5m
         labels:
@@ -96,12 +73,7 @@ groups:
   - name: host
     rules:
       - alert: DiscoQuaseCheio
-        # 15% livres = dispara a 85% de uso. O ciclo mensal não leva o disco do
-        # banco a esse patamar: a geração N−1 vai para o volume de backup, e o
-        # local acomoda só a geração corrente mais o pg_wal.
-        #
-        # Complementado por `EspacoCriticoNoBanco`, que olha espaço absoluto —
-        # em disco grande a porcentagem reage tarde demais.
+        # 15% livres. Complementado por EspacoCriticoNoBanco (absoluto).
         expr: |
           node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}
             / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"} < 0.15
@@ -118,16 +90,7 @@ groups:
             do ciclo mensal em postgres/docs/armazenamento.md.
 
       - alert: EspacoCriticoNoBanco
-        # Espaço ABSOLUTO, e só no filesystem que hospeda o PGDATA.
-        #
-        # Porcentagem e espaço absoluto respondem a perguntas diferentes, e a
-        # porcentagem reage mais tarde quanto maior o disco. Este alerta garante
-        # um piso que não depende do tamanho do dispositivo: 15 GB não comportam
-        # um checkpoint grande nem o crescimento de `pg_wal` (que pode chegar a
-        # 32 GB pelo `max_wal_size`) em disco nenhum.
-        #
-        # `mountpoint="/"` porque é onde o PGDATA vive; o volume de backup tem
-        # perfil de crescimento previsível e não precisa deste limiar.
+        # Absoluto no PGDATA (/): 15 GB não cabem checkpoint grande nem pg_wal (~max_wal_size).
         expr: |
           node_filesystem_avail_bytes{fstype!~"tmpfs|overlay", mountpoint="/"}
             < 15 * 1024 * 1024 * 1024
@@ -145,19 +108,7 @@ groups:
             arquivado não é reciclado e cresce ignorando max_wal_size.
 
       - alert: DiscoEncheEm24h
-        # predict_linear pega o crescimento antes de virar incidente. Janela de
-        # 6h para não reagir a um pico pontual de ETL.
-        #
-        # A segunda condição — menos de 30% livres — existe porque
-        # `predict_linear` é regressão linear, e uma escrita em DEGRAU a domina.
-        # Um backup full escreve dezenas de GB de uma vez; a regressão sobre a
-        # janela lê isso como tendência e projeta o disco enchendo, mesmo com o
-        # volume quase vazio. Medido: um full de 47 GB num volume com 79% livres
-        # produziu previsão de −119 GB.
-        #
-        # Com a guarda, a previsão só alerta quando já há pouco espaço — que é
-        # quando ela de fato importa. Encher de verdade continua coberto por
-        # `DiscoQuaseCheio` e, no disco do banco, por `EspacoCriticoNoBanco`.
+        # Guarda <30% livres: predict_linear confunde degrau de backup full com tendência.
         expr: |
           predict_linear(
             node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}[6h], 24 * 3600
@@ -185,15 +136,7 @@ groups:
             de métricas também consome (monitoring/README.md).
 
       - alert: MemoriaSobPressao
-        # Complementa MemoriaDoHostCritica, que olha MemAvailable. O PSI de
-        # memória é um sinal MAIS PRECOCE: ele mede o tempo em que processos
-        # ficaram parados por causa de reclaim, e sobe enquanto o MemAvailable
-        # ainda parece saudável — porque o kernel está descartando page cache
-        # para não faltar memória. Num host cujo gargalo medido É page cache,
-        # esse é o número que importa.
-        #
-        # Media 0,0975 no diagnóstico de 28/07 — ou seja, DISPARARIA hoje. É um
-        # verdadeiro positivo, não uma calibragem folgada.
+        # PSI de memória: sinal precoce (reclaim) enquanto MemAvailable ainda parece ok.
         expr: rate(node_pressure_memory_stalled_seconds_total[5m]) > 0.05
         for: 15m
         labels:
@@ -207,9 +150,7 @@ groups:
             dos limites dos containers antes de olhar para o Postgres.
 
       - alert: IOSaturado
-        # PSI, e não %util: em NVMe o %util satura em 100% sem que o disco esteja
-        # realmente no limite. O stall time é o que distingue "ETL pesado" de
-        # "disco no teto".
+        # PSI, não %util: em NVMe %util satura sem o disco estar no limite.
         expr: rate(node_pressure_io_stalled_seconds_total[5m]) > 0.30
         for: 15m
         labels:
@@ -220,9 +161,7 @@ groups:
   - name: containers
     rules:
       - alert: ContainerPertoDoLimiteDeMemoria
-        # Só existe com o cAdvisor ligado (COMPOSE_PROFILES=containers). É o par
-        # de métricas que teria detectado o incidente de Memory=0 documentado em
-        # postgres/docs/troubleshooting.md.
+        # Requer cAdvisor (COMPOSE_PROFILES=containers).
         expr: |
           container_memory_working_set_bytes{name!=""}
             / container_spec_memory_limit_bytes{name!=""} > 0.90

@@ -1,6 +1,5 @@
-# Publica a porta do redis_exporter para um Prometheus em OUTRO host.
-# Mesma justificativa e mesmas travas do overlay equivalente do Postgres —
-# ver ../monitoring/docker-compose.remote.yml.
+# Publica a porta do redis_exporter para Prometheus remoto.
+# Mesmas travas: monitoring/docker-compose.remote.yml.
 
 services:
   redis-exporter:

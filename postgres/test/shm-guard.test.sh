@@ -44,9 +44,7 @@ MB=$((1024*1024)); GB=$((1024*1024*1024))
 
 echo "shm-guard — cenários de decisão"
 
-# O incidente de 25/07/2026: perfil dedicada-16gb com /dev/shm default do Docker.
-# Pico estimado: 5 × 32MB × 2.0 × 2 = 640 MB contra 64 MB -> tem de zerar.
-check "incidente 2026-07 (64MB, perfil 16gb)"  $((64*MB))   32MB 2.0 4 adapt 0
+check "shm default 64MB (perfil 16gb)"  $((64*MB))   32MB 2.0 4 adapt 0
 check "  o mesmo, mode=fail"                    $((64*MB))   32MB 2.0 4 fail  exit1
 check "  o mesmo, mode=warn (não mexe)"         $((64*MB))   32MB 2.0 4 warn  4
 check "  o mesmo, mode=off (não mexe)"          $((64*MB))   32MB 2.0 4 off   4

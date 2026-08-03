@@ -4,38 +4,16 @@
 #
 # Substitui o `docker-compose.yml` de instância única; não é overlay dele.
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# POR QUE DUAS INSTÂNCIAS, E NÃO DOIS DATABASES DA MESMA
+# `maxmemory` e `maxmemory-policy` são por INSTÂNCIA, não por database.
+# Políticas distintas:
+#   cache (768 MB) → allkeys-lru, sem AOF
+#   fila  (256 MB) → noeviction, com AOF
 #
-# Porque `maxmemory` e `maxmemory-policy` são da INSTÂNCIA, não do database.
-# Com cache e fila juntos, a política tem de servir aos dois — e a única que
-# serve, `volatile-lru`, foi exatamente o que produziu o defeito medido:
-#
-#   34.007 evicções · hit rate de 59,7% · 512 MB
-#
-# `volatile-lru` despeja só chaves COM TTL. As chaves de fila não têm TTL, mas
-# **as de sessão têm** — então, quando o cache encheu, o Redis descartou
-# sessões. Parte daqueles 34 mil despejos eram **usuários sendo deslogados**,
-# num sistema onde ninguém tinha reclamado do "logout aleatório" ainda.
-#
-# Separadas, cada lado ganha a política que faz sentido:
-#
-#   cache (768 MB) → allkeys-lru, sem AOF. Despejar é o comportamento correto,
-#                    e o cache se refaz sozinho.
-#   fila  (256 MB) → noeviction, com AOF. Perder um job NÃO é comportamento
-#                    correto: melhor um erro visível no enfileiramento.
-# ─────────────────────────────────────────────────────────────────────────────
-#
-# Dois arquivos de env, um por instância — a alternativa seria prefixar todas as
-# variáveis, e aí o mesmo perfil não serviria para os dois modos de deploy:
-#
+# Dois arquivos de env, um por instância:
 #   .env.cache   ← redis/profiles/cache-768mb.env + REDIS_PASSWORD
 #   .env.fila    ← redis/profiles/fila-256mb.env  + REDIS_PASSWORD
 #
-# A aplicação aponta CACHE_STORE/REDIS_HOST para a instância de cache e
-# QUEUE_CONNECTION/SESSION para a de fila. As duas portas são distintas de
-# propósito: apontar as duas para a mesma porta por engano recria o problema
-# sem nenhum sintoma.
+# Portas distintas — apontar as duas para a mesma porta mistura cache e fila.
 
 services:
   redis-cache:
@@ -51,13 +29,11 @@ services:
       REDIS_APPENDONLY: ${REDIS_APPENDONLY:-no}
     labels:
       org.brasildatahub.service: redis-cache
-    # SEM volume. É a consequência coerente de `appendonly no`: um volume aqui
-    # guardaria um dump.rdb que ninguém pretende restaurar, e daria a impressão
-    # de durabilidade onde ela não existe.
+    # Sem volume: `appendonly no` — não há dump a restaurar.
     ports:
       - "${BIND_IP:-0.0.0.0}:${REDIS_CACHE_PORT:-6379}:6379"
     logging:
-      # Teto de log — a justificativa está em ../postgres/docker-compose.yml.
+      # Teto de log (mesmo NVMe do host). Ver ../postgres/docker-compose.yml.
       driver: json-file
       options:
         max-size: ${LOG_MAX_SIZE:-50m}
@@ -88,8 +64,7 @@ services:
     labels:
       org.brasildatahub.service: redis-fila
     volumes:
-      # Aqui o volume é obrigatório: é o AOF que faz um job enfileirado
-      # sobreviver a um restart do container.
+      # Volume obrigatório: AOF faz o job sobreviver a restart.
       - redis_fila_data:/data
     ports:
       - "${BIND_IP:-0.0.0.0}:${REDIS_FILA_PORT:-6380}:6379"

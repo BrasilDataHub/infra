@@ -1,19 +1,11 @@
-# Compose de PRODUÇÃO do Redis — mesma forma de deploy do Postgres
-# (por quê: ../postgres/docs/estrategia-deploy.md).
+# Compose de PRODUÇÃO do Redis.
 #
-# .env ao lado deste arquivo:
 #   REDIS_PASSWORD=...
-#   REDIS_MAXMEMORY=512mb        # bloco do perfil (README)
-#   REDIS_MEMORY_LIMIT=1G        # limite de container do perfil (~2× maxmemory)
-#   # opcionais:
-#   # BIND_IP=10.0.0.5           # restringe a publicação a uma interface
-#   # REDIS_PORT=6379
-#   # REDIS_VOLUME=bdh_redis_data
+#   REDIS_MAXMEMORY=512mb
+#   REDIS_MEMORY_LIMIT=1G          # ~2× maxmemory (CoW do AOF)
+#   # BIND_IP=10.0.0.5
 #
 #   docker compose up -d
-#
-# Em painel (Dokploy/Coolify), use recurso do tipo Compose stack com este mesmo
-# YAML e as variáveis no Environment.
 
 services:
   redis:
@@ -39,7 +31,7 @@ services:
       # no firewall — ver ../postgres/docs/host.md, Rede.
       - "${BIND_IP:-0.0.0.0}:${REDIS_PORT:-6379}:6379"
     logging:
-      # Teto de log — a justificativa está em ../postgres/docker-compose.yml.
+      # Teto de log (mesmo NVMe do host). Ver ../postgres/docker-compose.yml.
       driver: json-file
       options:
         max-size: ${LOG_MAX_SIZE:-50m}
@@ -58,8 +50,7 @@ services:
       retries: 5
 
 volumes:
-  # Volume nomeado com driver local — padrão do repositório (justificativa no
-  # README da raiz); `name` fixo para não depender do nome do projeto Compose.
+  # Volume nomeado com driver local; `name` fixo (independente do projeto Compose).
   redis_data:
     driver: local
     name: ${REDIS_VOLUME:-bdh_redis_data}

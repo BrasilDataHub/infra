@@ -1,8 +1,5 @@
-# Testes unitários das regras de alerta — rodados por `promtool test rules`.
-#
-# Servem para provar que a regra dispara QUANDO deve e, principalmente, que NÃO
-# dispara quando não deve: um alerta ruidoso é desligado pela operação em duas
-# semanas, e aí a monitoração vira enfeite.
+# Testes unitários das regras de alerta — `promtool test rules`.
+# Provam disparo correto e ausência de falsos positivos ruidosos.
 
 rule_files:
   - ../prometheus/rules/infra.rules.yml
@@ -14,11 +11,7 @@ rule_files:
 evaluation_interval: 1m
 
 tests:
-  # --- coleta ---------------------------------------------------------------
-  # O rótulo `host` sai do arquivo de alvos (setup.sh o escreve em cada um) e
-  # está presente em todas as séries deste bloco de propósito: é ele que faz o
-  # alerta dizer de QUAL máquina veio, e a ausência dele foi o que manteve os
-  # painéis e as notificações mudos sobre isso até 29/07/2026.
+  # Rótulo host presente em todas as séries — identifica a máquina de origem.
   - interval: 1m
     name: "alvo fora do ar dispara depois de 5m, não antes"
     input_series:
@@ -52,9 +45,7 @@ tests:
         alertname: AlvoForaDoAr
         exp_alerts: []
 
-  # A máquina inteira fora é um incidente diferente de um exporter fora: o
-  # AlvoForaDoAr entregaria N notificações, uma por job, e nenhuma delas diria
-  # que a causa é comum. O `sum by (host)` colapsa isso num alerta só.
+  # Host inteiro fora ≠ um exporter fora: `sum by (host)` colapsa num alerta só.
   - interval: 1m
     name: "servidor inteiro sem coleta dispara um alerta só, não um por job"
     input_series:
@@ -243,12 +234,7 @@ tests:
               summary: "Conexões acima de 85% do max_connections"
               description: "Antes de aumentar max_connections, verifique se a aplicação está usando pool — subir o teto multiplica o work_mem alocável e é a via rápida para OOM (postgres/docs/perfis.md)."
 
-  # O collector `long_running_transactions` publica ZERO quando não há
-  # transação longa — não omite a série. Sem a guarda pela contagem, a
-  # expressão vira `time() - 0 > 3600`, que é verdadeira desde 1970: o alerta
-  # disparava em TODA instalação saudável, dez minutos depois de o Prometheus
-  # subir. Encontrado num host recém-provisionado durante os testes de
-  # infraestrutura de 2026-07-29.
+  # pg_long_running_transactions=0 evita alerta falso (time()-0 > 3600).
   - interval: 1m
     name: "sem transação longa, o alerta NÃO dispara (a métrica é zero, não ausente)"
     input_series:
@@ -340,16 +326,8 @@ tests:
         alertname: RedisDespejandoChaves
         exp_alerts: []
 
-  # --- backup ---------------------------------------------------------------
-  # A trava do roadmap 20: este alerta tem de estar VERDE e notificando ANTES de
-  # `archive_mode` virar `on`. Os testes abaixo provam as duas metades — que ele
-  # dispara com o arquivamento parado, e que NÃO dispara com um atraso normal.
-  # `interval: 1m`, e não 10m, por causa do staleness do Prometheus: uma série
-  # sem amostra por mais de 5 min é considerada obsoleta e some da avaliação.
-  # Com amostras de 10 em 10 minutos a série ficava stale entre elas e o
-  # `for: 10m` nunca completava — o teste falhava sem que a regra estivesse
-  # errada. O incremento de 600s/min comprime 6h30 de idade em 40 minutos de
-  # tempo simulado.
+  # --- backup ---
+  # Limiar 6h30: banco ocioso fecha segmento via check do pgBackRest, não via archive_timeout.
   - interval: 1m
     name: "arquivamento de WAL parado por mais de 6h30 dispara"
     input_series:
@@ -386,18 +364,7 @@ tests:
         alertname: ArquivamentoDeWalParado
         exp_alerts: []
 
-  # O caso que motivou o limiar de 6h30, e a razão de ele não poder ser 300s.
-  #
-  # `dados_cnpj` recebe carga uma vez por mês e é leitura pura entre elas.
-  # `archive_timeout=60s` NÃO fecha um segmento nesse regime: ele só age quando
-  # houve alguma escrita de WAL desde o último. Sem escrita, o PostgreSQL não
-  # gera segmento vazio — deliberadamente.
-  #
-  # Quem fecha o segmento nesse banco é o `check` do pgBackRest, a cada 6h. A
-  # série resultante é esta serra longa: sobe até ~6h e volta a zero. Com o
-  # limiar antigo de 300s isso era um `critical` permanente com o sistema
-  # perfeitamente saudável — medido em 31/07/2026, o alerta subiu em 6 minutos
-  # com `failed_count=0` e o último segmento arquivado com sucesso.
+  # Serra de ~6h do check do pgBackRest em banco de escrita rara — não deve alertar.
   - interval: 1m
     name: "banco de escrita rara: serra de 6h do check do pgBackRest não alerta"
     input_series:

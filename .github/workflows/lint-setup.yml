@@ -19,12 +19,9 @@ on:
       - "meilisearch/metrics-key.sh"
       - "laravel/entrypoint*.sh"
       - "laravel/test/*.sh"
-      # O filtro por escopo mora dentro do build-publish.yml, e é o teste em
-      # test/filtro-build.test.sh que o lê e o verifica. Sem estas duas linhas,
-      # mexer no filtro não roda o teste que o protege.
+      # test/filtro-build.test.sh lê o mapa de escopos deste workflow.
       - "test/filtro-build.test.sh"
-      # Pelo mesmo motivo: o build.sh lê o catálogo de imagens do workflow, e é
-      # test/catalogo-build.test.sh que afirma que essa leitura continua batendo.
+      # test/catalogo-build.test.sh valida build.sh --catalogo contra este workflow.
       - "build.sh"
       - "test/catalogo-build.test.sh"
       - ".github/workflows/build-publish.yml"
@@ -43,12 +40,9 @@ on:
       - "meilisearch/metrics-key.sh"
       - "laravel/entrypoint*.sh"
       - "laravel/test/*.sh"
-      # O filtro por escopo mora dentro do build-publish.yml, e é o teste em
-      # test/filtro-build.test.sh que o lê e o verifica. Sem estas duas linhas,
-      # mexer no filtro não roda o teste que o protege.
+      # test/filtro-build.test.sh lê o mapa de escopos deste workflow.
       - "test/filtro-build.test.sh"
-      # Pelo mesmo motivo: o build.sh lê o catálogo de imagens do workflow, e é
-      # test/catalogo-build.test.sh que afirma que essa leitura continua batendo.
+      # test/catalogo-build.test.sh valida build.sh --catalogo contra este workflow.
       - "build.sh"
       - "test/catalogo-build.test.sh"
       - ".github/workflows/build-publish.yml"
@@ -90,18 +84,11 @@ jobs:
       - name: Re-execução herda o estado
         run: bash test/reexecucao.test.sh
 
-      # Cada push só deve reconstruir o que ele tocou. Sem esta verificação, um
-      # padrão frouxo no `build-publish.yml` volta a fazer um commit de README
-      # custar dezenas de minutos de build multi-arch — e um padrão estreito
-      # demais faz o oposto, mais perigoso: a imagem deixa de publicar em
-      # silêncio.
+      # Filtro por escopo — evita rebuild silencioso ou ausente.
       - name: Filtro por escopo do build
         run: bash test/filtro-build.test.sh
 
-      # O `build.sh` lê a configuração das imagens do próprio build-publish.yml,
-      # em vez de guardar uma segunda cópia. É uma leitura que falha calada: se o
-      # workflow mudar de forma, o catálogo sai a menos e o build local publica a
-      # tag errada — ou deixa de publicar uma imagem — sem erro nenhum.
+      # build.sh lê catálogo do workflow — falha calada se o parser divergir.
       - name: Catálogo de imagens do build local
         run: bash test/catalogo-build.test.sh
 
@@ -133,10 +120,7 @@ jobs:
 
       - name: Composes válidos dos módulos novos
         run: |
-          # O compose do par exige os DOIS arquivos de perfil (required: true),
-          # e a exigência é o ponto: sem eles, o deploy subiria com os defaults
-          # de instância única — volatile-lru e 512mb — que é exatamente o
-          # estado que o item 7 corrige. Aqui eles são só stubs.
+          # Stubs de perfil — compose exige os dois arquivos (required: true).
           cp redis/profiles/cache-768mb.env redis/.env.cache
           cp redis/profiles/fila-256mb.env  redis/.env.fila
           REDIS_PASSWORD=x docker compose -f redis/docker-compose.par.yml config -q
@@ -176,16 +160,7 @@ jobs:
           printf '%s' "$comb" | yq -e '.services.postgres.environment.PG_ARCHIVE_MODE == "on"'
           printf '%s' "$comb" | yq -e '.services.postgres.environment.PG_ARCHIVE_COMMAND | test("archive-push")'
 
-      # Repositório LOCAL (repo1-type=posix). O que este passo protege é uma
-      # falha silenciosa e cara: com `posix`, o repositório precisa estar montado
-      # nos DOIS serviços, porque quem executa `archive-push` é o servidor
-      # Postgres, não o sidecar. Montado só no sidecar, o `backup` funciona, o
-      # `info` reporta sucesso, e TODO segmento de WAL falha ao ser arquivado —
-      # até o pg_wal encher o mesmo NVMe do PGDATA.
-      #
-      # Com `repo1-type=s3` isso não aparece: os dois falam com o bucket pela
-      # rede e nenhum mount é necessário. É exatamente por isso que a regressão
-      # passaria despercebida sem este passo.
+      # Repositório posix: archive-push roda no Postgres — mount nos dois serviços.
       - name: Overlay de repositório local monta o repo nos DOIS serviços
         run: |
           comb=$(POSTGRES_DB=d POSTGRES_PASSWORD=p PGBACKREST_STANZA=dados-cnpj \

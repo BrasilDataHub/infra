@@ -16,11 +16,7 @@ log() {
     echo "[$type] $message"
 }
 
-# CPU que o container pode REALMENTE usar, não a do host.
-#
-# `nproc` enxerga a máquina inteira: num host de 8 núcleos, um container
-# limitado a 2 responderia 8 e abriria quatro vezes mais workers do que
-# consegue executar. O limite verdadeiro está no cgroup.
+# CPU do cgroup, não nproc — respeita --cpus do container.
 available_cpus() {
     local cpus quota period limited
 
@@ -85,23 +81,8 @@ php_memory_limit_mb() {
     esac
 }
 
-# Dimensionamento do FrankenPHP: quantas threads PHP, e quantas delas servem o
-# worker script.
-#
-# Sem isto a aplicação atende UMA requisição por vez. O Octane parte de
-# `--workers=auto`, e `auto` vira 0 em StartFrankenPhpCommand::workerCount() —
-# o que deixa a diretiva `num` fora do Caddyfile. Sem `num`, e sem o
-# `num_threads` global que o Caddyfile desta imagem agora traz, o FrankenPHP
-# mantém uma única thread ativa: medido em produção, sob carga sustentada de 10
-# conexões por 30 s, a thread `php-0` acumulou 22,4 s de CPU e as outras quatro
-# não se moveram um único tick, com mais de um núcleo ocioso o tempo inteiro.
-#
-# Medido no mesmo host, mesma imagem, mesmo banco, 2 vCPUs:
-#   1 worker  -> p50 1,215 s, 25,7 req/s
-#   4 workers -> p50 0,293 s, 62,2 req/s     (p50 4,1x menor, vazão 2,4x maior)
-#
-# Qualquer uma das três variáveis pode ser fixada por fora quando a medição de
-# um projeto pedir outra coisa; o cálculo só preenche o que não veio.
+# Dimensionamento FrankenPHP: num_threads, workers e teto por CPU/memória.
+# Sem num_threads o FrankenPHP serializa requisições (auto vira 0 no Octane).
 configure_frankenphp_workers() {
     local cpus mem_mb php_mb max_by_memory
 
@@ -160,15 +141,7 @@ configure_frankenphp_workers
 
 APP_COMMAND=${APP_COMMAND:-"$ARTISAN octane:start --server=frankenphp --host=0.0.0.0 --port=8000 --caddyfile=/etc/caddy/Caddyfile --workers=${FRANKENPHP_WORKER_NUM} --max-requests=${OCTANE_MAX_REQUESTS:-500}"}
 
-# Ajustes de PHP que dependem do ambiente e por isso não cabem no ini da imagem.
-#
-# validate_timestamps=0 elimina um stat() por arquivo incluído, mas faz o PHP
-# ignorar alterações no código até reiniciar — correto em produção, onde a
-# imagem é imutável, e péssimo em desenvolvimento, onde o código vem por bind
-# mount. Por isso o valor é escrito aqui, e não em php/99-custom.ini.
-#
-# O buffer do JIT fica em variável de ambiente para poder ser medido em
-# produção sem rebuild (0 = desligado, que é o padrão medido como melhor).
+# validate_timestamps=0 só em produção (bind mount em dev).
 configure_php_runtime() {
     local ini='/usr/local/etc/php/conf.d/99-runtime.ini'
 

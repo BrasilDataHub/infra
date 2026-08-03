@@ -1,39 +1,29 @@
 # meilisearch
 
-> Módulo disponível, **não usado no BaseEmpresarial**: lá o motor de busca é o
-> OpenSearch ([`opensearch/`](../opensearch/README.md)). Este módulo continua
-> provisionável pelo `setup.sh` (`--services ...,meilisearch`) para os demais
-> projetos da org.
+## Papel
 
-Imagem `ghcr.io/brasildatahub/meilisearch` — wrapper **pinado** de
-`getmeili/meilisearch:v1.34` (mesma minor da produção) para manter todos os
-serviços de infra sob o namespace da org. Toda a configuração do Meilisearch
-é por variável de ambiente; os perfis são arquivos `.env` versionados em
-[`profiles/`](profiles/), prontos para copiar.
+Módulo provisionável de busca textual via Meilisearch. Imagem `ghcr.io/brasildatahub/meilisearch` — wrapper pinado de `getmeili/meilisearch:v1.34`.
 
-## Perfis por orçamento de memória
+No BaseEmpresarial o motor de busca é o OpenSearch ([`opensearch/`](../opensearch/README.md)). Este módulo continua disponível via `setup.sh --services ...,meilisearch` para outros projetos da org.
 
-Os perfis são definidos pelo tamanho dos índices e pelo orçamento de RAM do
-serviço — independentes de projeto e de fornecedor:
+Toda a configuração é por variável de ambiente; os perfis são arquivos `.env` em [`profiles/`](profiles/).
+
+## Componentes / imagem
+
+- Imagem: `ghcr.io/brasildatahub/meilisearch` (`getmeili/meilisearch:v1.34`)
+- Compose: [`docker-compose.yml`](docker-compose.yml)
+- Overlay de métricas: [`docker-compose.metrics.yml`](docker-compose.metrics.yml)
+- Script de chave de scrape: [`metrics-key.sh`](metrics-key.sh)
+- Volume: `bdh_meili_data` → `/meili_data` (LMDB via `mmap`; requer NVMe local)
+
+## Perfis e configuração
 
 | Perfil | MAX_INDEXING_MEMORY | Threads | Limite de container | Quando usar |
 |---|---|---|---|---|
-| `busca-512mb` | 256MiB | 1 | 512M | projetos pequenos (ex.: Base Escolar, ~170 mil docs); índices de MB a centenas de MB |
+| `busca-512mb` | 256MiB | 1 | 512M | projetos pequenos (~170 mil docs); índices de MB a centenas de MB |
 | `busca-1gb` | 1GiB | 1 | 1G | default; índices de poucos GB |
-| `busca-4gb` | 2GiB | 2 | 4G na indexação; ~2G em regime | índices médios: milhões de documentos |
-| `busca-16gb` | 8GiB | 4 | ~16G durante indexação | índices grandes: dezenas de milhões de docs (Base Empresarial pós-migração: 72M establishments + 26M partners, 15–25 GB) |
-
-As demais envs (`MEILI_ENV=production`, `MEILI_NO_ANALYTICS`, `MEILI_DB_PATH`)
-já têm default no compose; `MEILI_MASTER_KEY` é secreta e nunca vai para o git.
-
-Cada perfil é um arquivo `.env` versionado em [`profiles/`](profiles/) — envs de
-indexação e limite de container juntos. É o mesmo arquivo que o
-[`setup.sh`](../README.md#setup-automatizado-de-vps) baixa:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/meilisearch/profiles/busca-1gb.env -o .env
-# depois acrescente: MEILI_MASTER_KEY=...   (mínimo 16 bytes)
-```
+| `busca-4gb` | 2GiB | 2 | 4G na indexação; ~2G em regime | milhões de documentos |
+| `busca-16gb` | 8GiB | 4 | ~16G durante indexação | dezenas de milhões de docs |
 
 | Perfil | Arquivo |
 |---|---|
@@ -42,78 +32,27 @@ curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/meili
 | `busca-4gb` | [`profiles/busca-4gb.env`](profiles/busca-4gb.env) |
 | `busca-16gb` | [`profiles/busca-16gb.env`](profiles/busca-16gb.env) |
 
-Use apenas UM perfil por deploy. Nomes antigos referenciados em documentos do
-baseempresarial: `atual` → `busca-1gb`; `pos-migracao` → `busca-16gb`.
+Um perfil por deploy. Defaults no compose: `MEILI_ENV=production`, `MEILI_NO_ANALYTICS`, `MEILI_DB_PATH`.
 
-**Regra de dimensionamento** (vale para qualquer perfil):
-`MEILI_MAX_INDEXING_MEMORY` ≈ metade da RAM disponível para o serviço;
-limite de container ≈ 2× esse valor **durante a indexação** (o Meili usa
-memória além do teto de indexação para o próprio processo e mmap do índice).
-Em regime (sem indexar), o limite pode cair para ~1,5× o índice quente.
+Dimensionamento: `MEILI_MAX_INDEXING_MEMORY` ≈ metade da RAM do serviço; limite de container ≈ 2× durante indexação; em regime ≈ 1,5× o índice quente.
 
-> **A conferir no `busca-16gb`:** a tabela declara ~16G de limite, mas a regra
-> de regime (1,5× o índice quente) daria mais que isso se o índice quente for
-> próximo dos 15–25 GB totais. Os dois números precisam ser reconciliados com
-> medição real do índice em produção. Até lá, a
-> [coexistência com o Postgres](../postgres/docs/perfis.md#combinações-prováveis)
-> usa os 16G declarados.
+Migrar de perfil: trocar o `.env` e recriar o container — sem rebuild.
 
-**Quando migrar de perfil:** indexação abortando por OOM ou demorando por
-swap/backpressure; ou o índice crescendo além do que o limite de regime
-comporta. Migrar de perfil é trocar o arquivo `.env` (que já traz o limite de
-memória) e recriar o container — nenhum rebuild.
+Indexação grande (ex. perfil `busca-16gb`):
 
-**Motivação histórica do teto:** a config de produção do baseempresarial
-permitia `MEILI_MAX_INDEXING_MEMORY` de **6 GiB** num host de 8 GB dividido
-com Postgres e Redis — sentença de OOM. Todo perfil limita explicitamente.
+1. Aplicar o perfil e ajustar à máquina.
+2. Subir limite de memória para ~2× `MEILI_MAX_INDEXING_MEMORY` durante a reindexação.
+3. Rodar reindexação blue/green do indexador do projeto.
+4. Após estabilizar, reduzir limite para ~1,5× o índice quente.
 
-## Métricas
+Se dividir o host com Postgres, dimensionar pela [fórmula de coexistência](../postgres/docs/perfis.md#fórmula-de-reserva).
 
-O Meilisearch expõe `/metrics` no formato Prometheus **nativamente** — não há
-exporter. [`docker-compose.metrics.yml`](docker-compose.metrics.yml) liga a
-feature:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.metrics.yml up -d
-```
-
-> ⚠️ Este é o **único** overlay de métricas do repositório que altera o serviço
-> base, porque o que liga o endpoint é uma variável de ambiente — e mudar env
-> **recria o container**. O índice vive no volume e a recriação é segura, mas
-> tarefas de indexação em andamento são interrompidas. Aplique numa janela sem
-> ETL.
-
-`MEILI_EXPERIMENTAL_ENABLE_METRICS` é uma feature **experimental**: nomes de
-métrica podem mudar entre versões menores. O pin em `v1.34` contém o risco, mas
-subir a versão passa a ter raio de alcance sobre dashboards e alertas.
-
-**Autenticação.** `/metrics` responde `401` sem chave e exige a ação
-`metrics.get`. A master key nunca é usada para scrape —
-[`metrics-key.sh`](metrics-key.sh) cria uma chave escopada, idempotente (uid
-fixo: o `POST` cria na primeira vez, devolve `409` depois, e um `GET` lê a
-existente):
-
-```bash
-MEILI_MASTER_KEY=... bash metrics-key.sh http://127.0.0.1:7700
-```
-
-A chave resultante só abre `/metrics`: `/indexes`, `/stats` e `/keys` respondem
-`403`. O `setup.sh --metrics` roda isso sozinho e grava o valor em
-`services/monitoring/secrets/meili-metrics.key`.
-
-## Implantação
-
-Use o [`docker-compose.yml`](docker-compose.yml) desta pasta com um `.env` ao
-lado — é a forma recomendada, pelos mesmos motivos do Postgres
-([por quê](../postgres/docs/estrategia-deploy.md)). Num painel (Dokploy,
-Coolify), crie o serviço como **Compose stack** e cole o mesmo YAML; o Meili não
-usa `/dev/shm`, então não há a armadilha do Postgres — mas o **limite de memória
-continua sendo recurso do serviço**, e é ele que impede o OOM na indexação.
+## Deploy / operação
 
 ```bash
 BASE=https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/meilisearch
 curl -fsSL "$BASE/docker-compose.yml" -o docker-compose.yml
-curl -fsSL "$BASE/profiles/busca-1gb.env" -o .env     # <- perfil escolhido
+curl -fsSL "$BASE/profiles/busca-1gb.env" -o .env
 
 cat >> .env <<'EOF'
 MEILI_MASTER_KEY=chave-secreta-de-no-minimo-16-bytes
@@ -128,44 +67,49 @@ curl -s http://localhost:7700/health          # {"status":"available"}
 curl -s -H "Authorization: Bearer $MEILI_MASTER_KEY" http://localhost:7700/stats
 ```
 
-> Com `MEILI_ENV=production`, a master key precisa ter **no mínimo 16 bytes** —
-> uma chave menor faz o container sair com erro no start.
+Em painel (Dokploy/Coolify): Compose stack com o mesmo YAML. Porta default `0.0.0.0:7700`; restringir com `BIND_IP` ou firewall. `docker compose down -v` apaga o volume.
 
-**Volume.** O índice fica no volume nomeado `bdh_meili_data`, montado em
-`/meili_data` — mesmo padrão dos três serviços da org
-([layout](../postgres/docs/host.md#volumes-nomeados)). Aqui o disco local não é
-preferência e sim requisito: o índice é LMDB acessado por `mmap`, que sobre volume
-de rede degrada de forma patológica — confirme que o data-root do Docker está no
-NVMe. `docker compose down -v` **apaga** o volume; use `down` sem `-v`.
-
-**Porta.** Publicada em `0.0.0.0:7700` por default, com a master key como única
-barreira; para restringir, `BIND_IP` ou firewall por origem
-([Rede](../postgres/docs/host.md#rede)).
-
-### Indexação grande (ex.: Base Empresarial)
-
-1. Aplicar o perfil [`busca-16gb`](profiles/busca-16gb.env), ajustado à máquina
-   (regra de dimensionamento acima).
-2. Subir o limite de memória do serviço para ~2× o
-   `MEILI_MAX_INDEXING_MEMORY` enquanto a reindexação roda.
-3. Rodar a reindexação blue/green do indexador do projeto.
-4. Após estabilizar, reduzir o limite para ~1,5× o tamanho do índice quente.
-
-> Se o Meilisearch dividir o host com o Postgres, a indexação despeja o page
-> cache do banco — dimensione pela
-> [fórmula de coexistência](../postgres/docs/perfis.md#fórmula-de-reserva) e,
-> em bases grandes com busca textual, prefira separar os dois em máquinas
-> distintas.
-
-## Validação local
+Métricas (único overlay do repositório que altera o serviço base — muda env e recria o container; aplicar fora de janela de ETL):
 
 ```bash
-# antes da primeira publicação na CI, builde o wrapper localmente:
-docker build -t ghcr.io/brasildatahub/meilisearch:1.34 .
+docker compose -f docker-compose.yml -f docker-compose.metrics.yml up -d
+MEILI_MASTER_KEY=... bash metrics-key.sh http://127.0.0.1:7700
+```
 
+`metrics-key.sh` cria chave escopada `metrics.get` (uid fixo; idempotente). `setup.sh --metrics` grava em `services/monitoring/secrets/meili-metrics.key`.
+
+Validação local:
+
+```bash
+docker build -t ghcr.io/brasildatahub/meilisearch:1.34 .
 MEILI_MASTER_KEY=local-test MEILI_MAX_INDEXING_MEMORY=256MiB docker compose up -d
 curl -s http://localhost:7700/health
 ```
 
-> O compose de referência não publica porta; para testar localmente, adicione
-> `ports: ["7700:7700"]` num override.
+O compose de referência não publica porta; para teste local, override com `ports: ["7700:7700"]`.
+
+## Variáveis e segredos
+
+| Variável | Obrigatória | Descrição |
+|---|---|---|
+| `MEILI_MASTER_KEY` | sim (produção) | mínimo **16 bytes** com `MEILI_ENV=production`; nunca no git |
+| `MEILI_MAX_INDEXING_MEMORY` | via perfil | teto de memória de indexação |
+| `MEILI_EXPERIMENTAL_ENABLE_METRICS` | via overlay | liga `/metrics` (feature experimental; pin `v1.34`) |
+| `BIND_IP`, `MEILI_PORT`, `MEILI_VOLUME` | não | publicação e volume |
+
+`/metrics` exige ação `metrics.get` — não usar a master key no scrape.
+
+## Restrições
+
+- Índice em volume de rede degrada patologicamente (`mmap`/LMDB) — data-root do Docker no NVMe.
+- Recriar o container ao ligar métricas interrompe indexação em andamento.
+- Nomes de métrica podem mudar entre minors (feature experimental).
+- Com coexistência Postgres + Meili, indexação despeja page cache do banco.
+
+## Links
+
+- [`../opensearch/README.md`](../opensearch/README.md)
+- [Fórmula de coexistência](../postgres/docs/perfis.md#fórmula-de-reserva)
+- [Layout de volumes](../postgres/docs/host.md#volumes-nomeados)
+- [Rede](../postgres/docs/host.md#rede)
+- [`../README.md`](../README.md) — `setup.sh`

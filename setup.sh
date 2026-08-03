@@ -1,22 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
-# setup.sh — provisiona um VPS para rodar os serviços de dados da
-# BrasilDataHub (PostgreSQL, Redis, Meilisearch) com Docker Compose.
+# setup.sh — provisiona VPS com Docker Compose (PostgreSQL, Redis, Meilisearch…).
 #
 #   curl -fsSL https://raw.githubusercontent.com/BrasilDataHub/plataforma/main/setup.sh \
 #     | sudo bash -s -- --auto
 #
-# É OPCIONAL: o fluxo de deploy documentado (postgres/docs/deploy.md) continua
-# valendo, e este script só automatiza o caminho comum. Os composes NÃO são
-# embutidos aqui — são baixados do próprio repositório, que segue sendo a única
-# fonte de verdade.
-#
-# Alvos:
-#   - Ubuntu/Debian com systemd (servidor): instala Docker, ajusta timezone e
-#     firewall, instala mensagem de login. Requer root.
-#   - macOS (estação de trabalho ou Mac mini como servidor): usa o Docker já
-#     instalado (Docker Desktop, OrbStack ou Colima), não mexe em firewall nem
-#     em arquivos de login. Funciona com ou sem sudo.
+# Composes vêm do repositório (fonte de verdade). Deploy manual: postgres/docs/deploy.md.
+# Linux+systemd (root): Docker, timezone, firewall, MOTD.
+# macOS: usa Docker já instalado; sem firewall/MOTD; com ou sem sudo.
 # =============================================================================
 set -euo pipefail
 
@@ -29,20 +20,9 @@ esac
 SCRIPT_VERSION="1.0.0"
 
 # --- flags explicitamente informadas -----------------------------------------
-# A LACUNA RAIZ que este bloco fecha: o script GRAVA o .setup-state e não o
-# RELÊ — só relia VOLUMES_MODE. A consequência é que uma segunda execução (por
-# exemplo `--metrics-only`, que o README indica para ligar observabilidade)
-# roda o main() inteiro com os DEFAULTS DE FÁBRICA: POSTGRES_DB volta para
-# "dados", BIND_IP para 0.0.0.0, ALLOW_FROM para vazio. O .env muda, o Postgres
-# é RECRIADO, a DSN do exporter aponta para um database que não existe e o
-# firewall é esvaziado.
-#
-# A correção precisa distinguir "o usuário pediu" de "é o default", e não há
-# como fazer isso olhando só o valor: `--bind-ip 0.0.0.0` e a ausência da flag
-# produzem a mesma string. Daí este registro, alimentado pelo parser.
-#
-# Lista separada por espaço, e não array associativo: `declare -A` é bash 4+, e
-# o bash de fábrica do macOS é 3.2 — onde os testes deste repositório rodam.
+# Distingue "usuário pediu" de "default": `--bind-ip 0.0.0.0` e ausência da flag
+# produzem a mesma string. Sem isto, reexecução herda defaults e recria/reexpõe.
+# Lista (não `declare -A`): bash 3.2 do macOS não tem arrays associativos.
 FLAGS_EXPLICITAS=""
 _explicita()    { FLAGS_EXPLICITAS="${FLAGS_EXPLICITAS} $1"; }
 foi_explicita() { case " $FLAGS_EXPLICITAS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
@@ -59,15 +39,8 @@ POSTGRES_DB="dados"
 PG_PROFILE="auto"
 REDIS_PROFILE="auto"
 MEILI_PROFILE="auto"
-# `auto` escolhe entre DIVIDIR o host ou tê-lo inteiro — e essa é a única
-# pergunta que importa aqui. O dimensionamento do OpenSearch não é função da RAM
-# do host (é a conta de 03 §3.1, que reserva page cache para o mmap do Lucene),
-# mas É função de com quem ele divide a máquina.
-#
-# O catálogo tinha um perfil só, e aplicá-lo a um host dedicado não era
-# conservador — era quebrado: 10 GiB ociosos e o breaker `parent` recusando a
-# carga inicial. Medido em 29/07/2026, com a indexação parada em 2,46 M de
-# 72,3 M documentos.
+# `auto`: divide o host ou dedica. OpenSearch dimensiona pelo vizinho (page cache
+# do Lucene), não pela RAM bruta.
 OPENSEARCH_PROFILE="auto"
 PROFILES_DIR=""
 ALLOW_OVERSIZED="false"
@@ -84,23 +57,15 @@ BIND_IP="0.0.0.0"
 POSTGRES_PORT="5432"
 REDIS_PORT="6379"
 MEILI_PORT="7700"
-# O OpenSearch entra no catálogo com porta própria. Ele NÃO tem autenticação
-# (o plugin de segurança está desligado — ver plataforma/opensearch/README.md), então
-# a barreira é inteiramente o firewall: publicar esta porta sem --allow-from
-# entrega o índice inteiro.
+# Sem autenticação (plugin desligado): a barreira é o firewall / --allow-from.
 OPENSEARCH_PORT="9200"
-# O PgBouncer roda no host da APLICAÇÃO e por default em loopback: ele fica no
-# mesmo host de quem o consome, e publicá-lo fora daria um caminho até o banco
-# com a autenticação do pooler no meio.
+# Host da aplicação; default loopback — publicar fora abre caminho ao banco.
 PGBOUNCER_PORT="6432"
 PGBOUNCER_BIND_IP="127.0.0.1"
-# Para onde o pooler aponta. Vazio = resolver no write_env_files: o BIND_IP
-# quando ele é uma interface de verdade, senão o gateway da bridge do Docker —
-# porque o container do PgBouncer NÃO enxerga o do Postgres pelo nome (são
-# projetos Compose distintos, em redes distintas).
+# Vazio = resolver em write_env_files (BIND_IP ou gateway da bridge).
+# Projetos Compose distintos: o nome `postgres` não resolve daqui.
 PGBOUNCER_DB_HOST=""
-# Vazio = o mesmo de POSTGRES_PORT. Separado porque o pooler pode apontar para
-# um banco noutro host, com outra porta publicada.
+# Vazio = POSTGRES_PORT. Separado: pooler pode apontar a outro host/porta.
 PGBOUNCER_DB_PORT=""
 PGBOUNCER_DB_USER="postgres"
 ALLOW_FROM=""
@@ -109,9 +74,7 @@ ENABLE_FIREWALL="true"
 VM_MAX_MAP_COUNT="262144"
 
 # --- observabilidade (opt-in por --metrics) ----------------------------------
-# Fora do default de propósito: incluir monitoração no --auto mudaria o
-# comportamento de todo provisionamento existente e somaria ~1,5 GB de RAM ao
-# orçamento que detect_pg_profile() não sabe descontar.
+# Opt-in: ~1,5 GB fora do orçamento de detect_pg_profile().
 METRICS_ENABLED="false"
 METRICS_ONLY="false"             # --metrics-only: acrescenta métricas SEM recriar os serviços
 UPDATE_MODE="false"              # --update / --add-service: herda o estado e reaplica
@@ -121,26 +84,16 @@ MONITORING_ENABLED="true"        # --no-monitoring: só exporters, Prometheus al
 METRICS_PROFILE="auto"
 METRICS_CONTAINERS="false"       # --metrics-containers liga o cAdvisor
 # --- coleta remota (Prometheus num host, serviços em outro) -------------------
-# O repositório TEM os overlays para isto (`<serviço>/docker-compose.metrics-remote.yml`
-# e `monitoring/docker-compose.remote.yml`), e o setup nunca os usava: num
-# desenho distribuído os exporters ficavam sem porta publicada, alcançáveis só
-# pela rede Docker local, e o Prometheus do outro host não via nada. A
-# observabilidade simplesmente não existia fora da máquina única.
+# Overlays: docker-compose.metrics-remote.yml / monitoring/docker-compose.remote.yml.
 METRICS_PUBLISH_IP=""            # --metrics-publish: interface onde os exporters escutam
 METRICS_SCRAPE=""                # --metrics-scrape: alvos remotos (job=host:porta,...)
-# --host-label: nome da máquina nas séries, quando o hostname do SO não serve.
-# Existe porque renomear o host nem sempre é possível: num nó Docker Swarm o
-# hostname está registrado no cluster, e trocá-lo num manager arrisca
-# desassociar o nó. Vazio = usa o hostname, que é o caso normal.
+# --host-label: rótulo nas séries quando o hostname do SO não serve (ex.: Swarm).
+# Vazio = hostname.
 HOST_LABEL=""
 METRICS_NETWORK="bdh_metrics"
 MONITORING_BIND_IP="127.0.0.1"   # NUNCA reusar BIND_IP: o default dele é 0.0.0.0
 # --- destino dos alertas ------------------------------------------------------
-# O Alertmanager RECUSA subir sem receiver, e a recusa é o ponto do módulo: o
-# diagnóstico que o originou encontrou 18 regras validadas e sem destino.
-# O setup não tinha como configurá-lo, e o efeito era o pior dos dois mundos —
-# a stack subia "com sucesso" e o Alertmanager ficava em restart loop para
-# sempre, com os alertas sendo avaliados e indo para lugar nenhum.
+# Alertmanager recusa subir sem receiver; sem destino, fica de fora do up.
 ALERT_SLACK_WEBHOOK=""
 ALERT_SLACK_CHANNEL=""
 ALERT_WEBHOOK_URL=""
@@ -149,9 +102,7 @@ ALERT_EMAIL_FROM=""
 ALERT_SMTP_HOST=""
 ALERT_SMTP_USER=""
 ALERT_SMTP_PASSWORD=""
-# URL pela qual um humano alcança este Alertmanager. Vai no `title_link` das
-# notificações — e destinos que validam a URL (o Discord é um) RECUSAM a
-# notificação quando ela aponta para o hostname do container.
+# URL humana do Alertmanager (`title_link`); hostname de container é recusado.
 ALERT_EXTERNAL_URL="http://localhost:9093"
 PROMETHEUS_PORT="9090"
 GRAFANA_PORT="3000"
@@ -165,20 +116,8 @@ INSTALL_MOTD="true"
 AUTO="false"
 DRY_RUN="false"
 FORCE="false"
-# Recriar container é uma decisão SEPARADA de reaplicar configuração, e fundir as
-# duas num `FORCE` só custou downtime que ninguém pediu: `--update` — o modo
-# normal de reexecução, o que o README manda usar — passava `--force-recreate`
-# em TODO serviço, inclusive num Postgres de 156 GB cuja definição não mudara.
-#
-# O preço não é só o restart. Um `--update` para acrescentar um alvo ao
-# Prometheus derruba o cursor server-side de um ETL em andamento, que morre com
-# `AdminShutdown` a horas do início — e o `--add-service`, cujo próprio
-# comentário promete "acrescenta um serviço SEM tocar nos outros", recriava
-# todos eles.
-#
-# Sem `--force-recreate` o Compose compara a definição desejada com a atual e
-# recria só o que mudou: perfil novo, imagem nova, overlay novo. É o mesmo
-# raciocínio que `--metrics-only` já aplicava sozinho, generalizado.
+# Reaplicar config ≠ recriar container. Sem --force-recreate o Compose só
+# recria o que mudou (perfil/imagem/overlay).
 RECREATE="false"
 WEBHOOK_URL=""
 
@@ -194,20 +133,8 @@ BIN_DIR=""
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # --- rótulo de máquina dos alvos ---------------------------------------------
-# O Prometheus tem `external_labels: host`, mas eles NÃO são gravados no TSDB:
-# entram só em remote_write, federação e nos alertas enviados ao Alertmanager.
-# Toda consulta do Grafana é cega para eles. Quem faz um painel saber de qual
-# máquina veio a série é o rótulo escrito no ARQUIVO DE ALVOS — e era
-# exatamente ele que faltava: até 29/07/2026 o `min(node_filesystem_avail...)`
-# da visão geral misturava quatro servidores e mostrava o pior sem dizer qual.
-#
-# Deliberadamente `hostname` cru, sem normalizar: no Linux `hostname` e
-# `uname -n` leem o MESMO nodename do kernel, então o `host` escrito aqui é
-# byte a byte igual ao `nodename` que o node_exporter publica em
-# node_uname_info. É essa igualdade que permite cruzar as duas fontes —
-# métricas de SERVIÇO só têm `host`, métricas de MÁQUINA têm os dois — e é o
-# que faz o link do dashboard abrir no servidor certo. Normalizar (minúsculas,
-# cortar domínio) quebraria a igualdade em silêncio.
+# `external_labels` não vão ao TSDB; o `host` útil está no arquivo de alvos.
+# Hostname cru (sem normalizar): igual a `nodename` do node_exporter.
 host_label() {
     local n="${1-}"
     # --host-label vence o hostname, e só para os alvos LOCAIS: o apelido de um
@@ -228,12 +155,8 @@ endereco_sem_porta() {
     esac
 }
 
-# JSON de file_sd dos alvos remotos de UM job, a partir do formato de
-# --metrics-scrape (`job=endereço[@apelido]`, separados por vírgula).
-#
-# Um objeto POR ALVO, e não um objeto com N targets como antes: cada alvo pode
-# estar numa máquina diferente, e o rótulo é por objeto. O `@` é separador
-# seguro porque não ocorre em IPv4, nome DNS nem IPv6 entre colchetes.
+# file_sd remoto: um objeto por alvo (rótulo `host` por máquina).
+# Formato --metrics-scrape: job=endereço[@apelido], separados por vírgula.
 alvos_remotos_json() {   # $1 = job   $2 = lista no formato de --metrics-scrape
     local job="$1" par destino apelido saida=""
     local -a pares=(); IFS=',' read -r -a pares <<< "$2"
@@ -468,12 +391,8 @@ OPTIONS (rede e firewall):
       --no-firewall          Não configura o ufw
 
 OPTIONS (atualização de uma instalação existente — herda o .setup-state):
-      --update               Reaplica a configuração sem repetir as flags da
-                             instalação original. Flag explícita sobrescreve;
-                             ausência HERDA. É o que substitui o contorno de
-                             "repetir --postgres-db, --bind-ip e --allow-from de
-                             cor" — cujo esquecimento recriava o banco, reexpunha
-                             as portas e esvaziava o firewall.
+      --update               Reaplica a configuração herdando o .setup-state.
+                             Flag explícita sobrescreve; ausência HERDA.
       --add-service NOME     Acrescenta um serviço (opensearch, pgbouncer, ...)
                              sem tocar nos que já existem. Implica --update.
 
@@ -532,23 +451,14 @@ while [[ $# -gt 0 ]]; do
         --pgbouncer-bind-ip) PGBOUNCER_BIND_IP="$2"; _explicita PGBOUNCER_BIND_IP; shift 2 ;;
         --pgbouncer-port) PGBOUNCER_PORT="$2"; _explicita PGBOUNCER_PORT; shift 2 ;;
         --allow-from) ALLOW_FROM="$2"; _explicita ALLOW_FROM; shift 2 ;;
-        --enable-firewall) ENABLE_FIREWALL="true"
-# 262144 é o mínimo que o bootstrap check do OpenSearch exige.
-VM_MAX_MAP_COUNT="262144"; shift ;;
+        --enable-firewall) ENABLE_FIREWALL="true"; shift ;;
         --no-firewall) ENABLE_FIREWALL="false"; shift ;;
-        # Reaplica a configuração de uma instalação existente, herdando tudo o
-        # que não for passado explicitamente. É o modo que transforma
-        # "reinstalar repetindo todas as flags de cor" em "atualizar".
+        # Reaplica config herdando o que não veio por flag (--update).
         --update) UPDATE_MODE="true"; FORCE="true"; shift ;;
-        # Acrescenta um serviço SEM tocar nos outros: os composes dos existentes
-        # não são reescritos, e credentials.env recebe merge em vez de ser
-        # truncado aos serviços desta execução.
+        # Acrescenta serviço sem reescrever os existentes; merge em credentials.env.
         --add-service) ADD_SERVICE="$2"; UPDATE_MODE="true"; FORCE="true"; shift 2 ;;
         --metrics) METRICS_ENABLED="true"; shift ;;
-        # Acrescenta observabilidade a uma instalação existente sem recriar os
-        # containers de dados: implica --force (para reconfigurar) mas suprime o
-        # --force-recreate, que num banco de centenas de GB significa downtime e
-        # page cache frio só para ligar um gráfico.
+        # Observabilidade sem recriar dados: --force, sem --force-recreate.
         --metrics-only) METRICS_ENABLED="true"; METRICS_ONLY="true"; FORCE="true"; shift ;;
         --no-monitoring) MONITORING_ENABLED="false"; shift ;;
         --metrics-profile) METRICS_PROFILE="$2"; METRICS_ENABLED="true"; _explicita METRICS_PROFILE; shift 2 ;;
@@ -560,9 +470,7 @@ VM_MAX_MAP_COUNT="262144"; shift ;;
         # Host do PROMETHEUS: de onde coletar o que está nas outras máquinas.
         --metrics-scrape) METRICS_SCRAPE="$2"; METRICS_ENABLED="true"; _explicita METRICS_SCRAPE; shift 2 ;;
         --host-label) HOST_LABEL="$2"; _explicita HOST_LABEL; shift 2 ;;
-        # `_explicita` é obrigatório aqui: sem ele, o valor herdado do
-        # `.setup-state` venceria a flag recém-passada, e mudar a interface do
-        # painel viraria uma operação sem efeito.
+        # `_explicita` obrigatório: sem ele o estado herdado vence a flag nova.
         --metrics-bind-ip) MONITORING_BIND_IP="$2"; _explicita MONITORING_BIND_IP; shift 2 ;;
         --alert-slack-webhook) ALERT_SLACK_WEBHOOK="$2"; _explicita ALERT_SLACK_WEBHOOK; shift 2 ;;
         --alert-slack-channel) ALERT_SLACK_CHANNEL="$2"; _explicita ALERT_SLACK_CHANNEL; shift 2 ;;
@@ -639,10 +547,7 @@ service_volume_key() {
     esac
 }
 
-# Interface em que o serviço é REALMENTE publicado. Não é sempre BIND_IP: o
-# PgBouncer tem interface própria (loopback por default), e o resumo que usava
-# BIND_IP para todos anunciava `pgbouncer → 0.0.0.0:6432` num pooler que só
-# escuta em 127.0.0.1.
+# Interface real de publicação (PgBouncer tem bind próprio, default loopback).
 service_bind_ip() {
     case "$1" in
         pgbouncer) printf '%s' "$PGBOUNCER_BIND_IP" ;;
@@ -672,17 +577,8 @@ service_internal_port() {
     esac
 }
 
-# Perfil do Postgres a partir da RAM total (ou do valor em GiB passado como
-# argumento, usado pelos testes). Margem generosa porque a RAM reportada é
-# sempre menor que a nominal do plano.
-# shellcheck disable=SC2120  # o argumento é opcional: em produção lê /proc/meminfo
-# Memória disponível ao Docker, em GiB. Em Linux nativo é a RAM do host; no
-# macOS o daemon roda numa VM que costuma receber metade dela — dimensionar pelo
-# host geraria limites maiores do que a VM tem.
-#
-# ATENÇÃO à ordem do main(): esta função é chamada por validate_and_prompt(),
-# que roda ANTES de install_docker(). Numa máquina nova o `docker info` falha, e
-# o caminho do /proc/meminfo é o NORMAL — não o excepcional.
+# Memória visível ao Docker. No macOS o daemon é VM (costuma ser metade do host).
+# Chamada antes de install_docker(): sem Docker, cai em /proc/meminfo.
 available_mem_gb() {
     local bytes gb
     bytes="$(docker info -f '{{.MemTotal}}' 2>/dev/null || true)"
@@ -692,13 +588,7 @@ available_mem_gb() {
         return 0
     fi
     if [[ -r /proc/meminfo ]]; then
-        # kB -> GiB DENTRO do awk, sem passar por bytes. O `$2 * 1024` anterior
-        # estourava o inteiro de 32 bits do mawk (o awk de fábrica do Debian e
-        # do Ubuntu): `printf "%d"` satura em INT_MAX = 2147483647, que dividido
-        # por 1024^3 dá **1**. Como nenhuma máquina nova tem Docker quando esta
-        # função roda, TODO host Linux com 2 GiB ou mais reportava 1 GiB — o
-        # `--auto` escolhia dedicada-8gb e em seguida se matava porque "o Docker
-        # tem 1 GB". Nenhum provisionamento novo passava daqui.
+        # kB→GiB no awk (não `$2*1024`): mawk 32-bit satura em INT_MAX → 1 GiB.
         gb=$(awk '/^MemTotal:/ {printf "%d", $2 / 1048576; exit}' /proc/meminfo)
     else
         gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 / 1024 ))
@@ -709,19 +599,12 @@ available_mem_gb() {
 
 # 'dedicada-16gb' -> 16. É o orçamento de RAM que o perfil pressupõe.
 profile_budget_gb() {
-    # Tira QUALQUER prefixo até o hífen, e não só `dedicada-`. Com o strip
-    # antigo, `compartilhada-14gb` virava a string `compartilhada-14`, que
-    # dentro de `(( ))` avalia a variável indefinida `compartilhada` (=0) menos
-    # 14: **−14**. Efeito: a checagem de perfil grande demais nunca disparava
-    # para esse perfil, e o resumo imprimia uma soma negativa.
+    # Strip até o hífen (`${1#*-}`): não só o prefixo `dedicada-`.
     local n="${1#*-}"
     printf '%s' "${n%gb}"
 }
 
-# O Postgres é detectado pela memória que SOBRA depois dos vizinhos, não pela RAM
-# total — é a fórmula de retrofit de docs/perfis.md aplicada automaticamente.
-# Quem passa o argumento é validate_and_prompt(); sem argumento, assume a máquina
-# inteira (Postgres sozinho).
+# Detecta pela RAM que sobra após vizinhos (docs/perfis.md). Sem arg = máquina inteira.
 detect_pg_profile() {
     local ram_gb="${1:-}"
     [[ -z "$ram_gb" ]] && ram_gb="$(available_mem_gb)"
@@ -733,10 +616,7 @@ detect_pg_profile() {
     fi
 }
 
-# Redis e Meilisearch escalam pela RAM TOTAL do host: o porte da máquina é o
-# melhor indicador disponível do volume de cache/fila e do tamanho do índice.
-# As faixas são as mesmas do Postgres para que os conjuntos resultantes batam
-# com a tabela "Combinações prováveis" de docs/perfis.md.
+# Redis/Meili: faixas pela RAM total (alinhadas a docs/perfis.md).
 # shellcheck disable=SC2120  # o argumento é opcional: em produção lê a RAM real
 detect_redis_profile() {
     local ram_gb="${1:-}"
@@ -759,13 +639,7 @@ detect_meili_profile() {
     fi
 }
 
-# Métricas NÃO escalam com a RAM, e isso é deliberado: a cardinalidade do
-# Prometheus depende do NÚMERO DE ALVOS, não do tamanho do host. Um host com os
-# três serviços gera ~3 mil séries tanto em 16 quanto em 128 GB (medido: 3.470).
-# Escalar por RAM desperdiçaria memória que o Postgres usaria como page cache.
-#
-# metricas-8gb nunca é automático: é para 5–15 hosts, um cenário multi-host que
-# este script não conhece.
+# Métricas não escalam com RAM (cardinalidade = nº de alvos). metricas-8gb é manual.
 detect_metrics_profile() {
     if [[ "$METRICS_CONTAINERS" == "true" ]]; then
         printf 'metricas-2gb'      # o cAdvisor sozinho dobra o volume de séries
@@ -774,46 +648,17 @@ detect_metrics_profile() {
     fi
 }
 
-# Perfis válidos por serviço. Os VALORES não vivem aqui: cada perfil é um
-# arquivo .env no repositório (postgres/profiles/, redis/profiles/,
-# meilisearch/profiles/), baixado no momento do provisionamento. É o mesmo
-# arquivo que a documentação manda copiar num deploy manual.
-# `compartilhada-14gb` é o perfil do host que divide CPU e page cache com o
-# motor de busca. O nome é parte da correção: o perfil em uso até 07/2026
-# chamava-se `dedicada-16gb` num host que nunca foi dedicado, e é o nome
-# errado que faz alguém somar os limites e concluir que cabe.
+# Perfis = arquivos .env no repositório. `compartilhada-14gb`: host dividido com busca.
 PG_PROFILES="dedicada-8gb dedicada-16gb dedicada-32gb dedicada-64gb dedicada-128gb compartilhada-14gb"
-# cache-768mb e fila-256mb são o PAR do desenho de duas instâncias
-# (redis/docker-compose.par.yml): separar cache de fila+sessões é o que
-# permite `allkeys-lru` num lado sem arriscar despejar job no outro.
+# cache-768mb / fila-256mb: par cache×fila (redis/docker-compose.par.yml).
 REDIS_PROFILES="cache-256mb cache-512mb cache-768mb cache-1gb cache-2gb cache-4gb fila-256mb"
 MEILI_PROFILES="busca-512mb busca-1gb busca-4gb busca-16gb"
-# `dev-4gb` é aceito por --opensearch-profile mas NUNCA escolhido pelo `auto`
-# (ver detect_opensearch_profile): é o perfil da máquina de desenvolvimento que
-# roda a arquitetura inteira em ~16 GiB, e selecioná-lo sozinho num servidor de
-# verdade entregaria 2 GiB de heap onde a carga precisa de 4.
+# `dev-4gb`: aceito por flag, nunca pelo `auto` (só desenvolvimento).
 OPENSEARCH_PROFILES="compartilhada-8gb dedicada-16gb dev-4gb"
 
-# O OpenSearch divide este host com outro serviço de dados?
-#
-# É a pergunta que separa os dois perfis. `compartilhada-8gb` reserva 7,5 GiB de
-# page cache para o Postgres vizinho; `dedicada-16gb` usa a máquina inteira, com
-# 5 GiB de heap — e é a diferença entre a carga inicial passar ou o breaker
-# `parent` rejeitá-la.
-#
-# `pgbouncer` e `monitoring` não contam como vizinho de peso: o pooler cabe em
-# 128 MiB e os exporters em ~200 MiB. O que muda a conta é Postgres, Redis ou
-# Meilisearch dividindo a RAM.
-#
-# `dev-4gb` NÃO é candidato aqui, e a omissão é deliberada. Ele resolveria o
-# caso do host pequeno que roda tudo — que é justamente onde o `auto` cairia —,
-# mas ao custo de 2 GiB de heap. Num servidor de verdade isso aparece só na
-# carga mensal, como `circuit_breaking_exception` a horas de distância de quem
-# escolheu o perfil. Quem tem essa máquina passa `--opensearch-profile dev-4gb`
-# e assume a escolha por escrito.
-# O argumento é a RAM em GiB e existe para os testes — sem ele, lê a da máquina.
-# É o mesmo contrato de detect_pg_profile e dos demais: um teste que dependa da
-# RAM de quem o roda passa no laptop do autor e falha na CI.
+# OpenSearch: compartilhada se houver Postgres/Redis/Meili; senão dedicada (≥14 GiB).
+# pgbouncer/monitoring não contam como vizinho. `dev-4gb` só por flag explícita.
+# Arg de RAM opcional (testes); sem ele lê a máquina.
 # shellcheck disable=SC2120  # o argumento é opcional
 detect_opensearch_profile() {
     local s
@@ -822,9 +667,7 @@ detect_opensearch_profile() {
             postgres|redis|meilisearch) printf 'compartilhada-8gb'; return 0 ;;
         esac
     done
-    # Sozinho no host — mas só vale a pena se a máquina tiver porte para isso.
-    # Abaixo de 14 GiB, `dedicada-16gb` pediria 10 GiB de limite numa máquina
-    # que não os tem, e o container não subiria.
+    # dedicada-16gb só se RAM ≥ 14 GiB (limite 10 GiB).
     local mem="${1:-}"
     [[ -z "$mem" ]] && mem="$(available_mem_gb)"
     if (( mem >= 14 )); then
@@ -835,10 +678,7 @@ detect_opensearch_profile() {
 }
 METRICS_PROFILES="metricas-512mb metricas-2gb metricas-8gb"
 
-# O MAIOR perfil cujo limite de container cabe na memória informada. Existe
-# para que o conselho da mensagem de erro seja acionável: `detect_pg_profile`
-# escolhe por faixa com tolerância de ~12% para baixo, então usá-lo ali podia
-# devolver exatamente o perfil que acabou de ser recusado.
+# Maior perfil cujo limite cabe na RAM — conselho acionável na mensagem de erro.
 maior_perfil_que_cabe() {
     local mem="$1" p melhor="dedicada-8gb"
     for p in $PG_PROFILES; do
@@ -865,32 +705,18 @@ service_profile() {
         # mesmo fetch_profile para baixar monitoring/profiles/<perfil>.env.
         monitoring) printf '%s' "$METRICS_PROFILE" ;;
         opensearch) printf '%s' "$OPENSEARCH_PROFILE" ;;
-        # O PgBouncer não tem perfil: ele é dimensionado por `default_pool_size`
-        # e `max_client_conn`, que são decisão da APLICAÇÃO, não do host. Ver
-        # pgbouncer/generate-config.sh.
+        # PgBouncer sem perfil: dimensionado por default_pool_size / max_client_conn.
     esac
 }
 
-# Serviços que têm `docker-compose.metrics.yml` no repositório — isto é, que
-# precisam de um EXPORTER ao lado para serem observados. Nem todos precisam, e
-# tratar a ausência como erro era um defeito com consequência total:
-#
-#   opensearch  expõe /_prometheus/metrics NATIVAMENTE (o plugin do Aiven é
-#               instalado na imagem, ver opensearch/Dockerfile), e o job já
-#               existe no prometheus.yml apontando para lá;
-#   pgbouncer   não tem job nenhum no prometheus.yml.
-#
-# Como create_layout baixava o overlay para TODO serviço selecionado, um host
-# com `--metrics` e OpenSearch levava 404 e o provisionamento MORRIA ali —
-# antes de subir container nenhum, com o sistema já alterado.
+# Quem tem overlay de exporter. OpenSearch expõe /_prometheus nativo; pgbouncer sem job.
+# Ausência de overlay ≠ erro (não abortar create_layout).
 SERVICES_COM_EXPORTER="postgres redis meilisearch"
 tem_overlay_metrics() {
     case " $SERVICES_COM_EXPORTER " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
 
-# Endereço do Postgres visto de DENTRO de um container que não divide rede com
-# ele. É o caso do PgBouncer: projeto Compose próprio, rede própria, então o
-# nome `postgres` não resolve — o caminho é a porta publicada no host.
+# Host do Postgres visto de outro projeto Compose (ex.: PgBouncer).
 docker_bridge_gateway() {
     local ip=""
     ip="$(docker network inspect bridge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || true)"
@@ -900,13 +726,7 @@ docker_bridge_gateway() {
     printf '%s' "${ip:-172.17.0.1}"
 }
 
-# Orçamento de RAM de um perfil de VIZINHO, em GB — o que entra na fórmula de
-# reserva de docs/perfis.md. São os limites de container dos arquivos .env
-# arredondados PARA CIMA: melhor sobrar page cache para o Postgres do que
-# descobrir o erro como OOM-kill.
-#
-# Fonte dos números: <serviço>/profiles/*.env (REDIS_MEMORY_LIMIT,
-# MEILI_MEMORY_LIMIT, e a soma dos limites de monitoring/profiles/*.env).
+# Orçamento do vizinho (GB), arredondado para cima. Fonte: profiles/*.env.
 neighbor_budget_gb() {
     case "$1" in
         # Redis — REDIS_MEMORY_LIMIT: 512M / 1G / 2G / 3G
@@ -917,10 +737,7 @@ neighbor_budget_gb() {
         # cache-4gb é instância DEDICADA a cache (allkeys-lru, sem AOF); o
         # limite de container do perfil é 5G.
         cache-4gb)      printf '5' ;;
-        # Os dois perfis do PAR cache/fila (redis/docker-compose.par.yml). Eles
-        # estavam em REDIS_PROFILES e NÃO estavam aqui, então caíam no `*)` e
-        # valiam 0: quem subisse o par com `--redis-profile cache-768mb` teria o
-        # Postgres dimensionado como se o Redis não existisse.
+        # Par cache/fila (redis/docker-compose.par.yml): entram no orçamento.
         cache-768mb)    printf '1' ;;
         fila-256mb)     printf '1' ;;
         # Meilisearch — MEILI_MEMORY_LIMIT (valor de PICO de indexação)
@@ -928,23 +745,11 @@ neighbor_budget_gb() {
         busca-1gb)      printf '1' ;;
         busca-4gb)      printf '4' ;;
         busca-16gb)     printf '16' ;;
-        # OpenSearch — OS_MEMORY_LIMIT. SEM esta linha, o `auto` do Postgres não
-        # desconta o heap da JVM do orçamento do host e SUPERDIMENSIONA o banco:
-        # num host de 31 GiB, ele escolheria `dedicada-32gb` (shared_buffers de
-        # 10 GiB) ignorando que 8 GiB já são do motor de busca. O erro aparece
-        # como OOM-kill, semanas depois.
+        # OpenSearch — OS_MEMORY_LIMIT: sem isto o `auto` do Postgres superdimensiona.
         compartilhada-8gb) printf '8' ;;
-        # O perfil dedicado só é escolhido quando o motor está SOZINHO no host,
-        # então na prática ele nunca entra nesta soma. A linha existe para o caso
-        # de alguém fixá-lo à mão ao lado de outro serviço: sem ela,
-        # `neighbor_budget_gb` devolveria 0 e o `auto` do Postgres
-        # superdimensionaria o banco em 10 GiB — o erro apareceria como OOM-kill,
-        # semanas depois. É exatamente o que já aconteceu com o perfil anterior.
+        # dedicada-*: raro na soma; linha evita orçamento 0 se fixado à mão.
         dedicada-16gb) printf '10' ;;
-        # O perfil de desenvolvimento. Ele SEMPRE divide o host — é a razão de
-        # existir —, então esta linha é a que mais importa das três: sem ela o
-        # `auto` do Postgres via "vizinhos 3 GB" num host onde o motor de busca
-        # já reservou 4, e o orçamento fechava com 4 GB que não existem.
+        # `dev-4gb` sempre divide o host — orçamento obrigatório.
         dev-4gb)       printf '4' ;;
         # Observabilidade — Prometheus + Grafana + node exporter + exporters.
         # O cAdvisor entra à parte, em metrics_budget_gb().
@@ -955,22 +760,13 @@ neighbor_budget_gb() {
     esac
 }
 
-# Orçamento da stack de observabilidade. Delega a neighbor_budget_gb para não
-# manter duas tabelas de números que precisariam ser atualizadas juntas.
-# Há para onde notificar? O Alertmanager aceita três formas, e basta uma.
+# Orçamento de métricas via neighbor_budget_gb. Basta um destino de alerta.
 tem_destino_de_alerta() {
     [[ -n "$ALERT_SLACK_WEBHOOK" || -n "$ALERT_WEBHOOK_URL" || -n "$ALERT_EMAIL_TO" ]]
 }
 
-# Destino informado numa execução ANTERIOR. Ele é segredo — webhook e senha de
-# SMTP —, então não vai para o `.setup-state`, que não é chmod 600: fica no
-# `.env` do monitoring, e é de lá que a reexecução o relê.
-#
-# Sem esta herança, QUALQUER `--update` posterior (acrescentar um alvo, mudar a
-# retenção) encontrava "nenhum destino" e DESLIGAVA o Alertmanager — o oposto
-# exato do que o modo de atualização promete, e em silêncio: o container
-# existente continua de pé, porque um profile inativo só impede recriar. O
-# operador só descobriria no próximo incidente que não notificou.
+# Destino de alerta (segredo) vive no .env do monitoring, não no .setup-state.
+# Herdar no --update evita desligar o Alertmanager em silêncio.
 herdar_destino_de_alerta() {
     local env_mon="$WORKDIR/services/monitoring/.env"
     [[ -f "$env_mon" ]] || return 0
@@ -999,15 +795,8 @@ metrics_budget_gb() {
     printf '%d' "$base"
 }
 
-# A chave de métricas do Meilisearch é lida pelo PROCESSO do Prometheus, que na
-# imagem oficial roda como `nobody` (65534) — não como root. Um `chmod 600` com
-# dono root deixa o arquivo ilegível para ele, e o sintoma é silencioso: o
-# container sobe saudável e só o job do Meilisearch fica `down` para sempre, com
-# "permission denied" enterrado no /api/v1/targets.
-#
-# `chown` + `600` mantém o segredo fora do alcance dos outros usuários do host,
-# que é o ponto do 600. No macOS não há uid 65534 e o script roda sem root: lá o
-# bind mount não propaga dono, então o chown é dispensável.
+# Prometheus roda como nobody (65534): chown+600 para a chave do Meilisearch.
+# No macOS (sem uid 65534 / sem root) o chown é dispensável.
 PROMETHEUS_UID=65534
 protect_metrics_key() {
     local f="$1"
@@ -1021,11 +810,7 @@ protect_metrics_key() {
 fetch_profile() {
     local svc="$1" prof; prof="$(service_profile "$svc")"
 
-    # Serviço SEM perfil não é erro — é o caso do PgBouncer, dimensionado por
-    # `default_pool_size` e `max_client_conn`, que são decisão da aplicação e
-    # não do host. Sem esta guarda, `write_env_files` pedia
-    # `pgbouncer/profiles/.env`, levava 404 e matava o provisionamento inteiro —
-    # incluindo o `--add-service pgbouncer` que o README manda rodar.
+    # Sem perfil (ex.: PgBouncer) não é erro — não pedir profiles/.env.
     [[ -z "$prof" ]] && return 0
 
     if [[ -n "$PROFILES_DIR" ]]; then
@@ -1047,18 +832,10 @@ validate_and_prompt() {
 
     [[ "$DRY_RUN" == "true" ]] && warn "modo --dry-run: nada será alterado"
 
-    # O estado herdado precisa estar carregado ANTES de qualquer coisa ler
-    # SERVICES_INPUT — e a primeira leitura é logo abaixo, onde ele vira o
-    # array SERVICES. Ficava em `preflight()`, que roda DEPOIS: o `--add-service`
-    # acrescentava o serviço à string e ninguém mais olhava para a string, então
-    # o serviço novo simplesmente não era provisionado. Os perfis herdados
-    # (MEILI_PROFILE e afins) chegavam igualmente tarde para o dimensionamento.
+    # load_state ANTES de montar SERVICES: --add-service e perfis herdados dependem disso.
     load_state
 
-    # `--update` e `--add-service` são não-interativos por definição: existem
-    # justamente para NÃO perguntar de novo o que já está no .setup-state.
-    # Sem isto, cada `ask` tentava ler /dev/tty e falhava numa sessão SSH sem
-    # TTY, imprimindo erro por pergunta.
+    # --update/--add-service: não-interativo (sem ask em SSH sem TTY).
     if [[ "$UPDATE_MODE" == "true" && "$AUTO" != "true" ]]; then
         AUTO="true"
     fi
@@ -1074,11 +851,7 @@ validate_and_prompt() {
     for s in "${SERVICES[@]}"; do
         case "$s" in
             postgres|redis|meilisearch|opensearch|pgbouncer) ;;
-            # `monitoring` em --services provisiona um host SÓ de
-            # observabilidade — o desenho que este roadmap adota (Prometheus no
-            # bdh-apps, dados no bdh-data). Ele não entra no array SERVICES
-            # (ver logo abaixo): tem layout próprio, não tem volume de dados de
-            # serviço e o gerador de override de bind assumiria um.
+            # --services monitoring: host só de observabilidade (fora do array SERVICES).
             monitoring)
                 METRICS_ENABLED="true"
                 MONITORING_ENABLED="true"
@@ -1087,8 +860,8 @@ validate_and_prompt() {
             *) die "serviço desconhecido: '$s' (use postgres, redis, meilisearch, opensearch, pgbouncer ou monitoring)" ;;
         esac
     done
-    # `monitoring` sai do array: ele é provisionado por setup_metrics(), não
-    # pelo laço de serviços de dados.
+    # `monitoring` sai do array SERVICES em validate_and_prompt: é provisionado
+    # por setup_metrics(), não pelo laço de serviços de dados.
     if [[ "$SOMENTE_MONITORING" == "true" ]]; then
         local restantes=()
         for s in "${SERVICES[@]}"; do
@@ -1104,11 +877,7 @@ validate_and_prompt() {
     fi
 
     # --- dimensionamento coordenado ------------------------------------------
-    # Os VIZINHOS são resolvidos primeiro e o Postgres fica com a memória que
-    # sobra — a fórmula de reserva de postgres/docs/perfis.md aplicada
-    # automaticamente. Antes o Postgres era dimensionado pela RAM total e
-    # ignorava os vizinhos: numa VPS de 32 GB o --auto entregava dedicada-32gb
-    # (limite 28G) + Redis 1G + Meili 1G, sem margem para o SO.
+    # Vizinhos primeiro; Postgres fica com a memória que sobra (docs/perfis.md).
     local mem_gb neighbors_gb=0
     mem_gb="$(available_mem_gb)"
 
@@ -1142,17 +911,7 @@ validate_and_prompt() {
         neighbors_gb=$(( neighbors_gb + $(neighbor_budget_gb "$MEILI_PROFILE") ))
     fi
 
-    # O OpenSearch entrou no catálogo sem entrar nesta conta. O efeito: num host
-    # que já roda Postgres e Meilisearch, `--add-service opensearch` reportava
-    # "vizinhos 7 GB" ignorando os 8 GiB do motor de busca, e o `auto` do
-    # Postgres escolhia um perfil que não cabe. O erro apareceria como OOM-kill,
-    # semanas depois — exatamente o que o comentário de `neighbor_budget_gb`
-    # dizia que esta linha existia para evitar. Faltava a linha.
-    #
-    # Não há `ask` de perfil aqui porque só existe um: o dimensionamento do
-    # OpenSearch não é função da RAM do host, é a reserva de page cache para o
-    # mmap do Lucene. A validação existe para o caso de alguém definir
-    # OPENSEARCH_PROFILE à mão com um valor que não existe.
+    # Incluir OpenSearch no orçamento dos vizinhos. Sem ask: um perfil (page cache Lucene).
     if service_selected opensearch; then
         [[ "$OPENSEARCH_PROFILE" == "auto" ]] && OPENSEARCH_PROFILE="$(detect_opensearch_profile)"
         profile_valid "$OPENSEARCH_PROFILE" "$OPENSEARCH_PROFILES" \
@@ -1172,19 +931,8 @@ validate_and_prompt() {
         profile_valid "$PG_PROFILE" "$PG_PROFILES" \
             || die "perfil inválido: $PG_PROFILE (use: auto $PG_PROFILES)"
 
-        # Um perfil maior do que a memória disponível não sobe: o Postgres falha
-        # com "could not map anonymous shared memory" e fica em restart loop.
-        # Melhor falhar aqui, com a razão explícita.
-        #
-        # O QUE PRECISA CABER É O LIMITE DO CONTAINER, e não o número do nome do
-        # perfil. `dedicada-32gb` limita o container a 28G — os 87% que
-        # docs/perfis.md prescreve —, e portanto cabe numa máquina de 30 GiB.
-        # Comparar o nome (32) com a RAM (30) recusava um perfil que subiria bem.
-        #
-        # Não era teórico: numa máquina DEDICADA reportando 28, 29, 30 ou 56 GiB
-        # — tamanhos nominais comuns de 32 e 64 GB — o próprio `--auto` escolhia
-        # um perfil e em seguida se matava por causa dele, sugerindo como
-        # correção o MESMO perfil que acabara de recusar.
+        # Recusar perfil cujo LIMITE de container > RAM disponível.
+        # Comparar o limite (ex.: 28G), não o número do nome (32).
         local budget limite_gb
         budget="$(profile_budget_gb "$PG_PROFILE")"
         limite_gb=$(( budget * 87 / 100 ))
@@ -1199,22 +947,9 @@ validate_and_prompt() {
             warn "perfil $PG_PROFILE acima da memória disponível (${mem_gb} GB) — seguindo por --allow-oversized-profile"
         fi
 
-        # O CASO INVERSO, que passava em silêncio: a máquina comporta bem mais
-        # do que o perfil pressupõe. O catálogo é discreto (8/16/32/64/128) e a
-        # escolha é por faixa com piso, então um host de 48 GB recebe o perfil de
-        # 32 e ~19 GiB ficam fora do limite do container.
-        #
-        # Isso NÃO é desperdício — a memória vira page cache, que é o ativo pelo
-        # qual se paga uma máquina grande para banco. Mas `effective_cache_size`
-        # fica subdimensionado, e o planner passa a preferir seq scan onde um
-        # index scan serviria. Quem quiser o encaixe exato tem a fórmula de
-        # retrofit em docs/perfis.md; o que faltava era alguém avisar que ela se
-        # aplica.
-        #
-        # Compara contra `livre` (RAM − vizinhos) e não contra a RAM bruta: num
-        # host compartilhado a sobra é intencional, e avisar ali seria ruído.
-        # Limiar de 25% acima do orçamento — não dispara em 31/32 nem 15/16, que
-        # são máquinas nominais reportando um pouco menos.
+        # Aviso se a máquina comporta bem mais que o perfil (page cache ok,
+        # mas effective_cache_size fica baixo). Limiar 25% acima do orçamento;
+        # compara contra livre (RAM − vizinhos). Ver docs/perfis.md.
         local livre_final=$(( mem_gb - neighbors_gb ))
         if (( livre_final >= budget + budget / 4 )); then
             local cabe; cabe="$(maior_perfil_que_cabe "$livre_final")"
@@ -1229,18 +964,8 @@ validate_and_prompt() {
             warn "  fica subdimensionado. Fórmula: postgres/docs/perfis.md, seção Retrofit."
         fi
 
-        # A soma total ainda pode não caber: dedicada-8gb é o piso do catálogo,
-        # então numa máquina pequena com todos os serviços não há perfil menor
-        # para escolher.
-        #
-        # A conta usa o LIMITE DO CONTAINER, e não o número do nome do perfil —
-        # a mesma correção que a checagem de recusa acima já tinha recebido, e
-        # que faltava aqui. `dedicada-32gb` limita o container a 27 GB, então
-        # numa máquina dedicada de 32 GB nominais (30 GiB reportados) mais 1 GB
-        # de exporters a soma É 28 e CABE. Comparando o nome, o script avisava
-        # "orçamento apertado, reduza os serviços ou aumente a máquina" no caso
-        # que ele próprio acabara de escolher como ideal — e o operador, lendo
-        # isso num provisionamento novo, procura um problema que não existe.
+        # A soma total ainda pode não caber: dedicada-8gb é o piso do catálogo.
+        # Conta = limite do container, não o número do nome do perfil.
         if (( limite_gb + neighbors_gb > mem_gb )); then
             warn "orçamento apertado: $PG_PROFILE (limite do container ~${limite_gb} GB) + vizinhos (~${neighbors_gb} GB)"
             warn "passam dos ${mem_gb} GB disponíveis ao Docker."
@@ -1276,15 +1001,9 @@ validate_and_prompt() {
         die "--meilisearch-key precisa de no mínimo 16 bytes (MEILI_ENV=production)"
     fi
 
-    # PgBouncer num host SEM Postgres é o desenho normal desta operação (o
-    # pooler vive junto da aplicação). Nesse caso o script não tem como
-    # descobrir nem o endereço nem a senha do banco: sem as duas flags, o
-    # pooler subiria apontando para o gateway local e falharia a autenticação —
-    # e o sintoma chegaria como "aplicação não conecta", longe daqui.
+    # Pooler sem Postgres local: exige flags de host/senha do banco remoto.
     if service_selected pgbouncer && ! service_selected postgres; then
-        # Numa reexecução a senha já está no disco — exigi-la de novo tornaria
-        # `--update` impossível neste host, que é justamente o que ele existe
-        # para evitar. Ela vive no .env do pooler e no credentials.env.
+        # Reexecução: senha já no .env/credentials — não exigir de novo.
         local tem_senha="false"
         [[ -n "$POSTGRES_PASSWORD" ]] && tem_senha="true"
         grep -q '^PGB_PASSWORD=' "$WORKDIR/secrets/credentials.env" 2>/dev/null && tem_senha="true"
@@ -1296,22 +1015,17 @@ validate_and_prompt() {
     fi
 
     if [[ "$METRICS_ENABLED" == "true" ]]; then
-        # O perfil de métricas já foi resolvido e validado no bloco de
-        # dimensionamento acima, junto com os demais vizinhos.
+        # Perfil de métricas já resolvido no dimensionamento acima.
 
-        # O destino de uma instalação anterior vale como se tivesse sido
-        # passado agora — é o que impede que um --update desligue o alerta.
+        # Herdar destino de alerta anterior (impede --update de desligar).
         herdar_destino_de_alerta
 
-        # `--metrics-publish 0.0.0.0` entregaria os internos do banco para a
-        # internet. O overlay recusa isso no compose; falhar aqui é mais cedo e
-        # mais claro.
+        # --metrics-publish nunca 0.0.0.0 (exporter entrega internos do banco).
         case "$METRICS_PUBLISH_IP" in
             0.0.0.0|"::"|"*") die "--metrics-publish exige uma interface específica (use a privada), nunca 0.0.0.0" ;;
         esac
 
-        # O container morre no start com uma mensagem clara se o par estiver
-        # incompleto; falhar aqui evita descobrir isso num restart loop.
+        # Validar par e-mail/SMTP aqui (evita restart loop no start).
         if [[ -n "$ALERT_EMAIL_TO" ]]; then
             [[ -n "$ALERT_SMTP_HOST" ]] || die "--alert-email-to exige --alert-smtp-host (host:porta)"
             [[ -n "$ALERT_EMAIL_FROM" ]] || die "--alert-email-to exige --alert-email-from"
@@ -1323,8 +1037,7 @@ validate_and_prompt() {
             warn "    bash setup.sh --update --alert-slack-webhook https://hooks.slack.com/..."
         fi
 
-        # No macOS o node exporter e o cAdvisor leem o /proc da VM do Docker, não
-        # do Mac — e o kernel da VM nem traz CONFIG_PSI. Ver monitoring/README.md.
+        # macOS: node/cAdvisor medem a VM, não o host.
         if [[ "$OS_FAMILY" == "macos" ]]; then
             info "macOS: node exporter e cAdvisor ficam desligados (medem a VM, não o host)"
         fi
@@ -1350,19 +1063,8 @@ validate_and_prompt() {
 # =============================================================================
 # Estado da instalação
 # =============================================================================
-# Lê o `.setup-state` e preenche o que NÃO foi passado por flag.
-#
-# A regra é uma só, e é ela que torna o modo de atualização seguro:
-#
-#     flag explícita SOBRESCREVE · ausência HERDA do estado
-#
-# Sem isso, ligar observabilidade num host que já tem Postgres significava
-# rodar o main() com os defaults de fábrica: POSTGRES_DB voltando para "dados"
-# (o `.env` muda → o BANCO é recriado, e a DSN do exporter aponta para um
-# database inexistente), BIND_IP para 0.0.0.0 (recriado E reexposto) e
-# ALLOW_FROM para vazio (a chain DOCKER-USER esvaziada). Está documentado como
-# risco imediato em 05 §5.1, e o contorno era repetir TODAS as flags da
-# instalação original de cor.
+# Lê `.setup-state` e preenche o que NÃO veio por flag.
+# Regra: flag explícita sobrescreve; ausência herda do estado.
 load_state() {
     local arquivo="$WORKDIR/.setup-state"
     [[ -f "$arquivo" ]] || return 0
@@ -1400,10 +1102,7 @@ load_state() {
         esac
     done < "$arquivo"
 
-    # `--add-service` acrescenta ao conjunto herdado em vez de substituí-lo. É a
-    # diferença entre "agora este host tem também OpenSearch" e "agora este host
-    # tem SÓ OpenSearch" — e a segunda leitura removeria os outros serviços do
-    # conjunto gerenciado, com `--remove-orphans` levando os containers junto.
+    # --add-service: une ao conjunto herdado (não substitui).
     if [[ -n "$ADD_SERVICE" ]]; then
         case ",$SERVICES_INPUT," in
             *",$ADD_SERVICE,"*) info "$ADD_SERVICE já está instalado" ;;
@@ -1452,10 +1151,7 @@ preflight() {
         die "sem permissão para criar $WORKDIR — rode com sudo ou escolha outro --workdir"
     fi
 
-    # `load_state` já rodou no início de validate_and_prompt(). Chamá-lo aqui
-    # de novo seria inócuo (é idempotente) mas enganoso: sugeriria que este é o
-    # ponto em que a herança acontece, e não é — quando o fluxo chega aqui, o
-    # array SERVICES já foi construído.
+    # load_state já rodou em validate_and_prompt(); não chamar de novo aqui.
 
     if [[ -f "$WORKDIR/.setup-state" && "$FORCE" != "true" ]]; then
         die "instalação existente em $WORKDIR — use --update para reaplicar a configuração herdando o estado, ou -f para refazer do zero (volumes preservados)"
@@ -1478,9 +1174,7 @@ setup_system() {
     section "Sistema"
 
     if [[ "$OS_FAMILY" == "macos" ]]; then
-        # No macOS o script não atualiza o sistema nem instala pacotes: quem
-        # cuida disso é o próprio usuário (App Store/brew). Só confere as
-        # ferramentas que ele usa.
+        # macOS: não atualiza o SO; só confere curl/openssl.
         local missing=""
         local tool
         for tool in curl openssl; do
@@ -1522,15 +1216,8 @@ setup_system() {
 # =============================================================================
 # Parâmetros de kernel
 # =============================================================================
-# O `setup.sh` não tinha etapa de sysctl até este roadmap (05 §5.2, item
-# 5), e o OpenSearch não sobe sem uma: com `vm.max_map_count` no default do
-# Debian (65530), o container morre no bootstrap check com uma mensagem que fala
-# de `vm.max_map_count` e NÃO de OpenSearch — e quem lê procura o problema no
-# lugar errado.
-#
-# A persistência em /etc/sysctl.d/ é a metade que costuma faltar: sem ela, o
-# valor volta no próximo boot e o motor de busca não sobe junto com o host, o
-# que transforma um reboot de rotina em incidente.
+# OpenSearch exige vm.max_map_count ≥ 262144 (default Debian: 65530).
+# Persistir em /etc/sysctl.d/ — sem isso o valor volta no reboot.
 configure_sysctl() {
     [[ "$OS_FAMILY" == "linux" ]] || return 0
 
@@ -1549,12 +1236,7 @@ configure_sysctl() {
     local atual
     atual="$(sysctl -n vm.max_map_count 2>/dev/null || printf '0')"
 
-    # NUNCA rebaixar. `vm.max_map_count` é global, e um valor MAIOR que o nosso
-    # mínimo foi posto ali por alguém — outro serviço, o instalador do Docker,
-    # uma política da imagem da nuvem. Persistir o nosso por cima rebaixaria no
-    # próximo boot algo que não é nosso, e o sintoma apareceria noutro serviço,
-    # dias depois. Numa máquina real este caso não é hipotético: encontrada com
-    # 1048576, quatro vezes o que o OpenSearch exige.
+    # Nunca rebaixar: valor maior no host pode ser de outro serviço.
     local alvo="$VM_MAX_MAP_COUNT"
     [[ "$atual" -gt "$alvo" ]] && alvo="$atual"
 
@@ -1586,22 +1268,8 @@ configure_sysctl() {
     ok "persistido em ${arquivo}: ${alvo}"
 }
 
-# `vm.overcommit_memory=1`, exigido pelo Redis.
-#
-# O próprio Redis avisa no boot quando encontra outro valor:
-#
-#   WARNING Memory overcommit must be enabled! Without it, a background save
-#   or replication may fail under low memory condition.
-#
-# BGSAVE e rewrite do AOF fazem `fork()`. Com o overcommit heurístico (0), o
-# kernel decide olhando o tamanho VIRTUAL do pai — e pode recusar o fork de um
-# Redis de vários GB mesmo com memória de sobra, porque não tem como saber que
-# o filho vai tocar quase nada (o copy-on-write medido em produção foi de
-# 4,7 MB). O resultado é snapshot que não acontece e, sem snapshot, um restart
-# volta com o cache vazio.
-#
-# Arquivo próprio, e não o 99-brasildatahub.conf: aquele é reescrito inteiro
-# pela etapa do OpenSearch, e os dois serviços são selecionáveis em separado.
+# vm.overcommit_memory=1 (Redis): BGSAVE/AOF precisam de fork(); overcommit 0
+# pode recusar o fork pelo tamanho virtual. Arquivo próprio (não 99-brasildatahub).
 configure_overcommit() {
     service_selected redis || return 0
 
@@ -1630,15 +1298,8 @@ configure_overcommit() {
     ok "persistido em ${arquivo}"
 }
 
-# Transparent Huge Pages desligado, também exigido pelo Redis.
-#
-# Não é sysctl — vive em /sys, que o sysctl.d não cobre. Por isso uma unit
-# oneshot, com `Before=docker.service` para valer antes de qualquer container
-# subir e `WantedBy=basic.target` para valer também depois de um reboot.
-#
-# Com THP em `always` o kernel entrega páginas de 2 MB. No fork do snapshot,
-# escrever 1 byte copia 2 MB em vez de 4 KB: o processo incha muito além do
-# dataset e a latência sobe em pico, exatamente quando não se quer.
+# THP off (Redis): não é sysctl — unit oneshot Before=docker.service.
+# Com THP always, fork do snapshot copia páginas de 2 MB.
 configure_thp() {
     service_selected redis || return 0
 
@@ -1798,10 +1459,7 @@ create_layout() {
         ok "$s: compose em $dir"
     done
 
-    # --- observabilidade ------------------------------------------------------
-    # Os overlays de métricas ficam NO diretório do serviço que observam, e são
-    # carregados com um -f extra (ver start_services). O compose de produção de
-    # cada serviço não é tocado.
+    # Overlays de métricas no dir do serviço; -f extra em start_services.
     if [[ "$METRICS_ENABLED" == "true" ]]; then
         for s in "${SERVICES[@]}"; do
             # Serviço sem exporter não tem overlay para baixar — e pedi-lo
@@ -1819,9 +1477,7 @@ create_layout() {
             ok "$s: overlay de métricas"
         done
 
-        # O 03-role-metrics.sh vem para o host porque num cluster JÁ inicializado
-        # o initdb não roda de novo — e a imagem em uso pode ser anterior a este
-        # arquivo. O setup o alimenta por stdin (ver ensure_metrics_role).
+        # 03-role-metrics.sh no host: cluster já init não roda initdb de novo.
         if service_selected postgres && [[ "$DRY_RUN" != "true" ]]; then
             curl -fsSL "${RAW_BASE}/postgres/initdb/03-role-metrics.sh" \
                 -o "$(service_dir postgres)/03-role-metrics.sh" \
@@ -1833,10 +1489,7 @@ create_layout() {
                 || die "falha ao baixar metrics-key.sh"
         fi
 
-        # --- coleta remota: publicar as portas dos exporters -------------------
-        # Só aqui a regra "exporter não publica porta" é excepcionada, e de
-        # forma explícita: o overlay é um arquivo à parte, exige uma interface
-        # sem default e a proteção passa a ser o firewall.
+        # Coleta remota: overlay publica exporters; proteção = firewall.
         if [[ -n "$METRICS_PUBLISH_IP" && "$DRY_RUN" != "true" ]]; then
             for s in "${SERVICES[@]}"; do
                 tem_overlay_metrics "$s" || continue
@@ -1846,10 +1499,7 @@ create_layout() {
                     || die "falha ao baixar ${RAW_BASE}/${s}/docker-compose.metrics-remote.yml"
                 ok "$s: exporter publicado em ${METRICS_PUBLISH_IP}"
             done
-            # O node exporter mede o HOST (CPU, disco, PSI) e vive no projeto
-            # `monitoring`. Num host observado ele é o único componente daquele
-            # projeto que sobe — sem ele, o Prometheus remoto enxergaria os
-            # bancos e nada da máquina onde eles rodam.
+            # node_exporter no projeto monitoring (só ele sobe no host observado).
             dir="$(service_dir monitoring)"
             run mkdir -p "$dir/targets" "$dir/secrets"
             curl -fsSL "${RAW_BASE}/monitoring/docker-compose.yml" -o "$dir/docker-compose.yml" \
@@ -1861,9 +1511,7 @@ create_layout() {
             ok "monitoring: node exporter para coleta remota"
         fi
 
-        # `monitoring` fica FORA do array SERVICES de propósito: ele tem DOIS
-        # volumes, e o laço do modo bind abaixo (que chama service_volume_key)
-        # geraria um override com YAML quebrado. Por isso é tratado à parte aqui.
+        # monitoring fora de SERVICES: dois volumes; laço bind quebraria o YAML.
         if [[ "$MONITORING_ENABLED" == "true" ]]; then
             dir="$(service_dir monitoring)"
             run mkdir -p "$dir/targets" "$dir/secrets"
@@ -1873,9 +1521,7 @@ create_layout() {
                     || die "falha ao baixar ${RAW_BASE}/monitoring/docker-compose.yml"
                 grep -q 'ghcr.io/brasildatahub' "$dir/docker-compose.yml" \
                     || die "conteúdo inesperado em $dir/docker-compose.yml (ref '$REF' existe?)"
-                # O Prometheus recusa a config INTEIRA se o credentials_file do
-                # job do Meilisearch não existir. Sem este arquivo, um host sem
-                # Meilisearch ficaria sem monitoração nenhuma.
+                # credentials_file do Meili deve existir (senão Prometheus recusa tudo).
                 touch "$dir/secrets/meili-metrics.key"
                 protect_metrics_key "$dir/secrets/meili-metrics.key"
             fi
@@ -1923,11 +1569,7 @@ write_env_files() {
         warn "credenciais existentes preservadas ($prev)"
     fi
 
-    # Host de APLICAÇÃO (pooler sem banco local): a senha do banco remoto chega
-    # por flag na primeira execução e precisa sobreviver às seguintes. Gerar uma
-    # aleatória aqui — o que a linha abaixo faria — apontaria o pooler para o
-    # outro host com uma senha inventada, e o sintoma chegaria como "a aplicação
-    # parou de conectar" depois de um `--update` de rotina.
+    # Pooler sem banco local: senha remota vem por flag e deve sobreviver ao --update.
     if service_selected pgbouncer && ! service_selected postgres && [[ -z "$POSTGRES_PASSWORD" ]]; then
         POSTGRES_PASSWORD="${PGB_PASSWORD:-}"
         if [[ -z "$POSTGRES_PASSWORD" ]]; then
@@ -1945,21 +1587,7 @@ write_env_files() {
     [[ -z "$GRAFANA_ADMIN_PASSWORD" ]] && GRAFANA_ADMIN_PASSWORD="$(gen_secret)"
 
     # --- teto de CPU do OpenSearch --------------------------------------------
-    # O Docker RECUSA criar o container quando `cpus` é maior que a máquina:
-    #
-    #   Error response from daemon: range of CPUs is from 0.01 to 4.00,
-    #   as there are only 4 CPUs available
-    #
-    # O perfil `compartilhada-8gb` traz OS_CPU_LIMIT=6 porque foi dimensionado
-    # para um host de 12 vCPU dividido com o Postgres. Num host DEDICADO ao
-    # motor de busca — que é o desenho distribuído —, a máquina certa para 8 GiB
-    # de limite tem 4 vCPU, e ali o perfil simplesmente não sobe. O erro fala de
-    # "CPUs available" e não de perfil, então quem lê procura no lugar errado.
-    #
-    # Rebaixar o teto é seguro e preserva a intenção: ele existe para impedir
-    # que um merge de 6 shards consuma a máquina inteira, e numa máquina de 4
-    # vCPU o teto de 4 é o mesmo que "toda a máquina" — a proteção volta a valer
-    # sozinha assim que o host crescer.
+    # Docker recusa cpus > CPUs da máquina. Rebaixa o teto do perfil se necessário.
     local os_cpu_ajustado=""
     if service_selected opensearch && [[ "$DRY_RUN" != "true" ]]; then
         local vcpus teto_perfil
@@ -1984,9 +1612,7 @@ write_env_files() {
         info "pgbouncer aponta para ${PGBOUNCER_DB_HOST}:${PGBOUNCER_DB_PORT:-$POSTGRES_PORT}"
     fi
 
-    # O perfil de métricas é baixado uma vez e reusado: os limites dos exporters
-    # vivem nele, e vão para o .env de cada serviço. Fonte única, como nos demais
-    # perfis do repositório.
+    # Perfil de métricas baixado uma vez; limites dos exporters vão ao .env de cada serviço.
     local profile_metrics=""
     if [[ "$METRICS_ENABLED" == "true" && "$DRY_RUN" != "true" ]]; then
         profile_metrics="$WORKDIR/services/.metrics-profile.env"
@@ -1998,19 +1624,8 @@ write_env_files() {
         env_file="$dir/.env"
         [[ "$DRY_RUN" == "true" ]] && { _log "    ${C_DIM}[dry-run] escreveria $env_file a partir de $s/profiles/$(service_profile "$s").env${C_RESET}"; continue; }
 
-        # AS VARIÁVEIS DO BACKUP SOBREVIVEM À REESCRITA DO .env.
-        #
-        # `PGBACKREST_STANZA` e `BDH_BACKUP_REPO_DIR` não são geradas por este
-        # script — quem as escreve é o operador, seguindo backup/README.md. Como
-        # o `.env` é REGERADO do perfil a cada execução, um `--update` as
-        # apagava, e os dois overlays de backup usam `${VAR:?}`: o `up` seguinte
-        # falhava com "defina PGBACKREST_STANZA" e o banco ficava fora do ar até
-        # alguém reescrever as linhas à mão.
-        #
-        # Preservar é a única opção correta: o script não tem como recalcular o
-        # caminho do repositório nem o nome da stanza, e adivinhar um default
-        # aqui faria o backup rodar para o lugar errado — que é pior do que não
-        # rodar.
+        # Preservar PGBACKREST_* / BDH_BACKUP_* no .env (operador as escreve;
+        # regenerar o perfil apagaria e o up falharia com ${VAR:?}).
         local -a preservadas=()
         if [[ -f "$env_file" ]]; then
             local linha_pres
@@ -2019,9 +1634,7 @@ write_env_files() {
             done < <(grep -E '^(PGBACKREST_[A-Z_]+|BDH_BACKUP_[A-Z_]+)=' "$env_file" 2>/dev/null || true)
         fi
 
-        # O .env é o arquivo do perfil (baixado do repositório, íntegro) mais o
-        # que só o deploy sabe: senhas e rede. Mesma origem que a documentação
-        # manda copiar num deploy manual.
+        # .env = perfil + senhas/binds locais (perfil versionado não leva segredo).
         {
             fetch_profile "$s"
             printf '\n# --- deploy (gerado por setup.sh em %s) ---\n' "$(now_iso)"
@@ -2040,23 +1653,15 @@ write_env_files() {
                 printf 'MEILI_MASTER_KEY=%s\n' "$MEILI_MASTER_KEY"
                 printf 'BIND_IP=%s\nMEILI_PORT=%s\n' "$BIND_IP" "$MEILI_PORT"
                 ;;
-            # O OpenSearch não tinha bloco, e a ausência ERA um defeito de
-            # exposição: sem BIND_IP no .env, o compose caía no default
-            # `0.0.0.0` e publicava na internet o único serviço da stack que
-            # não tem autenticação nenhuma — mesmo num provisionamento feito
-            # com `--bind-ip 10.0.0.5` justamente para evitar isso.
+            # BIND_IP no .env do OpenSearch (sem auth; default 0.0.0.0 seria exposição).
             opensearch)
                 printf 'BIND_IP=%s\nOPENSEARCH_PORT=%s\n' "$BIND_IP" "$OPENSEARCH_PORT"
-                # Vem DEPOIS do perfil de propósito: numa lista de env_file a
-                # última definição vence, então esta linha rebaixa o teto sem
-                # editar o arquivo versionado.
+                # Depois do perfil: última env_file vence (rebaixa cpus sem editar perfil).
                 if [[ -n "$os_cpu_ajustado" ]]; then
                     printf 'OS_CPU_LIMIT=%s\n' "$os_cpu_ajustado"
                 fi
                 ;;
-            # Sem este bloco o PgBouncer NÃO SUBIA: as quatro PGB_* do compose
-            # são `${VAR:?}`, então o `up` falhava com "defina PGB_DB_HOST" —
-            # inclusive no `--add-service pgbouncer` que o README manda rodar.
+            # PGB_* obrigatórias no .env (`${VAR:?}` no compose).
             pgbouncer)
                 printf 'PGB_DB_HOST=%s\n' "$PGBOUNCER_DB_HOST"
                 printf 'PGB_DB_PORT=%s\n' "${PGBOUNCER_DB_PORT:-$POSTGRES_PORT}"
@@ -2082,12 +1687,7 @@ write_env_files() {
             ok "$s: .env gerado (sem perfil de máquina)"
         fi
 
-        # A senha do exporter do Postgres vai num arquivo SEPARADO, e isso é
-        # deliberado: `env_file` faz parte da definição do serviço, então
-        # acrescentar qualquer variável ao .env mudaria o hash de configuração e
-        # o Compose RECRIARIA o container do banco. Medido, não suposto.
-        # Só o postgres precisa disso — o redis_exporter reusa a REDIS_PASSWORD
-        # que já está no .env, sem acrescentar nada.
+        # Senha do exporter em arquivo separado: mudar .env recria o Postgres.
         if [[ "$METRICS_ENABLED" == "true" && "$s" == "postgres" ]]; then
             {
                 printf '# Credencial do postgres_exporter — gerado por setup.sh em %s.\n' "$(now_iso)"
@@ -2100,12 +1700,7 @@ write_env_files() {
         fi
     done
 
-    # A interface dos exporters vai num arquivo PRÓPRIO, e não no .env de cada
-    # serviço, pela mesma razão do .env.metrics: `env_file` faz parte da
-    # definição do serviço, então acrescentar METRICS_BIND_IP ao .env do
-    # Postgres mudaria o hash de configuração e o Compose RECRIARIA o banco —
-    # um restart de centenas de GB só para ligar coleta remota. Este arquivo é
-    # lido como ambiente pelo setup e pelo `bdh` antes do docker compose.
+    # METRICS_BIND_IP em arquivo próprio (não no .env do serviço — evita recreate).
     if [[ -n "$METRICS_PUBLISH_IP" && "$DRY_RUN" != "true" ]]; then
         {
             printf '# Gerado por setup.sh — interface de publicação dos exporters.\n'
@@ -2115,11 +1710,7 @@ write_env_files() {
         chmod 600 "$WORKDIR/.metrics-remote.env"
         ok "coleta remota: exporters em ${METRICS_PUBLISH_IP}"
 
-        # O .env do projeto `monitoring` é necessário mesmo quando só o node
-        # exporter sobe aqui: o Compose interpola o arquivo INTEIRO antes de
-        # decidir o que subir, e `GRAFANA_ADMIN_PASSWORD` é `${VAR:?}`. Sem
-        # este bloco, `up node-exporter` falhava com um erro sobre o Grafana —
-        # num host que não roda Grafana nenhum.
+        # .env do monitoring necessário mesmo só com node-exporter (Compose interpola tudo).
         dir="$(service_dir monitoring)"
         {
             cat "$profile_metrics"
@@ -2137,10 +1728,8 @@ write_env_files() {
     fi
 
     if [[ "$METRICS_ENABLED" == "true" && "$MONITORING_ENABLED" == "true" && "$DRY_RUN" != "true" ]]; then
-        # COMPOSE_PROFILES é do Compose e NÃO é "perfil" no sentido deste
-        # repositório: define quais coletores existem, não o dimensionamento.
-        # node/cadvisor só em Linux — no macOS mediriam a VM do Docker, e o
-        # kernel dela nem traz CONFIG_PSI (ver monitoring/README.md).
+        # COMPOSE_PROFILES = coletores Compose, não dimensionamento.
+        # node/cadvisor só em Linux (macOS mediria a VM).
         local compose_profiles=""
         if [[ "$OS_FAMILY" == "linux" ]]; then
             compose_profiles="node"
@@ -2158,9 +1747,7 @@ write_env_files() {
             printf 'METRICS_NETWORK=%s\n' "$METRICS_NETWORK"
             printf 'GRAFANA_ROOT_URL=http://localhost:%s\n' "$GRAFANA_PORT"
             printf 'COMPOSE_PROFILES=%s\n' "$compose_profiles"
-            # Só as que foram informadas: uma variável vazia aqui é indistinguível
-            # de "não configurada" para o generate-config.sh, mas escrever todas
-            # deixaria o .env sugerindo que há e-mail configurado quando não há.
+            # Só vars informadas: vazio ≠ "não configurada" para generate-config.sh.
             [[ -n "$ALERT_SLACK_WEBHOOK" ]] && printf 'ALERTMANAGER_SLACK_WEBHOOK=%s\n' "$ALERT_SLACK_WEBHOOK"
             [[ -n "$ALERT_SLACK_CHANNEL" ]] && printf 'ALERTMANAGER_SLACK_CHANNEL=%s\n' "$ALERT_SLACK_CHANNEL"
             [[ -n "$ALERT_WEBHOOK_URL" ]]   && printf 'ALERTMANAGER_WEBHOOK_URL=%s\n' "$ALERT_WEBHOOK_URL"
@@ -2204,9 +1791,7 @@ write_env_files() {
             fi
             if [[ "$METRICS_ENABLED" == "true" ]]; then
                 printf '\n# --- observabilidade ---\n'
-                # Credenciais de MENOR privilégio, não cópias das de cima:
-                # metrics_read só lê estatísticas (pg_monitor), e a chave do
-                # Meilisearch só serve para /metrics.
+                # Credenciais de menor privilégio (metrics_read / chave /metrics).
                 printf 'PG_METRICS_PASSWORD=%s\n' "$PG_METRICS_PASSWORD"
                 if [[ "$MONITORING_ENABLED" == "true" ]]; then
                     printf 'GRAFANA_ADMIN_PASSWORD=%s\nGRAFANA_PORT=%s\nPROMETHEUS_PORT=%s\n' \
@@ -2215,13 +1800,7 @@ write_env_files() {
             fi
         } > "$WORKDIR/secrets/credentials.env.novo"
 
-        # MERGE, e não sobrescrita. O arquivo era reescrito com as credenciais
-        # apenas dos serviços DESTA execução: um `--add-service opensearch` num
-        # host que já tinha Postgres e Redis truncava as senhas dos dois, e o
-        # operador só descobria ao precisar delas — quando `bdh creds --show`
-        # devolvesse metade do que devolvia antes.
-        #
-        # A chave da linha nova vence a antiga; o que não foi regerado sobrevive.
+        # Merge de credentials.env (não truncar senhas de serviços anteriores).
         if [[ -f "$WORKDIR/secrets/credentials.env" ]]; then
             local chaves_novas
             chaves_novas="$(grep -oE '^[A-Z][A-Z0-9_]*=' "$WORKDIR/secrets/credentials.env.novo" || true)"
@@ -2252,13 +1831,7 @@ write_env_files() {
             printf 'SCRIPT_VERSION=%s\n' "$SCRIPT_VERSION"
             printf 'REF=%s\n' "$REF"
             printf 'INSTALLED_AT=%s\n' "$(now_iso)"
-            # `monitoring` sai do array SERVICES em validate_and_prompt (ele não
-            # é serviço de dados: tem layout próprio e dois volumes), mas
-            # PRECISA voltar ao estado. Sem esta linha, um host só de
-            # observabilidade gravava `SERVICES=` vazio e a reexecução morria
-            # com "nenhum serviço selecionado" — `--update` ficava impossível
-            # exatamente no host que mais recebe ajuste depois de instalado:
-            # alvos novos, destino de alerta, retenção.
+            # monitoring fora de SERVICES, mas precisa gravar no .setup-state.
             local servicos_estado
             servicos_estado="$(IFS=,; printf '%s' "${SERVICES[*]}")"
             if [[ "$SOMENTE_MONITORING" == "true" ]]; then
@@ -2266,10 +1839,8 @@ write_env_files() {
             fi
             printf 'SERVICES=%s\n' "$servicos_estado"
             printf 'VOLUMES_MODE=%s\n' "$VOLUMES_MODE"
-            # As cinco chaves abaixo são o que faltava, e a ausência delas era o
-            # defeito: sem POSTGRES_DB, BIND_IP e ALLOW_FROM no estado, a segunda
-            # execução recriava o banco, reexpunha as portas e esvaziava o
-            # firewall — em silêncio, porque cada valor sozinho parece plausível.
+            # POSTGRES_DB, BIND_IP, ALLOW_FROM etc. no estado — sem eles a reexecução
+            # recria banco / reexpõe / esvazia firewall.
             printf 'WORKDIR=%s\n' "$WORKDIR"
             printf 'POSTGRES_DB=%s\n' "$POSTGRES_DB"
             printf 'BIND_IP=%s\n' "$BIND_IP"
@@ -2278,18 +1849,14 @@ write_env_files() {
             printf 'REDIS_PORT=%s\n' "$REDIS_PORT"
             printf 'MEILI_PORT=%s\n' "$MEILI_PORT"
             printf 'OPENSEARCH_PORT=%s\n' "$OPENSEARCH_PORT"
-            # Sem estas três no estado, um `--update` num host com PgBouncer
-            # reapontava o pooler para o default e reescrevia o .env — a
-            # aplicação continuaria conectando, no banco errado.
+            # Host/porta/bind do PgBouncer no estado — sem eles --update reescreve defaults.
             if service_selected pgbouncer; then
                 printf 'PGBOUNCER_DB_HOST=%s\n' "$PGBOUNCER_DB_HOST"
                 printf 'PGBOUNCER_BIND_IP=%s\n' "$PGBOUNCER_BIND_IP"
                 printf 'PGBOUNCER_PORT=%s\n' "$PGBOUNCER_PORT"
                 printf 'PGBOUNCER_DB_PORT=%s\n' "${PGBOUNCER_DB_PORT:-$POSTGRES_PORT}"
             fi
-            # Cada bloco num `if`: uma condição falsa como última expressão do
-            # grupo faria o `set -e` abortar o script (era o caso quando o
-            # Meilisearch não estava entre os serviços escolhidos).
+            # Cada chave num `if` próprio: sob set -e, `false && echo` abortaria.
             if service_selected postgres; then printf 'PG_PROFILE=%s\n' "$PG_PROFILE"; fi
             if service_selected redis; then printf 'REDIS_PROFILE=%s\n' "$REDIS_PROFILE"; fi
             if service_selected meilisearch; then printf 'MEILI_PROFILE=%s\n' "$MEILI_PROFILE"; fi
@@ -2298,17 +1865,9 @@ write_env_files() {
             if [[ "$METRICS_ENABLED" == "true" ]]; then
                 printf 'METRICS_PROFILE=%s\n' "$METRICS_PROFILE"
                 printf 'MONITORING_ENABLED=%s\n' "$MONITORING_ENABLED"
-                # A interface do Grafana. Sem ela no estado, o contrato de
-                # load_state ("ausência HERDA") tinha um buraco: quem publicou o
-                # painel numa interface alcançável — a VPN, a rede privada — via
-                # o PRÓXIMO `--update` devolvê-lo a 127.0.0.1, e o único aviso
-                # era o painel parar de responder. O default de fábrica é
-                # loopback justamente porque o Prometheus não tem autenticação,
-                # e é por isso que reverter em silêncio parecia inofensivo.
+                # MONITORING_BIND_IP no estado: sem herança, --update volta a loopback.
                 printf 'MONITORING_BIND_IP=%s\n' "$MONITORING_BIND_IP"
-                # Sem estas duas no estado, um `--update` num desenho
-                # distribuído despublicaria os exporters e apagaria os alvos
-                # remotos: o Prometheus do outro host perderia tudo, em silêncio.
+                # METRICS_PUBLISH_IP / METRICS_SCRAPE no estado (senão --update apaga).
                 [[ -n "$METRICS_PUBLISH_IP" ]] && printf 'METRICS_PUBLISH_IP=%s\n' "$METRICS_PUBLISH_IP"
                 [[ -n "$METRICS_SCRAPE" ]] && printf 'METRICS_SCRAPE=%s\n' "$METRICS_SCRAPE"
                 [[ -n "$HOST_LABEL" ]] && printf 'HOST_LABEL=%s\n' "$HOST_LABEL"
@@ -2321,40 +1880,20 @@ write_env_files() {
 start_services() {
     section "Subindo os serviços"
     local s dir compose_args
-    # Variável de INTERPOLAÇÃO do Compose (o overlay remoto a exige sem
-    # default). Exportada, e não escrita no .env do serviço, para não recriar o
-    # container do banco — ver write_env_files.
+    # METRICS_BIND_IP: interpolação do Compose (overlay remoto exige sem default).
     [[ -n "$METRICS_PUBLISH_IP" ]] && export METRICS_BIND_IP="$METRICS_PUBLISH_IP"
     for s in "${SERVICES[@]}"; do
         dir="$(service_dir "$s")"
         compose_args=(--project-directory "$dir" -f "$dir/docker-compose.yml")
-        # Ordem: base → metrics → remote → backup → backup-local → override. É a
-        # MESMA do `bdh` (ver a função `_compose` no heredoc do CLI), e essa
-        # igualdade não é cosmética.
-        #
-        # OS DOIS OVERLAYS DE BACKUP FALTAVAM AQUI, e o `bdh` os incluía. O
-        # resultado: qualquer `setup.sh --update` num host com backup implantado
-        # subia o Postgres com um `-f` a menos e devolvia `archive_mode` para
-        # `off`. O README já descreve esse desfecho como armadilha — "subir na
-        # mão com um `-f` a menos é como o `archive_mode` volta a off sem que
-        # nada acuse" — e era o próprio script que o fazia.
-        #
-        # Nada acusa mesmo: o container sobe saudável, o sidecar continua de pé,
-        # o `pgbackrest info` segue reportando o último backup como válido. O que
-        # some é o arquivamento contínuo — ou seja, o PITR. A perda só aparece
-        # quando alguém precisa restaurar para um ponto no tempo e descobre que
-        # não há WAL depois do último full.
-        #
-        # Verificado em 31/07/2026 num host real: um `--update` para publicar o
-        # pooler numa interface desligou o arquivamento do banco.
+        # Ordem: base → metrics → remote → backup → backup-local → override
+        # (igual ao `bdh`). Overlays de backup sempre que existirem — omitir
+        # desliga archive_mode em silêncio.
         [[ -f "$dir/docker-compose.metrics.yml" ]] && compose_args+=(-f "$dir/docker-compose.metrics.yml")
         [[ -f "$dir/docker-compose.metrics-remote.yml" ]] && compose_args+=(-f "$dir/docker-compose.metrics-remote.yml")
         [[ -f "$dir/docker-compose.backup.yml" ]] && compose_args+=(-f "$dir/docker-compose.backup.yml")
         [[ -f "$dir/docker-compose.backup-local.yml" ]] && compose_args+=(-f "$dir/docker-compose.backup-local.yml")
         [[ -f "$dir/docker-compose.override.yml" ]] && compose_args+=(-f "$dir/docker-compose.override.yml")
-        # --metrics-only acrescenta o exporter sem --force-recreate: o Compose
-        # compara a definição desejada com a atual e recria apenas o que mudou,
-        # ou seja, só o container novo. O banco não é tocado.
+        # --metrics-only: sem --force-recreate (só o exporter novo).
         if [[ "$RECREATE" == "true" && "$METRICS_ONLY" != "true" ]]; then
             run docker compose -p "$s" "${compose_args[@]}" up -d --force-recreate
         else
@@ -2380,9 +1919,7 @@ start_services() {
     done
     if (( pending == 0 )); then ok "todos os serviços saudáveis"; else warn "$pending serviço(s) ainda não saudáveis — veja 'bdh logs <serviço>'"; fi
 
-    # O initdb só roda na primeira subida em volume vazio. Se aquela subida
-    # falhou no meio (perfil grande demais, por exemplo), o cluster existe mas o
-    # database, as extensões e a role dados_read não — e nada mais vai criá-los.
+    # initdb só em volume vazio — completar database/roles se a 1ª subida falhou no meio.
     if service_selected postgres; then
         local cid
         cid="$(docker ps -q --filter "label=org.brasildatahub.service=postgres" | head -1)"
@@ -2415,9 +1952,7 @@ setup_metrics() {
         return 0
     fi
 
-    # Esta etapa é a primeira do script que depende do ESTADO DOS DADOS, e não
-    # só da máquina. Por isso nada aqui usa `die`: uma falha aqui não pode
-    # derrubar um provisionamento que já subiu os bancos com sucesso.
+    # Depende do estado dos dados: falha aqui não usa die (bancos já podem estar no ar).
 
     # --- role de leitura de estatísticas do Postgres --------------------------
     if service_selected postgres; then
@@ -2459,9 +1994,7 @@ setup_metrics() {
     if [[ -n "$METRICS_PUBLISH_IP" ]]; then
         local mdir_r; mdir_r="$(service_dir monitoring)"
         export METRICS_BIND_IP="$METRICS_PUBLISH_IP"
-        # `up node-exporter` e não `up`: deste projeto, só o node exporter roda
-        # aqui — Prometheus, Grafana e Alertmanager vivem no host de
-        # monitoração. O profile `node` é o que o compose exige para criá-lo.
+        # Só node-exporter neste host (profile node); Prometheus/Grafana alhures.
         if COMPOSE_PROFILES=node run docker compose -p monitoring \
                 --project-directory "$mdir_r" \
                 -f "$mdir_r/docker-compose.yml" \
@@ -2472,10 +2005,7 @@ setup_metrics() {
             warn "node exporter não subiu — as métricas de HOST desta máquina"
             warn "  ficarão ausentes no Prometheus remoto ('bdh logs monitoring')"
         fi
-        # O `@apelido` vai embutido porque ESTE host sabe o próprio hostname e o
-        # host do Prometheus não. Copiando e colando, o apelido bate com o
-        # `nodename` que o node_exporter publica — que é o que faz o link do
-        # dashboard abrir na máquina certa.
+        # @apelido embutido: este host conhece o hostname; o Prometheus remoto não.
         local apelido; apelido="$(host_label)"
         info "aponte o Prometheus do outro host para:"
         service_selected postgres && info "  --metrics-scrape postgres=${METRICS_PUBLISH_IP}:9187@${apelido}"
@@ -2498,17 +2028,8 @@ setup_metrics() {
     local mdir; mdir="$(service_dir monitoring)"
     run mkdir -p "$mdir/targets" "$mdir/secrets"
 
-    # Os alvos são nomes de SERVIÇO Compose: na rede compartilhada o Docker
-    # registra o nome do serviço como alias, então o endereço não depende do
-    # nome do projeto. Um arquivo por serviço instalado — serviço ausente não
-    # deixa arquivo, o glob do prometheus.yml não casa nada, e o job fica sem
-    # alvo em vez de ficar `up == 0` para sempre.
-    #
-    # Todo alvo leva `labels.host` (ver host_label): é o único rótulo que diz
-    # de qual MÁQUINA a série veio, e sem ele a seção de infraestrutura do
-    # dashboard e o alerta ServidorSemColeta não têm por onde agrupar.
-    # `blackbox.json` fica de fora de propósito: lá o alvo é uma URL, não uma
-    # máquina, e um `host` mentiria sobre o que está sendo medido.
+    # Alvos = nomes de serviço Compose + labels.host. Sem arquivo se serviço ausente.
+    # blackbox.json de fora: alvo é URL, não máquina.
     local hl; hl="$(host_label)"
     service_selected postgres \
         && printf '[{"targets":["postgres-exporter:9187"],"labels":{"host":"%s"}}]\n' "$hl" \
@@ -2521,11 +2042,7 @@ setup_metrics() {
             > "$mdir/targets/meilisearch.json"
         printf '%s' "$MEILI_METRICS_KEY" > "$mdir/secrets/meili-metrics.key"
     fi
-    # O motor de busca não tem exporter: `/_prometheus/metrics` vem do plugin
-    # instalado na imagem, e o job `opensearch` do prometheus.yml já aponta para
-    # esse caminho. Faltava só o ALVO — e sem ele o job ficava vazio, as seis
-    # regras de opensearch.rules.yml não tinham série nenhuma para avaliar, e o
-    # serviço mais novo da stack era o único invisível na observabilidade.
+    # OpenSearch: alvo em /_prometheus/metrics (plugin na imagem), sem exporter.
     service_selected opensearch \
         && printf '[{"targets":["opensearch:9200"],"labels":{"host":"%s"}}]\n' "$hl" \
            > "$mdir/targets/opensearch.json"
@@ -2537,16 +2054,7 @@ setup_metrics() {
                > "$mdir/targets/cadvisor.json"
     fi
 
-    # O ALVO DO SERVIÇO QUE SAIU. O bloco acima só ESCREVE, e o comentário lá em
-    # cima promete o contrário: "serviço ausente não deixa arquivo, o job fica
-    # sem alvo em vez de ficar `up == 0` para sempre". A promessa valia para
-    # instalação nova e não para reexecução — quem tirou um serviço de
-    # `--services` ficava com o arquivo antigo e um job vermelho permanente.
-    #
-    # E alvo cronicamente vermelho é pior que alvo nenhum: ele ensina que
-    # vermelho no painel é normal, que é como um alerta de verdade passa
-    # despercebido. O caminho dos alvos REMOTOS já removia o arquivo obsoleto;
-    # faltava a metade local.
+    # Remover arquivo de alvo local se o serviço saiu de --services.
     local job_local
     for job_local in postgres redis meilisearch opensearch; do
         service_selected "$job_local" && continue
@@ -2558,10 +2066,8 @@ setup_metrics() {
     # trás, é um segredo em disco para um serviço que não existe mais.
     service_selected meilisearch || run rm -f "$mdir/secrets/meili-metrics.key"
     [[ "$METRICS_CONTAINERS" == "true" ]] || run rm -f "$mdir/targets/cadvisor.json"
-    # --- alvos REMOTOS (serviços em outras máquinas) --------------------------
-    # Um arquivo por job, com sufixo `-remoto`: o glob do prometheus.yml é
-    # `<job>*.json`, então ele casa sem que os alvos locais sejam sobrescritos —
-    # um host pode ter Postgres local e OpenSearch remoto ao mesmo tempo.
+    # --- alvos REMOTOS --------------------------------------------------------
+    # Um arquivo por job com sufixo -remoto (glob <job>*.json).
     if [[ -n "$METRICS_SCRAPE" ]]; then
         local -a pares=(); local par job destino json
         IFS=',' read -r -a pares <<< "$METRICS_SCRAPE"
@@ -2586,10 +2092,7 @@ setup_metrics() {
                 printf '%s\n' "$json" > "$mdir/targets/${job}-remoto.json"
                 ok "alvo remoto do job $job: $json"
             else
-                # Sem esta remoção, tirar um job do --metrics-scrape deixava o
-                # arquivo antigo para trás e o Prometheus seguia coletando de uma
-                # máquina que não é mais monitorada — em silêncio. O `rm` só toca
-                # o sufixo `-remoto`, reservado ao script (ver targets/README.md).
+                # Remover *-remoto órfão quando o job sai de --metrics-scrape.
                 rm -f "$mdir/targets/${job}-remoto.json"
             fi
         done
@@ -2598,25 +2101,14 @@ setup_metrics() {
     protect_metrics_key "$mdir/secrets/meili-metrics.key"
     ok "alvos escritos em $mdir/targets/"
     if [[ "$UPDATE_MODE" == "true" ]]; then
-        # Acrescentar um rótulo ENCERRA todas as séries antigas e cria novas.
-        # Não há gap de coleta e nenhum alerta dispara à toa (AlvoForaDoAr exige
-        # `up == 0`, e a série nova nasce em 1), mas rate()/increase() que
-        # atravessam este instante dão resultado errado por uma janela.
+        # Mudar rótulo encerra séries antigas; rate()/increase() erram por uma janela.
         info "os alvos agora levam o rótulo host=$hl"
         info "  as séries antigas foram encerradas e recriadas: rate() e increase()"
         info "  que cruzarem este instante ficam errados pelos próximos ~5 minutos"
     fi
 
-    # --- sobe a stack ---------------------------------------------------------
-    # O `if !` é o que mantém a promessa do comentário no topo desta função: sob
-    # `set -e`, um `run docker compose` solto aborta o SCRIPT INTEIRO quando o
-    # pull falha (registry fora do ar, imagem não publicada), e o provisionamento
-    # morre antes de `configure_firewall` — deixando os bancos publicados em
-    # 0.0.0.0 com o ufw ainda inativo. Aconteceu em 2026-07-27.
-    # Sem destino, o Alertmanager morre no start e o Docker o reinicia para
-    # sempre — um container em restart loop que ninguém lê, num host que o
-    # resumo declarou saudável. Melhor mantê-lo fora do conjunto ativo, de forma
-    # visível e reversível: um profile inativo não sobe e não vira órfão.
+    # if ! compose: sob set -e, falha de pull não aborta antes do firewall.
+    # Sem destino de alerta, Alertmanager fica fora do conjunto ativo (profile).
     local override="$mdir/docker-compose.override.yml"
     if tem_destino_de_alerta; then
         [[ -f "$override" ]] && { rm -f "$override"; ok "destino de alerta configurado: Alertmanager religado"; }
@@ -2624,12 +2116,8 @@ setup_metrics() {
         cat > "$override" <<'EOF'
 # Gerado por setup.sh — NENHUM destino de alerta foi informado.
 #
-# O Alertmanager recusa subir sem receiver (é o ponto do módulo), e deixá-lo
-# reiniciando em loop esconderia isso atrás de um container "quase no ar".
-# O profile abaixo não está em COMPOSE_PROFILES, então ele fica desligado.
-#
-# Para religá-lo, informe um destino e reaplique — o setup apaga este arquivo:
-#   bash setup.sh --update --alert-slack-webhook https://hooks.slack.com/...
+# Alertmanager recusa subir sem receiver; profile inativo evita restart loop.
+# Para religar: informe um destino e reaplique (--update --alert-...).
 services:
   alertmanager:
     profiles: ["alerting"]
@@ -2693,10 +2181,7 @@ configure_firewall() {
     local -a cidrs=()
     for s in "${SERVICES[@]}"; do
         port="$(service_port "$s")"
-        # Serviço publicado só em loopback não precisa (nem deve) de regra: o
-        # Docker cria o DNAT apenas para destino 127.0.0.1, então nada externo
-        # casa. Abrir a porta no ufw daria a impressão contrária a quem lesse o
-        # `ufw status` — é o caso do PgBouncer no default.
+        # Loopback: sem regra ufw (DNAT só para 127.0.0.1).
         if [[ "$s" == "pgbouncer" ]]; then
             case "$PGBOUNCER_BIND_IP" in
                 127.0.0.1|localhost)
@@ -2705,10 +2190,7 @@ configure_firewall() {
             esac
         fi
         if [[ -n "$ALLOW_FROM" ]]; then
-            # Uma execução anterior SEM --allow-from deixou `allow <porta>/tcp`
-            # para qualquer origem. Acrescentar a regra restrita não revoga a
-            # permissiva — o ufw aplica a primeira que casa, e a antiga libera
-            # todo mundo. Apagá-la é o que torna a restrição real.
+            # Apagar allow permissivo antigo antes da regra restrita.
             if [[ "$DRY_RUN" != "true" ]]; then
                 ufw delete allow "${port}/tcp" >/dev/null 2>&1 || true
             fi
@@ -2723,18 +2205,12 @@ configure_firewall() {
         fi
     done
 
-    # Coleta remota: as portas dos exporters também são publicadas, e /metrics
-    # não tem autenticação nenhuma — o do Postgres entrega `pg_settings_*`
-    # inteiro. Sem estas regras, a chain restringiria o banco e deixaria aberto
-    # o exporter que descreve o banco.
+    # Exporters /metrics sem auth: incluir portas na DOCKER-USER.
     local -a portas_exporter=()
     if [[ -n "$METRICS_PUBLISH_IP" ]]; then
         service_selected postgres && portas_exporter+=(9187)
         service_selected redis && portas_exporter+=(9121)
-        # OpenSearch e Meilisearch não têm exporter: as métricas saem da porta do
-        # PRÓPRIO serviço. Elas ficavam de fora desta lista, então o help mandava
-        # apontar `--metrics-scrape opensearch=IP:9200` para uma porta que o ufw
-        # nunca abria — e o motor de busca aparecia como alvo fora do ar.
+        # OpenSearch/Meili: métricas na porta do serviço (não exporter).
         service_selected opensearch && portas_exporter+=("$OPENSEARCH_PORT")
         service_selected meilisearch && portas_exporter+=("$MEILI_PORT")
         portas_exporter+=(9100)
@@ -2752,10 +2228,7 @@ configure_firewall() {
         ok "portas de exporter liberadas: ${portas_exporter[*]}"
     fi
 
-    # Grafana e Prometheus só entram no firewall quando NÃO estão em loopback:
-    # com -p 127.0.0.1:3000:3000 o Docker cria a regra de DNAT apenas para
-    # destino loopback, e nada externo casa. É o único caso nesta infraestrutura
-    # em que a armadilha do DOCKER-USER não morde — por isso o default.
+    # Grafana/Prometheus no firewall só se não estiverem em loopback.
     if [[ "$METRICS_ENABLED" == "true" && "$MONITORING_ENABLED" == "true" \
           && "$MONITORING_BIND_IP" != "127.0.0.1" ]]; then
         local mport
@@ -2777,25 +2250,13 @@ configure_firewall() {
     ok "ufw ativo"
 
     # ------------------------------------------------------------------
-    # As regras acima NÃO bastam para portas publicadas pelo Docker.
-    # Pacote para container entra por FORWARD -> DOCKER-USER -> DOCKER, e o ufw
-    # filtra apenas INPUT: `ufw allow from <CIDR> to any port 5432` não impede
-    # ninguém de conectar. Verificado em Debian 12 + Docker 29.
-    # A restrição real vive na chain DOCKER-USER, persistida em
-    # /etc/ufw/after.rules (que o ufw reaplica no reload e no boot).
+    # ufw filtra INPUT; tráfego a containers passa por DOCKER-USER.
+    # Restrição real: chain DOCKER-USER em /etc/ufw/after.rules.
     # ------------------------------------------------------------------
     local rules_file=/etc/ufw/after.rules
     local begin='# BEGIN BrasilDataHub (setup.sh) — restrição das portas publicadas pelo Docker'
     local end='# END BrasilDataHub'
-    # Prefixo ESTÁVEL para localizar o bloco de uma execução anterior. A remoção
-    # casava a linha `$begin` inteira, com `grep -qF` — e o nome do script está
-    # dentro dela. Quando este script deixou de se chamar `setup.sh`, o
-    # bloco antigo parou de casar: não seria removido, um novo seria acrescentado,
-    # e o after.rules ficaria com DOIS blocos DOCKER-USER concorrentes nas
-    # máquinas já provisionadas.
-    #
-    # Casar pelo prefixo resolve o passado e o futuro: reconhece o marcador
-    # antigo, o atual, e qualquer renomeação posterior.
+    # Prefixo estável (# BEGIN BrasilDataHub) — não casar o nome do script.
     local begin_re='^# BEGIN BrasilDataHub'
     local end_re='^# END BrasilDataHub'
 
@@ -2804,42 +2265,14 @@ configure_firewall() {
         return 0
     fi
 
-    # A ORDEM AQUI JÁ FOI UM DEFEITO DUAS VEZES, e a segunda sobreviveu à
-    # correção da primeira.
-    #
-    # A remoção do bloco anterior de `after.rules` ficava ACIMA da checagem de
-    # `ALLOW_FROM` logo abaixo. O efeito, numa execução sem a flag: o arquivo
-    # perdia o bloco, a chain viva era preservada — e o script anunciava
-    # "PRESERVADA", o que era verdade só até o próximo boot. Depois dele, a
-    # chain nasce vazia, o `ufw status` segue `active`, e as portas dos
-    # containers aceitam a internet inteira.
-    #
-    # Encontrado num host real em 31/07/2026: chain viva com as regras certas,
-    # `after.rules` sem bloco nenhum. O host tinha passado por um `--update` de
-    # rotina, que é justamente a execução que não repete `--allow-from`.
-    #
-    # A regra completa é: sem `ALLOW_FROM`, não tocar em NADA — nem na chain,
-    # nem no arquivo que a reconstrói.
-    #
-    # A ORDEM ORIGINAL JÁ ERA UM DEFEITO. A versão anterior esvaziava a chain e só
-    # depois checava `ALLOW_FROM`: numa execução sem a flag — que é o caso de
-    # `--metrics-only` sem repetir todas as flags da instalação original — o
-    # firewall dos containers era APAGADO e não reconstruído. As três portas de
-    # dados voltavam a aceitar conexão de qualquer origem, em silêncio, e o
-    # `ufw status` continuava mostrando `active`, porque a DOCKER-USER não
-    # aparece ali.
-    #
-    # Regra: nunca esvaziar sem repovoar. Sem `ALLOW_FROM`, a chain existente é
-    # deixada exatamente como está.
+    # Sem ALLOW_FROM: não alterar DOCKER-USER nem after.rules.
+    # Chain viva sem bloco em after.rules não persiste no reboot.
     if [[ -z "$ALLOW_FROM" ]]; then
         run ufw reload
         if iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j DROP'; then
             warn "sem --allow-from: a chain DOCKER-USER existente foi PRESERVADA."
             warn "para alterá-la, repita --allow-from com a lista completa de origens."
-            # Preservar a chain VIVA não basta: ela é recriada vazia a cada boot,
-            # e quem a repovoa é o bloco em after.rules. Uma chain restrita sem
-            # bloco no arquivo é um host que está protegido AGORA e deixa de
-            # estar no próximo reboot — sem nada no `ufw status` que o denuncie.
+            # Chain viva sem bloco em after.rules não persiste no reboot.
             if ! grep -qE "$begin_re" "$rules_file" 2>/dev/null; then
                 warn "  ATENÇÃO: a chain está restrita mas NÃO está persistida em ${rules_file}."
                 warn "  No próximo boot ela nasce vazia e as portas ficam abertas."
@@ -2853,34 +2286,17 @@ configure_firewall() {
         return 0
     fi
 
-    # Remove o bloco de uma execução anterior (idempotência), seja qual for o
-    # nome do script que o escreveu. DEPOIS da guarda acima: chegar aqui
-    # significa que há `ALLOW_FROM` e que o bloco será reescrito logo abaixo.
+    # Idempotência: remove bloco anterior em after.rules (depois da guarda ALLOW_FROM).
     if grep -qE "$begin_re" "$rules_file" 2>/dev/null; then
         sed -i "/${begin_re}/,/${end_re}/d" "$rules_file"
     fi
 
-    # RECONSTRUÇÃO A PARTIR DO ESTADO. Com `ALLOW_FROM` herdado do
-    # `.setup-state` (load_state) e a chain vazia — o cenário que uma execução
-    # anterior sem a flag produzia —, chegar aqui é o que a repovoa. Antes, o
-    # firewall só voltava se alguém repetisse a flag de cor.
+    # Com ALLOW_FROM (flag ou estado) e chain vazia: reconstruir aqui.
     if ! iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j DROP'; then
         info "chain DOCKER-USER vazia: reconstruindo a partir de ALLOW_FROM=${ALLOW_FROM}"
     fi
 
-    # SÓ OS CIDRs IPv4 entram aqui. `/etc/ufw/after.rules` é um arquivo
-    # `iptables-restore`, e um endereço IPv6 dentro dele não é uma regra que não
-    # casa — é um ERRO DE PARSE que invalida o ARQUIVO INTEIRO:
-    #
-    #   iptables-restore: host/network `2804:1b2:...' not found
-    #   ERROR: problem running ufw-init
-    #
-    # E o efeito era o pior possível: o `iptables -F` acima já tinha esvaziado a
-    # chain, o `ufw reload` falhava, o `set -e` matava o script antes do resumo,
-    # e o host ficava com as portas dos containers ABERTAS para a internet
-    # enquanto o `ufw status` exibia regras restritivas — exatamente a armadilha
-    # que este bloco existe para fechar. Acontecia com qualquer operador cujo IP
-    # de origem fosse IPv6, que é o caso comum em rede residencial brasileira.
+    # Só CIDRs IPv4 em after.rules (iptables-restore); IPv6 invalida o arquivo.
     local -a cidrs_v4=() cidrs_v6=()
     IFS=',' read -r -a cidrs <<< "$ALLOW_FROM"
     for cidr in "${cidrs[@]}"; do
@@ -2891,9 +2307,7 @@ configure_firewall() {
         esac
     done
 
-    # As portas que de fato passam pela DOCKER-USER: um serviço publicado em
-    # loopback não é alcançável de fora, e listá-lo aqui só confundiria a
-    # leitura da chain.
+    # Portas na DOCKER-USER (pula serviço em loopback).
     local -a portas_filtradas=()
     for s in "${SERVICES[@]}"; do
         if [[ "$s" == "pgbouncer" ]]; then
@@ -2917,9 +2331,7 @@ configure_firewall() {
         warn "  BLOQUEADAS para todo o IPv4 (é o que 'só estas origens' significa)."
     fi
 
-    # Daqui para baixo esvaziar é seguro: a chain é reconstruída logo abaixo, no
-    # mesmo bloco. `ufw reload` sozinho não bastaria — ele reaplica o arquivo, e
-    # as regras já inseridas continuariam na chain.
+    # Esvaziar chain só aqui: reconstrução imediata abaixo (ufw reload sozinho não limpa).
     iptables -F DOCKER-USER 2>/dev/null || true
 
     {
@@ -2944,19 +2356,13 @@ configure_firewall() {
         warn "o 'ufw reload' falhou; aplicando as regras direto na chain DOCKER-USER."
     fi
 
-    # Host SEM porta publicada — um host de aplicação com o pooler e o
-    # Prometheus em loopback é exatamente isso. Não há o que restringir, e a
-    # verificação de DROP abaixo daria um falso alarme dizendo que "as portas
-    # estão acessíveis de qualquer origem" num host que não publica nenhuma.
+    # Sem porta publicada: não há o que restringir (evita falso alarme).
     if (( ${#portas_filtradas[@]} == 0 )); then
         ok "nenhuma porta publicada neste host — nada a restringir na DOCKER-USER"
         return 0
     fi
 
-    # VERIFICAÇÃO, e não confiança: o reload pode ter falhado por outra razão e o
-    # sintoma seria silencioso. Se a chain não ficou povoada, aplica-se à mão —
-    # perde-se a persistência no boot, mas não a proteção agora, e o aviso diz
-    # exatamente isso.
+    # Verificar DROP na chain; se reload falhou, aplicar à mão (sem persistência).
     if ! iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j DROP'; then
         for port in "${portas_filtradas[@]+"${portas_filtradas[@]}"}"; do
             for cidr in "${cidrs_v4[@]+"${cidrs_v4[@]}"}"; do
@@ -3028,26 +2434,13 @@ compose() {
     # Mesma ordem do setup.sh: base → metrics → remote → backup → override.
     [[ -f "$dir/docker-compose.metrics.yml" ]] && args+=(-f "$dir/docker-compose.metrics.yml")
     if [[ -f "$dir/docker-compose.metrics-remote.yml" ]]; then
-        # O overlay exige METRICS_BIND_IP sem default (um 0.0.0.0 ali entregaria
-        # os internos do banco). Ela vive num arquivo próprio para não entrar no
-        # .env do serviço e recriar o container do banco.
+        # METRICS_BIND_IP sem default (arquivo próprio — não recria o serviço).
         if [[ -f "$BDH_ROOT/.metrics-remote.env" ]]; then
             set -a; . "$BDH_ROOT/.metrics-remote.env"; set +a
         fi
         args+=(-f "$dir/docker-compose.metrics-remote.yml")
     fi
-    # BACKUP — a ausência destes overlays aqui é DESTRUTIVA, não cosmética.
-    #
-    # `archive_mode` e `archive_command` vêm de docker-compose.backup.yml. Um
-    # `bdh restart postgres` que não os incluísse subiria o banco com
-    # `archive_mode=off` (o default do compose base) e o arquivamento de WAL
-    # pararia — em silêncio, com o sidecar ainda no ar e o `pgbackrest info`
-    # ainda reportando o último full como válido. A operação seguiria acreditando
-    # ter PITR até a primeira tentativa de restaurar.
-    #
-    # Por isso os overlays são incluídos sempre que os arquivos existem: quem
-    # implantou o backup não precisa lembrar de nada, e quem não implantou não
-    # tem os arquivos e não paga nada por esta condição.
+    # Overlays de backup sempre que existirem: sem eles archive_mode volta a off.
     [[ -f "$dir/docker-compose.backup.yml" ]] && args+=(-f "$dir/docker-compose.backup.yml")
     [[ -f "$dir/docker-compose.backup-local.yml" ]] && args+=(-f "$dir/docker-compose.backup-local.yml")
     [[ -f "$dir/docker-compose.override.yml" ]] && args+=(-f "$dir/docker-compose.override.yml")
@@ -3096,10 +2489,7 @@ for x in sorted(r, key=lambda y: y["metric"].get("host", "")):
                           else "ATENCAO: %d%% dos alvos no ar" % round(frac * 100)))
 ' 2>/dev/null || echo "  (não foi possível consultar)"
 
-    # O apelido de --metrics-scrape é digitado NESTE host, que não conhece o
-    # `uname -n` da máquina remota. Quando os dois divergem, o link do dashboard
-    # abre a máquina errada sem avisar — este é o único lugar onde isso aparece
-    # sem abrir o Grafana. A expressão é a mesma do painel da visão geral.
+    # Apelido de --metrics-scrape pode divergir do uname remoto — avisar aqui.
     _t 5 curl -fsS --get "http://127.0.0.1:${porta}/api/v1/query" \
         --data-urlencode 'query=count by (host, nodename, chave) (label_replace(node_uname_info, "chave", "$1", "host", "(.*)")) unless count by (host, nodename, chave) (label_replace(node_uname_info, "chave", "$1", "nodename", "(.*)"))' \
         2>/dev/null | python3 -c '
@@ -3150,9 +2540,7 @@ cmd_status() {
         done
         return 0
     fi
-    # Cabeçalho sem acentos de propósito: `column` escapa bytes não-ASCII quando
-    # o locale não é UTF-8 (caso comum em sessões não interativas e no MOTD).
-    # Sem column instalado, as colunas saem separadas por tab.
+    # Cabeçalho ASCII: `column` escapa não-ASCII se locale ≠ UTF-8.
     { printf 'NOME\tESTADO\tSTATUS\tPORTAS\n'; printf '%s\n' "$rows"; } \
         | { column -t -s "$(printf '\t')" 2>/dev/null || cat; }
     echo
@@ -3167,11 +2555,7 @@ cmd_status() {
 }
 
 cmd_pull() {
-    # Atualizar a imagem de um serviço era o único caminho não coberto: as tags
-    # nos composes são fixas (`:17`, `:7`), então `docker compose pull` traz a
-    # versão nova daquela tag maior — e sem um comando, isso virava
-    # `docker compose -f ... -f ... pull` digitado à mão, com os overlays certos
-    # e na ordem certa.
+    # `bdh pull`: pull com os overlays certos na ordem certa.
     local alvos svc
     if [[ -n "$1" ]]; then
         alvos="$1"
@@ -3184,9 +2568,7 @@ cmd_pull() {
         [[ -d "$(svc_dir "$svc")" ]] || { echo "  ! $svc não está instalado aqui" >&2; continue; }
         echo "==> $svc"
         compose "$svc" pull
-        # `up -d` sem `--force-recreate`: o Compose recria SÓ o que mudou. Num
-        # banco de centenas de GB, um recreate desnecessário é downtime e page
-        # cache frio.
+        # up -d sem --force-recreate: Compose só recria o que mudou.
         compose "$svc" up -d
     done
 }
@@ -3202,11 +2584,7 @@ cmd_verify() {
     if [[ "$svc" == "postgres" ]]; then
         echo "== /dev/shm (64M indica perfil aplicado pela metade)"
         docker exec "$cid" df -h /dev/shm | tail -1
-        # Comparação, e não só exibição. Este é o gate de D-1 do runbook mensal:
-        # em 25/07 foram perdidas 6h43 de ETL porque o mount havia voltado aos
-        # 64 MB de default e ninguém CONFERIU o número — ele estava na tela.
-        # `bdh verify` agora sai != 0 quando diverge, para poder ser usado num
-        # `set -e` ou num checklist automatizado.
+        # Conferir shm_size (não só exibir): gate do runbook mensal.
         local shm_esperado shm_real
         shm_esperado="$(grep -h '^PG_SHM_BYTES=' "$(svc_dir postgres)/.env" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]')"
         shm_real="$(docker exec "$cid" stat -f -c '%s * %b' /dev/shm 2>/dev/null | tr -d ' ')"
@@ -3255,8 +2633,7 @@ BDH
 
     [[ "$INSTALL_MOTD" != "true" ]] && { warn "mensagem de login não instalada (--no-motd)"; return 0; }
 
-    # As variáveis abaixo devem ser resolvidas no login, não agora — daí as
-    # aspas simples envolvendo todo o corpo.
+    # Variáveis resolvidas no login — aspas simples no corpo do MOTD.
     # shellcheck disable=SC2016
     local motd_body='#!/usr/bin/env bash
 # Mensagem de login — serviços de dados da BrasilDataHub (setup.sh).
@@ -3306,9 +2683,7 @@ summary() {
         port="$(service_port "$s")"
         info "  $s → $(service_bind_ip "$s"):${port}   ($(service_dir "$s"))"
     done
-    # O OpenSearch é o único serviço da stack SEM autenticação nenhuma (o plugin
-    # de segurança está desligado). Nos outros a senha ainda é uma barreira; aqui
-    # o firewall é a única que existe.
+    # OpenSearch sem auth: firewall é a única barreira.
     if service_selected opensearch && [[ -z "$ALLOW_FROM" && "$BIND_IP" == "0.0.0.0" ]]; then
         _log ""
         warn "o OpenSearch está publicado em 0.0.0.0 e NÃO TEM AUTENTICAÇÃO."

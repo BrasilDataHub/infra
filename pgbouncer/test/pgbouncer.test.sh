@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
-# Teste de integração do PgBouncer — sobe Postgres + pooler e exercita as três
-# coisas que transaction pooling quebra.
+# Teste de integração do PgBouncer — transaction pooling e modos de falha comuns.
 #
 #   bash pgbouncer/test/pgbouncer.test.sh
 #
-# Não é um teste de configuração: é um teste do MODO DE FALHA. `pool_mode =
-# transaction` funciona perfeitamente até a aplicação usar um `SET` de sessão ou
-# um prepared statement, e aí quebra de formas que não mencionam o PgBouncer no
-# erro. Os três casos abaixo são exatamente os que o item 18 do roadmap manda
-# verificar antes de ligar.
+# Verifica SET LOCAL, prepared statements, SCRAM e roteamento de bancos/usuários.
 set -uo pipefail
 
 RAIZ="$(cd "$(dirname "$0")/../.." && pwd)"

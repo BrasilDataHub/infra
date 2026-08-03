@@ -1,31 +1,16 @@
-# Compose de PRODUÇÃO do PgBouncer — roda no bdh-apps, JUNTO da aplicação.
+# Compose de PRODUÇÃO do PgBouncer — no host da APLICAÇÃO (não do banco).
 #
 #   docker compose up -d
 #
-# No host da APLICAÇÃO, e não no do banco, e isso não é detalhe: o ganho do
-# pooler é encurtar o caminho de abertura de conexão que o cliente percorre. Com
-# ele do lado do banco, cada nova conexão do Octane ainda pagaria o RTT de rede
-# antes de encontrar o pool.
-#
-# .env ao lado deste arquivo:
 #   PGB_DB_HOST=<ip-do-bdh-data>
 #   PGB_DB_NAME=dados_cnpj
 #   PGB_USER=postgres
 #   PGB_PASSWORD=...
-#   # opcionais:
-#   # PGB_DB_PORT=15432
-#   # PGB_DEFAULT_POOL_SIZE=20     # multiplica work_mem no pior caso
-#   # PGB_MAX_CLIENT_CONN=400      # conexões do lado cliente, ~2 KB cada
-#   # PGB_PASSWORD_SCRAM='SCRAM-SHA-256$...'   # preferível à senha em texto
+#   # PGB_DEFAULT_POOL_SIZE=20
+#   # PGB_PASSWORD_SCRAM='SCRAM-SHA-256$...'
 #
-# ORDEM DE IMPLANTAÇÃO — o par do item 18 é indivisível:
-#   1. subir o PgBouncer e apontar a aplicação para ele (porta 6432);
-#   2. confirmar `SHOW POOLS` com tráfego real passando;
-#   3. SÓ ENTÃO aplicar max_connections=60 + work_mem=96MB no Postgres
-#      (perfil compartilhada-14gb) — exige restart do banco.
-#
-# Inverter a ordem derruba a aplicação: 60 conexões diretas não atendem o que
-# hoje abre até 100.
+# Ordem: (1) PgBouncer + app na 6432; (2) SHOW POOLS com tráfego;
+# (3) só então baixar max_connections no Postgres. Inverter derruba a app.
 
 services:
   pgbouncer:
@@ -62,7 +47,7 @@ services:
       - default
       - baseempresarial
     logging:
-      # Teto de log — a justificativa está em ../postgres/docker-compose.yml.
+      # Teto de log (mesmo NVMe do host). Ver ../postgres/docker-compose.yml.
       driver: json-file
       options:
         max-size: ${LOG_MAX_SIZE:-50m}
@@ -70,9 +55,7 @@ services:
     deploy:
       resources:
         limits:
-          # 128 MiB é o valor do orçamento de 03 §3.2. O PgBouncer é
-          # single-threaded e guarda ~2 KB por conexão de cliente: 400 clientes
-          # cabem em menos de 1 MiB de buffers.
+          # 128 MiB: PgBouncer single-threaded, ~2 KB/cliente.
           memory: ${PGBOUNCER_MEMORY_LIMIT:-128M}
           cpus: "${PGBOUNCER_CPU_LIMIT:-1}"
     healthcheck:

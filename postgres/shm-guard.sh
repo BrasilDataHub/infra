@@ -3,7 +3,7 @@
 #
 # Com dynamic_shared_memory_type=posix, as hash tables de Parallel Hash Join
 # vivem em /dev/shm. Em container, /dev/shm é um tmpfs de 64 MB por default do
-# Docker — e o `shm_size` do compose é DESCARTADO SILENCIOSAMENTE por Docker
+# Docker — e o `shm_size` do compose é IGNORADO SEM AVISO por Docker
 # Swarm (e portanto pelo Dokploy), razão pela qual a receita do repositório usa
 # um mount tmpfs. O resultado de um deploy sem isso é uma query paralela que
 # morre no meio com um erro que aponta para o lugar errado:
@@ -152,7 +152,7 @@ shm_guard_run() {
 
   CAUSA MAIS COMUM: o deploy nao aplicou o /dev/shm do perfil. Atencao ao
   shm_size do compose: Docker Swarm (e portanto Dokploy) NAO o suporta --
-  ele e descartado sem erro e /dev/shm fica no default de 64 MB.
+  ele e ignorado sem erro e /dev/shm fica no default de 64 MB.
 
   COMO CORRIGIR -- mount tmpfs no compose (funciona em compose E em Swarm;
   passo a passo em postgres/docs/deploy.md):
@@ -188,7 +188,7 @@ BANNER
             export PG_MAX_PARALLEL_WORKERS_PER_GATHER="$fits"
             echo "shm-guard: PG_SHM_PREFLIGHT=adapt — max_parallel_workers_per_gather ${want} -> ${fits}." >&2
             if [ "$fits" -eq 0 ]; then
-                echo "shm-guard: paralelismo por query DESLIGADO. Nenhuma query quebra, mas as pesadas ficam" >&2
+                echo "shm-guard: paralelismo por consulta DESLIGADO. Nenhuma consulta quebra, mas as pesadas ficam" >&2
                 echo "shm-guard: sensivelmente mais lentas. Corrija o /dev/shm e remova esta degradacao." >&2
             fi
             ;;

@@ -1,32 +1,19 @@
-# Sondas de caixa-preta e SLO da camada HTTP — BrasilDataHub.
-#
-# Antes deste arquivo NÃO EXISTIA uma métrica de TTFB no sistema (05 §9.3-D). O
-# que havia era o Laravel Pulse, que media por dentro e cobrava uma transação no
-# banco por requisição pública — 100% das inserções do banco da aplicação.
-# Este arquivo é a metade "não perdemos nada" dessa troca.
-#
-# Os limiares vêm da tabela de SLO de 05 §9.2, classe a classe. São alertas
-# separados de propósito: uma média de todas as classes esconde exatamente a
-# classe lenta, que é a única informação útil.
-#
-# A janela de p95 é de 30 min porque o probe roda a cada 60s — 30 amostras é o
-# mínimo para um p95 significar alguma coisa.
+# Sondas de caixa-preta e SLO HTTP — BrasilDataHub.
+# Limiares por classe de página (média entre classes esconde a lenta).
+# p95 em 30 min: probe a cada 60s → ~30 amostras.
 
 groups:
   - name: sondas
     rules:
-      # --- gravadas: consumidas pelos dashboards e pelos alertas abaixo -----
       - record: slo:probe_duracao_p95_30m
         expr: quantile_over_time(0.95, probe_duration_seconds[30m])
 
       - record: slo:probe_duracao_p50_30m
         expr: quantile_over_time(0.50, probe_duration_seconds[30m])
 
-      # Disponibilidade observada por classe, na janela do SLO de 99,5%.
       - record: slo:probe_disponibilidade_1d
         expr: avg_over_time(probe_success[1d])
 
-      # --- disponibilidade --------------------------------------------------
       - alert: SondaFalhando
         expr: probe_success == 0
         for: 5m
@@ -42,8 +29,7 @@ groups:
             monitoring/blackbox/blackbox.yml.
 
       - alert: DisponibilidadeAbaixoDoSlo
-        # 99,5% em 1 dia = 7,2 min de indisponibilidade. Mede o SLO declarado
-        # para as Fases 1-3, em que não há HA.
+        # 99,5% em 1d = 7,2 min de indisponibilidade (sem HA nas Fases 1-3).
         expr: slo:probe_disponibilidade_1d < 0.995
         for: 30m
         labels:
@@ -51,11 +37,8 @@ groups:
         annotations:
           summary: "{{ $labels.instance }} abaixo de 99,5% nas últimas 24 h"
 
-      # --- as seis classes de página, contra a tabela de SLO ---------------
-      # Cada uma tem o seu limiar; a média entre elas esconderia a lenta.
       - alert: SloBordaHitEstourado
-        # Borda, HIT: p95 de 60 ms. É o número que justifica o item 3 inteiro —
-        # 1,83 s hoje contra 40-70 ms com a Cache Rule.
+        # Borda HIT: p95 60 ms.
         expr: slo:probe_duracao_p95_30m{module="borda_hit"} > 0.060
         for: 15m
         labels:
@@ -112,8 +95,6 @@ groups:
             fila de aplicação.
 
       - alert: SloBuscaEstourado
-        # Busca avançada + facetas: p95 de 200 ms. É a métrica que fecha o
-        # critério de aceite do bloco B5.
         expr: slo:probe_duracao_p95_30m{module="busca"} > 0.200
         for: 15m
         labels:
@@ -125,11 +106,7 @@ groups:
   - name: borda-e-cabecalhos
     rules:
       - alert: RotaAnonimaVazandoEstadoDeSessao
-        # O risco central do item 3: uma página anônima que passa a emitir
-        # Set-Cookie ou Cache-Control privado tem duas leituras, e as duas são
-        # ruins — ou a borda para de cachear (perde-se o ganho), ou a borda
-        # cacheia a resposta COM a sessão de alguém, por até 30 dias.
-        # `critical` e `for` curto: é vazamento de dado, não degradação.
+        # Set-Cookie / Cache-Control privado em rota anônima: cacheia sessão ou perde HIT.
         expr: probe_success{module="anonima_sem_cookie"} == 0
         for: 5m
         labels:
@@ -144,9 +121,7 @@ groups:
             Rule existe. Reverta antes de purgar o cache.
 
       - alert: BordaParouDeCachear
-        # Separado de SondaFalhando: o módulo borda_hit falha por cf-cache-status
-        # fora de (HIT|STALE|UPDATING|REVALIDATED), que é uma causa específica
-        # com uma correção específica — e não "o site caiu".
+        # Separado de SondaFalhando: falha específica de cf-cache-status.
         expr: |
           probe_success{module="borda_hit"} == 0
             and on (instance) (probe_success{module="pagina_publica"} == 1)
@@ -173,10 +148,7 @@ groups:
             borda. Um vencimento aqui costuma ser de origem, no Traefik.
 
       - alert: PortaDeDadosAlcancavelDeFora
-        # A inversão deliberada: aqui, `probe_success == 1` é o PROBLEMA. O
-        # alvo é sondado de um host que NÃO deveria alcançar a porta; item 8 do
-        # roadmap fecha 15432, 6379 e 7700, e esta sonda é o que impede a regra
-        # de firewall de regredir em silêncio numa reinstalação.
+        # Inversão: probe_success == 1 é o problema (porta que deveria estar fechada).
         expr: probe_success{module="tcp_conecta", esperado="fechado"} == 1
         for: 10m
         labels:
@@ -185,5 +157,5 @@ groups:
           summary: "{{ $labels.instance }} aceita conexão de onde não deveria"
           description: >-
             A regra de ufw/DOCKER-USER caiu. `setup.sh --metrics-only` sem
-            --allow-from esvazia a chain e não a repovoa (05 §5.1) — é a causa
+            --allow-from esvazia a chain e não a repovoa — é a causa
             mais provável.

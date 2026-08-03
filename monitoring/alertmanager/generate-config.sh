@@ -1,15 +1,7 @@
 #!/bin/sh
-# Gera /etc/alertmanager/alertmanager.yml a partir de variáveis de ambiente.
-#
-# Mesmo padrão do postgres/generate-config.sh, e pela mesma razão: o que varia
-# entre hosts aqui é o DESTINO da notificação, não a política de roteamento. A
-# política vai na imagem; o destino é segredo e vem do deploy.
-#
-# O Alertmanager não expande variáveis de ambiente na própria configuração, e
-# só aceita arquivo para alguns segredos (`*_password_file`) — nunca para uma
-# URL de webhook. Daí a geração no start.
-# A imagem do Alertmanager é busybox: NÃO há bash. Este script é POSIX sh de
-# ponta a ponta — `set -o pipefail` e arrays não existem aqui.
+# Gera alertmanager.yml a partir de envs (destino = segredo do deploy).
+# Alertmanager não expande env na config; webhook URL exige geração no start.
+# Imagem busybox: POSIX sh apenas (sem bash/pipefail/arrays).
 set -eu
 
 CONF=/etc/alertmanager/alertmanager.yml
@@ -17,16 +9,7 @@ CONF=/etc/alertmanager/alertmanager.yml
 log() { printf 'alertmanager-config: %s\n' "$*"; }
 die() { printf 'alertmanager-config: ERRO: %s\n' "$*" >&2; exit 1; }
 
-# ---------------------------------------------------------------------------
-# Destino — obrigatório, e de propósito
-# ---------------------------------------------------------------------------
-# O diagnóstico que originou este módulo encontrou 18 regras validadas e SEM
-# DESTINO. Subir um Alertmanager que não notifica ninguém reproduziria
-# exatamente esse estado, com a aparência de resolvido. Então: ou há um
-# receiver, ou o container não sobe.
-# `if`, e não `[ ... ] && VAR=true`: com `set -e`, um teste falso no fim de uma
-# lista `&&` derruba o script inteiro — e o caso "esta variável não foi
-# definida" é o normal aqui, não a exceção.
+# Destino obrigatório — Alertmanager sem receiver não sobe.
 TEM_RECEIVER=false
 if [ -n "${ALERTMANAGER_SLACK_WEBHOOK:-}" ]; then TEM_RECEIVER=true; fi
 if [ -n "${ALERTMANAGER_WEBHOOK_URL:-}" ];   then TEM_RECEIVER=true; fi
@@ -41,17 +24,7 @@ if [ -n "${ALERTMANAGER_EMAIL_TO:-}" ]; then
     [ -n "${ALERTMANAGER_EMAIL_FROM:-}" ] || die "ALERTMANAGER_EMAIL_TO exige ALERTMANAGER_EMAIL_FROM."
 fi
 
-# ---------------------------------------------------------------------------
-# Janela de ETL
-# ---------------------------------------------------------------------------
-# Cinco alertas são falsos positivos LEGÍTIMOS durante a carga mensal:
-# IOSaturado, CacheHitBaixo, MuitosArquivosTemporarios, CheckpointsForcadosDemais
-# e PostgresConexoesPertoDoLimite. Sem o silenciamento, a operação aprende a
-# ignorá-los — o que é pior que não ter alerta nenhum.
-#
-# Os defaults descrevem o D0 do runbook: sábado da primeira semana do mês, das
-# 00:00 às 07:00 no fuso de São Paulo. `location` evita o erro clássico de
-# escrever o intervalo em UTC e ele escorregar com o horário de verão.
+# Cinco alertas legítimos durante carga mensal — silenciados na janela de ETL.
 ETL_TZ="${ALERTMANAGER_ETL_TIMEZONE:-America/Sao_Paulo}"
 ETL_DIAS_DO_MES="${ALERTMANAGER_ETL_DAYS_OF_MONTH:-1:7}"
 ETL_DIA_DA_SEMANA="${ALERTMANAGER_ETL_WEEKDAY:-saturday}"

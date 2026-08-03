@@ -1,19 +1,11 @@
 # Alertas do PostgreSQL — BrasilDataHub.
-#
-# Escolhidos pelo perfil de carga real desta operação (ETL de centenas de milhões
-# de linhas, base de centenas de GB, consultas pesadas), não por uma lista
-# genérica. Cada um responde a um modo de falha que já custou caro ou que a
-# documentação do repositório identifica como risco.
-#
-# Todos usam janelas >= 2m em rate(): o job do Postgres é coletado a 30s, e o
-# mínimo saudável é 4x o intervalo de scrape.
+# Perfil: ETL massivo, base grande. rate() com janela ≥ 2m (scrape 30s).
 
 groups:
   - name: postgres
     rules:
       - alert: PostgresConexoesPertoDoLimite
-        # Os perfis fixam max_connections entre 100 e 300. Estourar não degrada:
-        # rejeita conexão, e a aplicação cai.
+        # max_connections 100–300; estourar rejeita conexão.
         expr: |
           sum by (instance) (pg_stat_database_numbackends)
             / max by (instance) (pg_settings_max_connections) > 0.85
@@ -28,21 +20,7 @@ groups:
             rápida para OOM (postgres/docs/perfis.md).
 
       - alert: TransacaoLongaSegurandoXmin
-        # A causa nº1 de bloat que o autovacuum não resolve. O sintoma aparece
-        # horas depois, como disco cheio — daí alertar cedo.
-        #
-        # A GUARDA DO ZERO NÃO É DEFENSIVA, É O QUE FAZ A REGRA FUNCIONAR.
-        # Sem transação longa nenhuma, o collector `long_running_transactions`
-        # não omite a série: ele publica o valor ZERO. E `time() - 0` são os
-        # segundos desde 1970 — sempre maiores que 3600. A expressão anterior
-        # disparava PARA SEMPRE, em qualquer instalação saudável, dez minutos
-        # depois de o Prometheus subir. Medido num host recém-provisionado, sem
-        # nenhuma transação aberta: `time() - metrica` = 1.785.308.732.
-        #
-        # O custo não é o alerta a mais: é a operação aprender que este alerta
-        # mente, e ignorá-lo no dia em que um ETL de verdade segurar o xmin.
-        # `pg_long_running_transactions` (a CONTAGEM) é o guarda natural — ele
-        # é 0 exatamente quando não há o que alertar.
+        # Guarda `> 0`: sem transação, a série é 0 e time()-0 dispara sempre.
         expr: |
           pg_long_running_transactions > 0
           and
@@ -60,9 +38,7 @@ groups:
             WHERE xact_start < now() - interval '1 hour';
 
       - alert: WraparoundSeAproximando
-        # 200M é o autovacuum_freeze_max_age default; 1B ainda dá muita folga
-        # antes do shutdown forçado em 2B, mas já é sinal de que o autovacuum não
-        # está dando conta do volume de escrita.
+        # 1B << shutdown forçado em 2B; autovacuum_freeze_max_age default = 200M.
         expr: pg_database_wraparound_age_datfrozenxid_seconds > 1e9
         for: 30m
         labels:
@@ -75,9 +51,7 @@ groups:
             risco real. Se chegar a 2 bilhões o Postgres PARA de aceitar escrita.
 
       - alert: MuitosArquivosTemporarios
-        # Parente próximo do incidente de /dev/shm: quando work_mem não cabe, o
-        # Postgres derrama em disco e a query que levava minutos passa a levar
-        # horas.
+        # work_mem insuficiente → spill em disco.
         expr: rate(pg_stat_database_temp_bytes[10m]) > 50 * 1024 * 1024
         for: 15m
         labels:
@@ -90,9 +64,7 @@ groups:
             os candidatos estão no log.
 
       - alert: CheckpointsForcadosDemais
-        # checkpoint_timeout dos perfis é 15min. Se a maioria dos checkpoints é
-        # "requested" e não "timed", o max_wal_size está pequeno para a carga de
-        # escrita — e cada checkpoint forçado é um pico de IO no meio do ETL.
+        # checkpoint_timeout 15min; maioria "requested" → max_wal_size pequeno.
         expr: |
           rate(pg_stat_checkpointer_num_requested_total[30m])
             > rate(pg_stat_checkpointer_num_timed_total[30m])
@@ -117,10 +89,7 @@ groups:
             log_lock_waits já está ligado — os detalhes estão no log do container.
 
       - alert: CacheHitBaixo
-        # Abaixo de 95% numa base bem dimensionada indica shared_buffers pequeno
-        # para o working set, ou uma varredura sequencial nova e inesperada.
-        # 30m de janela para não disparar durante um ETL, onde a leitura fria é
-        # legítima.
+        # 30m: evita disparo durante ETL com leitura fria legítima.
         expr: |
           sum by (instance) (rate(pg_stat_database_blks_hit[30m]))
             / clamp_min(
@@ -131,10 +100,6 @@ groups:
               ) < 0.95
         for: 1h
         labels:
-          # `warning`, e não `info`: com 77% medido — 18 pontos abaixo do
-          # limiar — e 42,6 TB de leitura de disco explicada em 80 h de uptime,
-          # este sinal deixou de ser curiosidade. `info` é o nível de quem não
-          # pretende agir.
           severity: warning
         annotations:
           summary: "Cache hit ratio abaixo de 95% na última hora"

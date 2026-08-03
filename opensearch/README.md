@@ -1,58 +1,68 @@
 # opensearch
 
-Motor de busca da BrasilDataHub. Imagem `ghcr.io/brasildatahub/opensearch`, com
-os analisadores de português comercial brasileiro, a lista de sinônimos e o
-exporter de métricas embutidos.
+## Papel
 
-## Por que ele existe
+Motor de busca da BrasilDataHub. Imagem `ghcr.io/brasildatahub/opensearch` com analisadores de português comercial brasileiro, lista de sinônimos e plugin de métricas embutidos.
 
-O dossiê de 23/07/2026 recomendou **manter** o Meilisearch e definiu seis
-condições objetivas de invalidação. Quatro se confirmaram na medição de 28/07:
+Roda no host de dados (`bdh-data`), ao lado do PostgreSQL. O mínimo viável é ~13,1 GiB (heap + direct + metaspace + threads + page cache do índice).
 
-| Condição | Limite | Medido | |
-|---|---|---|---|
-| C1 · disco do índice acima de 2,2× do orçado | ≤ 121 GB | **167 GB** | ✅ |
-| C2 · p95 com filtros a frio | ≤ 500 ms | **687 ms** | ✅ |
-| C3 · reindexação mensal | ≤ 8 h | **> 56 h, sem concluir** | ✅ |
-| C4 · produto exigir agregações analíticas | — | requisito | ✅ |
+## Componentes / imagem
 
-E há a prova de quem consome o servidor, sem instrumentar nada: em 80 h de
-uptime o host leu **45,9 TB** do disco e o Postgres respondeu por 3,28 TB.
-Sobram **42,6 TB — 93%** — com tamanho médio de requisição de leitura de 67 KB,
-que é assinatura de `mmap` com readahead: o LMDB do Meilisearch.
+- Imagem: `ghcr.io/brasildatahub/opensearch`
+- Mapping versionado: [`index/busca_estabelecimento.json`](index/busca_estabelecimento.json)
+- Alertas: [`../monitoring/prometheus/rules/opensearch.rules.yml`](../monitoring/prometheus/rules/opensearch.rules.yml) (10 regras)
+- Alias versionado gerenciado pelo `search-indexer-service` — a aplicação consulta o **alias**, nunca o índice físico
 
-## Onde ele roda, e por que não pode ser no outro host
-
-No **`bdh-data`**, ao lado do PostgreSQL. O mínimo viável são 13,1 GiB
-(heap + direct + metaspace + threads + page cache do índice); o `bdh-apps` tem
-7,987 GiB **totais**, dos quais 7,292 já estão comprometidos. Não é questão de
-apertar: falta mais do que existe.
+Orçamento típico no `bdh-data` (31 GiB) com perfil `compartilhada-8gb`:
 
 ```
 bdh-data (31 GiB)
   kernel, docker, sshd, exporters ....  1,5 GiB
   PostgreSQL .........................  14,0 GiB   (perfil compartilhada-14gb)
   OpenSearch .........................   8,0 GiB   (perfil compartilhada-8gb)
-  ------------------------------------------------
-  page cache livre ...................   7,5 GiB   ✔
+  page cache livre ...................   7,5 GiB
 ```
 
-Os 7,5 GiB livres são o número que importa, e não o limite do container: o
-`mmap` do Lucene **não conta no RSS do cgroup** — conta como page cache
-reclamável. É ali que os 5,3 GB quentes do índice ficam residentes.
+O `mmap` do Lucene não conta no RSS do cgroup — conta como page cache reclamável.
 
-## O sysctl, que não é opcional
+## Perfis e configuração
+
+| Perfil | Máquina-alvo | Limite | Heap | Page cache livre |
+|---|---|---|---|---|
+| `compartilhada-8gb` | host de 31 GiB **dividido** com o PostgreSQL | 8 GiB | 4 GiB | 7,5 GiB |
+| `dedicada-16gb` | host de 15,6 GiB **só** do motor | 10 GiB | 5 GiB | 4,1 GiB |
+| `dev-4gb` | desenvolvimento: arquitetura inteira em ~16 GiB | 4 GiB | 2 GiB | ~1 GiB |
+
+O `setup.sh` escolhe com `--opensearch-profile auto` (default): ao lado de Postgres/Redis/Meilisearch → `compartilhada-8gb`; sozinho em máquina ≥ 14 GiB → `dedicada-16gb`.
+
+`dev-4gb` é **sempre explícito** (`--opensearch-profile dev-4gb`). O `auto` não o escolhe. Preserva breakers, watermarks, `number_of_shards` 6 e o mapping; não serve de referência de latência nem de tamanho de lote de carga.
+
+Decisões do mapping (alterar exige reindexar ~72,32 M documentos):
+
+| Decisão | Valor |
+|---|---|
+| `number_of_shards` | **6** |
+| `_source` | **desabilitado** (hidratação por PK no Postgres) |
+| `auto_expand_replicas` | **`0-1`** |
+
+Analisadores:
+
+- Sem stemmer (`light_portuguese` destruiria precisão em nomes comerciais).
+- `br_forma_juridica` como stopword (ex.: `LTDA` em ~70% dos documentos).
+- Sinônimos só em tempo de busca (`updateable: true`); reload sem reindexar.
+- Nenhum termo da lista de sinônimos pode ser stopword do mesmo analisador — o `synonym_graph` roda depois de `br_stop` e a criação do índice falha.
+- `razao_social` e `nome_fantasia` usam `index_options: positions` e `norms: true` (autocomplete / phrase queries).
+
+`merge.scheduler`, `refresh_interval` e `translog.*` são settings de **índice** em [`index/busca_estabelecimento.json`](index/busca_estabelecimento.json) — não vão em `opensearch.yml`/env do container.
+
+## Deploy / operação
+
+Sysctl obrigatório (sem ele o container sobe e morre no bootstrap check):
 
 ```bash
 sysctl -w vm.max_map_count=262144
 echo 'vm.max_map_count=262144' > /etc/sysctl.d/99-opensearch.conf
 ```
-
-Sem ele o container **sobe e morre** no bootstrap check, com uma mensagem que
-fala de `vm.max_map_count` e não de OpenSearch. O `setup.sh` não tinha
-etapa de sysctl até este roadmap (item 27).
-
-## Deploy
 
 ```bash
 curl -fsSL .../opensearch/profiles/compartilhada-8gb.env -o .env
@@ -60,7 +70,7 @@ docker compose up -d
 docker compose logs -f opensearch
 ```
 
-Criar o índice a partir do mapping versionado:
+Criar o índice:
 
 ```bash
 curl -X PUT localhost:9200/busca_estabelecimento_v1 \
@@ -68,230 +78,69 @@ curl -X PUT localhost:9200/busca_estabelecimento_v1 \
   --data-binary @index/busca_estabelecimento.json
 ```
 
-> O nome físico termina com a versão/`load_id`; a aplicação consulta um
-> **alias**, nunca o índice diretamente. Quem cria e move o alias é o
-> `search-indexer-service` — ver
-> [alias versionado](https://github.com/BrasilDataHub/baseempresarial-services/blob/main/services/search-indexer/docs/alias-versionado.md).
-
-### Variáveis de ambiente
-
-O perfil [`profiles/compartilhada-8gb.env`](profiles/compartilhada-8gb.env)
-traz o dimensionamento — heap, breakers, watermarks e limites do container. O
-que **não** está nele:
-
-| Variável | Default | Descrição |
-|---|---|---|
-| `OS_CLUSTER_NAME` | `bdh` | nome do cluster |
-| `OS_NODE_NAME` | `opensearch` | nome do nó. Aparece nos alertas e no `_cat/nodes` — **defina com o hostname real**: o default é neutro justamente porque um nome errado aqui não quebra nada em runtime e só aparece durante um incidente, apontando o plantão para o servidor errado |
-| `OS_VOLUME` | `bdh_os_data` | volume dos índices |
-| `OS_SNAPSHOT_VOLUME` | `bdh_os_snapshots` | volume do repositório de snapshot. Separado do de dados: um snapshot no mesmo volume não protege de nada |
-| `OPENSEARCH_PORT` | `9200` | porta publicada no host |
-| `BIND_IP` | `0.0.0.0` | interface de publicação |
-
-E as que **estão** no perfil, mas cujo valor é uma decisão e não um número:
-
-| Variável | Valor no perfil | Por quê |
-|---|---|---|
-| `OS_JAVA_OPTS` | `-Xms4g -Xmx4g -XX:MaxDirectMemorySize=1g` | `Xms == Xmx` sempre: heap que cresce fragmenta e o GC paga por isso. 4 GiB contra um on-heap projetado de < 700 MiB em regime |
-| `OS_BREAKER_FIELDDATA_LIMIT` | `0%` | **de propósito.** O mapping usa `doc_values` em tudo que é agregado; qualquer uso de fielddata é erro de consulta, e o breaker o transforma em erro visível em vez de OOM |
-| `OS_WATERMARK_LOW` / `_HIGH` / `_FLOOD` | 75% / 85% / 90% | em `flood_stage` **todos** os índices viram read-only, e não voltam sozinhos quando o disco esvazia — exige um `PUT` em `index.blocks.read_only_allow_delete` |
-
-## As três decisões que não têm volta
-
-Alterar qualquer uma delas depois exige **reindexar os 72,32 milhões de
-documentos**. O teste de integração as afirma antes de a imagem ser publicada.
-
-| Decisão | Valor | Por quê |
-|---|---|---|
-| `number_of_shards` | **6** | Paralelismo e divisibilidade, não tamanho: 6 pipelines nos 12 vCPU, e 6 divide bem em 1, 2, 3 e 6 nós |
-| `_source` | **desabilitado** | É o que leva o índice de 138 para **8,4 GB**. A hidratação é por PK no Postgres, a 0,122 ms |
-| `auto_expand_replicas` | **`0-1`** | Com réplicas fixas em 0 e um nó, o cluster fica YELLOW para sempre e o alerta de saúde perde significado |
-
-## Os analisadores são decisão de produto
-
-**Sem stemmer, deliberadamente.** `light_portuguese` transformaria
-`ALIMENTOS → ALIMENT`, que casa com `ALIMENTAR`, `ALIMENTAÇÃO` e `ALIMENTÍCIA`.
-`COMERCIO DE ALIMENTOS` já devolve mais de 251 mil linhas: stemming **aumenta o
-recall onde não falta recall e destrói a precisão, que é o produto**.
-
-**`br_forma_juridica` como stopword é o que mata os 687 ms.** `LTDA` aparece em
-~70% dos 72,32 M documentos — sua postings list é praticamente o índice inteiro.
-Removendo-o, `q=COMERCIO DE ALIMENTOS LTDA` custa o mesmo que sem o `LTDA`.
-
-**Sinônimos só em tempo de busca**, com `updateable: true`: editar a lista é um
-`POST /busca_estabelecimento/_reload_search_analyzers`, sem reindexar.
-
-> **Nenhum termo da lista de sinônimos pode ser stopword do mesmo analisador.**
-> O `synonym_graph` roda depois de `br_stop`, o termo chega vazio, e o
-> OpenSearch recusa a **criação do índice** com `Failed to build synonyms`.
-> Duas linhas da lista original caíram por isso (`com` e `cia`, ambas
-> stopwords); há teste que afirma a regra.
-
-### `index_options` decide se autocomplete existe
-
-`razao_social` e `nome_fantasia` são **os dois campos do autocomplete**, e por
-isso ambos precisam de `index_options: positions`. `nome_fantasia` estava em
-`freqs` — que descarta as posições dos termos — e o efeito não é degradação, é
-recusa:
-
-```
-HTTP 400 query_shard_exception
-field:[nome_fantasia] was indexed without position data; cannot run PhraseQuery
-```
-
-Vale para `match_phrase`, `match_phrase_prefix` e `span_*`. Sem posições, a
-única busca possível no campo é `match` com `operator: and`, que casa as
-palavras em qualquer ordem e não sabe o que é prefixo: quem digita
-`magazine lui` recebe `LUPI MAGAZINE` e `MAGAZINE MAGALICE` — palavras certas,
-resultado errado.
-
-`norms: true` no mesmo campo é a segunda metade: sem norms o motor não sabe que
-`NATURA` é um nome fantasia inteiro e `BIO NATURA PRODUTOS NATURAIS` é uma
-palavra dentro de um nome longo. É 1 byte por documento por campo.
-
-Ambos exigem reindexação, mas isso não custa nada de novo: a carga mensal já
-reconstrói o índice do zero a partir do Postgres. Vale entrar **antes** da
-próxima carga — nunca depois, porque `_source` está desabilitado e `_reindex`
-não tem de onde ler.
-
-## Operação
-
-| Situação | O que fazer |
-|---|---|
-| `flood_stage` atingido (disco > 90%) | Os índices ficam **read-only e não voltam sozinhos** quando o disco esvazia: `PUT /_all/_settings {"index.blocks.read_only_allow_delete": null}` depois de liberar espaço |
-| Janela de carga | Subir `merge.scheduler.max_thread_count` para 4, `refresh_interval` para `-1` e o breaker `parent` para 85%; devolver a 1, `30s` e 70% no fim |
-| Divergência de contagem com o Postgres | **Não mova o alias.** O índice N−1 continua servindo, e é por isso que ele é mantido por 7 dias |
-| Editar sinônimos | `POST /busca_estabelecimento/_reload_search_analyzers` — sem reindexar |
-
-## Alertas
-
-`../monitoring/prometheus/rules/opensearch.rules.yml` — 10 regras, de zero.
-Duas divergências em relação ao que o roadmap antecipava, verificadas num nó
-3.3.0 real:
-
-- não existe histograma de latência de busca no plugin de exporter (só
-  counters), então o p95 por classe de SLO vem do `blackbox_exporter`;
-- não há contador de rejeição por thread pool; o sinal equivalente é a **fila**
-  do pool de escrita.
-
-## Testes
+Janela de carga:
 
 ```bash
-bash opensearch/test/opensearch.test.sh
-```
-
-Sobe um nó de verdade, cria o índice com o mapping versionado e exercita os
-analisadores com texto real de razão social. 17 asserções.
-
-## Perfis
-
-| Perfil | Máquina-alvo | Limite | Heap | Page cache livre |
-|---|---|---|---|---|
-| `compartilhada-8gb` | host de 31 GiB **dividido** com o PostgreSQL | 8 GiB | 4 GiB | 7,5 GiB |
-| `dedicada-16gb` | host de 15,6 GiB **só** do motor de busca | 10 GiB | 5 GiB | 4,1 GiB |
-| `dev-4gb` | **desenvolvimento**: host de ~16 GiB rodando a arquitetura inteira | 4 GiB | 2 GiB | ~1 GiB |
-
-O `setup.sh` escolhe sozinho (`--opensearch-profile auto`, o default), e a
-pergunta que ele faz **não é o tamanho da máquina — é com quem o motor divide
-o host**. Ao lado de Postgres, Redis ou Meilisearch, `compartilhada-8gb`;
-sozinho numa máquina de 14 GiB ou mais, `dedicada-16gb`.
-
-### `dev-4gb` não é escolhido pelo `auto`
-
-O terceiro perfil existe para uma máquina que os outros dois não atendem: a de
-desenvolvimento que roda **Postgres, OpenSearch, Redis, PgBouncer e
-observabilidade ao mesmo tempo** em ~16 GiB. Nela `compartilhada-8gb` não cabe
-— 7 GiB de Postgres mais 8 de OpenSearch já passam da RAM física, e quem decide
-o que morre é o OOM-killer.
-
-Ele é **explícito por design**: `--opensearch-profile dev-4gb`. O `auto` não o
-considera nem quando é o único que caberia, porque o host pequeno que roda tudo
-é exatamente onde o `auto` cairia nele — e 2 GiB de heap num servidor de
-verdade não falha na instalação, falha na carga mensal, com
-`circuit_breaking_exception` a horas de distância de quem escolheu o perfil.
-
-O que ele preserva de produção: breakers, watermarks, `number_of_shards` 6 e o
-mapping inteiro. O que ele **não** preserva, e por isso não serve de referência:
-
-- **latência.** Com ~1 GiB de page cache disputado com o PGDATA, busca fria vai
-  ao disco onde produção serve da memória. Medição feita aqui não transfere.
-- **tamanho de lote na carga.** Medido ao carregar os 72,32 M documentos:
-
-  | `OPENSEARCH_BULK_SIZE` | Resultado |
-  |---|---|
-  | `5000` (default do indexer) | breaker `parent` dispara com 1,4 GiB de heap real contra o limite de 1,3; backpressure exponencial derruba a taxa de ~5.000 para **560 docs/s**, e o motor passa a recusar até chamadas de `_settings` |
-  | `1500` + `refresh_interval: -1` | **zero backpressure**, 6.000–7.400 docs/s, heap estável em 53%, carga completa em ~3 h |
-
-  O default de 5000 foi dimensionado para o heap de 4 GiB de produção. Contra
-  este host, passe `OPENSEARCH_BULK_SIZE=1500` — o ajuste é no **cliente**, e
-  não custa memória nenhuma.
-
-#### O gate de publicação reprova logo depois da carga, e não é o host
-
-Medido em 31/07/2026, ao publicar os 72,32 M documentos neste perfil: a sétima
-validação do `search-indexer` (`consultas_ouro`) reprovou com
-`filtro_uf_e_situacao: 386ms` e `prefixo_nome_fantasia: 272ms` contra o teto de
-200 ms — e o alias **não** foi promovido, que é o comportamento correto do gate.
-
-As mesmas consultas passaram sem nenhuma mudança de configuração depois de:
-
-1. devolver `refresh_interval` de `-1` para `30s` e o breaker `parent` de 85%
-   para o default — a janela de carga ainda estava aberta;
-2. um `_refresh`;
-3. **aquecer o page cache** lendo os arquivos de segmento do volume
-   (`find <volume> -type f | xargs -P4 cat > /dev/null`, 19 s para 13 GB);
-4. reexecutar só as validações:
-   `opensearch publicar --load-id AAAAMM --somente-validar`.
-
-O que a primeira medição capturou não foi a capacidade do host: foi um índice
-com a janela de carga aberta e os segmentos recém-escritos, ainda fora do page
-cache. **A conclusão errada aqui é cara** — ela leva a afrouxar o SLO das
-consultas de ouro, que é o único teste automático que separa "o índice existe"
-de "o índice serve". Aqueça e remeça antes de tocar no teto.
-
-Continua valendo que **latência medida neste perfil não transfere para
-produção**: lá são 7,5 GiB de page cache reservados, aqui ~1 GiB disputado com
-o PGDATA. O que o parágrafo acima afirma é só que o SLO É alcançável aqui, não
-que os números sejam comparáveis.
-
-### Por que o perfil errado não é só conservador
-
-Aplicar `compartilhada-8gb` a um host dedicado deixa 10 GiB ociosos **e** faz o
-breaker `parent` (70% de 4 GiB = 2,8 GiB) recusar a carga inicial. Medido em
-29/07/2026, indexando os 72,3 M de estabelecimentos: em repouso o motor já
-ocupava 1,8 GiB de heap, o pico de um lote não cabia no que sobrava, e a
-indexação **parou em 2,46 M documentos** — HTTP 429 contínuo, CPU do motor em
-0,5%, sem erro nenhum no log do serviço. Só esperando.
-
-### A janela de carga, na ordem que importa
-
-```bash
-# ANTES da carga
+# ANTES
 curl -X PUT "$OS/_cluster/settings" -H 'Content-Type: application/json' \
   -d '{"transient":{"indices.breaker.total.limit":"85%"}}'
 curl -X PUT "$OS/<indice>/_settings" -H 'Content-Type: application/json' \
   -d '{"index":{"refresh_interval":"-1","merge.scheduler.max_thread_count":4}}'
 
-# DEPOIS — e isto não é opcional
+# DEPOIS (obrigatório — refresh_interval persiste)
 curl -X PUT "$OS/<indice>/_settings" -H 'Content-Type: application/json' \
   -d '{"index":{"refresh_interval":"30s","merge.scheduler.max_thread_count":1}}'
 ```
 
-O breaker vai como `transient` de propósito: um restart devolve o valor de
-regime sozinho. Já o `refresh_interval` é do índice e **persiste** — um índice
-esquecido em `-1` não atualiza para busca nunca mais, e o sintoma chega como
-"o site não vê o dado novo", longe daqui.
+| Situação | Ação |
+|---|---|
+| `flood_stage` (disco > 90%) | Índices ficam read-only e **não** voltam sozinhos: após liberar espaço, `PUT /_all/_settings {"index.blocks.read_only_allow_delete": null}` |
+| Divergência de contagem com Postgres | **Não mova o alias.** Índice N−1 permanece por 7 dias |
+| Editar sinônimos | `POST /busca_estabelecimento/_reload_search_analyzers` |
+| Perfil `dev-4gb` na carga | `OPENSEARCH_BULK_SIZE=1500` + `refresh_interval: -1` (default 5000 dispara breaker parent) |
 
-Efeito medido do breaker em 85%: a indexação passou de **8,6 mil para 30,5 mil
-documentos por segundo**.
+Após carga em `dev-4gb`, antes de validar SLO: devolver `refresh_interval`/`breaker`, `_refresh`, aquecer page cache dos segmentos, então `opensearch publicar --load-id AAAAMM --somente-validar`.
 
-### O que NÃO vai no perfil
+```bash
+bash opensearch/test/opensearch.test.sh
+```
 
-`merge.scheduler`, `refresh_interval` e `translog.*` são settings de **índice**,
-e o OpenSearch não os aceita em `opensearch.yml` — que é no que uma variável de
-ambiente do container se transforma. Eles vivem em
-[`index/busca_estabelecimento.json`](index/busca_estabelecimento.json).
+Sobe um nó, cria o índice com o mapping e exercita analisadores (17 asserções).
 
-Havia um `OS_MERGE_THREADS=1` no perfil que **nenhum lugar lia**: o compose não
-o referencia e o motor não o aceitaria. O valor real sempre veio do mapping; a
-variável só dava a impressão de configurar algo.
+Latência p95 por classe de SLO vem do `blackbox_exporter` (plugin de exporter não expõe histograma de latência). Sinal de saturação de escrita: fila do thread pool (não há contador de rejeição).
+
+## Variáveis e segredos
+
+Perfil [`profiles/compartilhada-8gb.env`](profiles/compartilhada-8gb.env) traz heap, breakers, watermarks e limites do container.
+
+| Variável | Default | Descrição |
+|---|---|---|
+| `OS_CLUSTER_NAME` | `bdh` | nome do cluster |
+| `OS_NODE_NAME` | `opensearch` | nome do nó (usar hostname real) |
+| `OS_VOLUME` | `bdh_os_data` | volume dos índices |
+| `OS_SNAPSHOT_VOLUME` | `bdh_os_snapshots` | volume de snapshots (separado do de dados) |
+| `OPENSEARCH_PORT` | `9200` | porta no host |
+| `BIND_IP` | `0.0.0.0` | interface de publicação |
+
+No perfil (valores de decisão):
+
+| Variável | Valor | Nota |
+|---|---|---|
+| `OS_JAVA_OPTS` | `-Xms4g -Xmx4g -XX:MaxDirectMemorySize=1g` | `Xms == Xmx` sempre |
+| `OS_BREAKER_FIELDDATA_LIMIT` | `0%` | mapping usa `doc_values`; fielddata = erro de consulta |
+| `OS_WATERMARK_LOW` / `_HIGH` / `_FLOOD` | 75% / 85% / 90% | em flood todos os índices viram read-only |
+
+## Restrições
+
+- Não cabe no `bdh-apps` (~8 GiB totais já comprometidos).
+- Aplicar `compartilhada-8gb` em host dedicado deixa RAM ociosa e o breaker `parent` (70% de 4 GiB) pode recusar carga inicial.
+- Índice esquecido com `refresh_interval: -1` não atualiza para busca.
+- Latência medida em `dev-4gb` não transfere para produção (~1 GiB vs 7,5 GiB de page cache).
+- Com `_source` desabilitado, `_reindex` não tem de onde ler — mudanças de mapping entram na próxima carga completa.
+
+## Links
+
+- [`index/busca_estabelecimento.json`](index/busca_estabelecimento.json)
+- [Alias versionado (search-indexer)](https://github.com/BrasilDataHub/baseempresarial-services/blob/main/services/search-indexer/docs/alias-versionado.md)
+- [`../monitoring/prometheus/rules/opensearch.rules.yml`](../monitoring/prometheus/rules/opensearch.rules.yml)
+- [`../meilisearch/README.md`](../meilisearch/README.md) — módulo alternativo, não usado no BaseEmpresarial

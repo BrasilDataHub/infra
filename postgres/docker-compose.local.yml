@@ -19,9 +19,8 @@
 #   comm -23 <(grep -ohE '\$\{PG_[A-Z0-9_]+' generate-config.sh shm-guard.sh | sed 's/^\${//' | sort -u) \
 #            <(grep -oE 'PG_[A-Z0-9_]+' docker-compose.local.yml | sort -u)
 #
-# Para reproduzir localmente o incidente de 2026-07 (/dev/shm menor que o
-# perfil) — o shm-guard deve avisar e degradar o paralelismo, em vez de deixar
-# a falha para a primeira query pesada:
+# Para testar shm-guard com /dev/shm menor que o perfil (deve avisar e
+# degradar o paralelismo):
 #   PG_SHM_BYTES=67108864 PG_WORK_MEM=32MB PG_MAX_PARALLEL_WORKERS_PER_GATHER=4 \
 #       docker compose -f docker-compose.local.yml up --build -d
 #   docker compose -f docker-compose.local.yml logs postgres | grep shm-guard

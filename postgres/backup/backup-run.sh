@@ -6,17 +6,12 @@
 # O `publish` não roda backup nenhum: só relê `pgbackrest info` e reescreve o
 # arquivo de métricas. É o que o entrypoint chama no start.
 #
-# POR QUE MÉTRICAS E NÃO SÓ LOG. Um backup agendado que falha em silêncio é
-# indistinguível de um que funciona, e é assim que se descobre que não há backup
-# no dia em que ele é necessário. O textfile collector do node_exporter
-# transforma "rodou" em série temporal, e daí em alerta (backup.rules.yml).
+# Métricas via textfile collector (node_exporter) → backup.rules.yml.
+# Sem elas, falha agendada é indistinguível de sucesso.
 #
-# NOME DAS ENVS. Só `PGBACKREST_STANZA` usa o prefixo do produto; todas as
-# outras são `BDH_BACKUP_*`. O motivo é concreto e custou um teste vermelho: o
-# pgBackRest lê QUALQUER env `PGBACKREST_<OPCAO>` como se fosse uma opção de
-# linha de comando e, ao encontrar uma que não existe, imprime
-# `WARN: environment contains invalid option '...'` NO STDOUT — o mesmo stdout
-# de `info --output=json`. O JSON sai corrompido e o parser quebra.
+# Só `PGBACKREST_STANZA` usa o prefixo do produto; o resto é `BDH_BACKUP_*`.
+# pgBackRest lê qualquer `PGBACKREST_<OPCAO>` como opção de CLI e imprime
+# WARN no stdout — corrompe o JSON de `info --output=json`.
 set -uo pipefail
 
 MODO="${1:-publish}"

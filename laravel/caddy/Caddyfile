@@ -4,17 +4,10 @@
     admin :{$CADDY_SERVER_ADMIN_PORT:2019}
 
     frankenphp {
-        # num_threads é o TOTAL de threads PHP do processo; `num`, lá dentro,
-        # é quantas delas atendem o worker script. Sem a linha de fora, o
-        # `num` de dentro não basta: com apenas a diretiva do worker o
-        # FrankenPHP manteve UMA thread ativa e serializou todas as
-        # requisições — medido em produção, 30 pedidos paralelos viraram uma
-        # escada de 1,84 s a 3,32 s com um núcleo inteiro ocioso.
-        #
-        # Quem calcula os valores é o entrypoint, a partir da CPU e da memória
-        # que o container realmente tem. Os defaults abaixo só valem para quem
-        # subir o FrankenPHP sem passar por ele, e são deliberadamente baixos:
-        # errar para menos custa vazão, errar para mais custa OOM.
+        # num_threads = total de threads PHP; `num` no worker = quantas atendem
+        # o script. Sem num_threads, uma única thread serializa as requisições.
+        # Valores calculados pelo entrypoint a partir de CPU/RAM do container;
+        # defaults abaixo são conservadores (errar para menos > OOM).
         num_threads {$FRANKENPHP_NUM_THREADS:4}
         max_threads {$FRANKENPHP_MAX_THREADS:8}
 

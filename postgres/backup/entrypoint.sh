@@ -1,14 +1,5 @@
 #!/usr/bin/env bash
-# Entrypoint do sidecar de backup. Faz quatro coisas, nesta ordem:
-#
-#   1. valida a configuração ANTES de agendar qualquer coisa;
-#   2. espera o Postgres aceitar conexão pelo socket compartilhado;
-#   3. cria a stanza (idempotente) e roda `check`;
-#   4. escreve /etc/cron.d/pgbackrest e entrega o PID 1 ao cron.
-#
-# A ordem importa: agendar primeiro e validar depois produz exatamente o modo de
-# falha que este item existe para eliminar — um backup que "está agendado" e
-# falha em silêncio toda madrugada.
+# Entrypoint: valida config → espera Postgres → stanza → cron → entrega PID 1.
 set -euo pipefail
 
 log() { printf '%s pgbackrest-sidecar: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }

@@ -11,13 +11,8 @@
 #   4. espera o recovery terminar e roda a contagem de conferência;
 #   5. imprime o RTO real (restore + recovery + verificação) e derruba tudo.
 #
-# "Backup não testado não é backup" é a razão de este script existir. O número
-# que ele imprime — o RTO medido — é o que vai para EXECUCAO.md; sem ele, o RTO
-# é uma estimativa, e estimativa de RTO é o tipo de número que só é conferido
-# durante o incidente.
-#
-# NADA aqui toca o volume, a porta ou o container de produção. As três
-# verificações que garantem isso estão em `checar_isolamento`.
+# Mede o RTO real (restore + recovery + verificação).
+# Não toca volume, porta nem container de produção — ver `checar_isolamento`.
 set -euo pipefail
 
 STANZA=""
@@ -206,8 +201,7 @@ CONTROLDATA="$(docker run --rm \
     || die "não foi possível ler o pg_control do PGDATA restaurado"
 
 # `pg_controldata` imprime "max_connections setting:  150". O `-c` só entra
-# quando o valor foi lido: um `-c max_connections=` vazio impede o Postgres de
-# subir, e um default chutado aqui reintroduziria o mesmo defeito.
+# quando o valor foi lido — `-c max_connections=` vazio impede o start.
 PARAMS=()
 for par in max_connections max_worker_processes max_wal_senders \
            max_prepared_xacts max_locks_per_xact; do
@@ -223,9 +217,7 @@ for par in max_connections max_worker_processes max_wal_senders \
     log "  ${nome} = ${valor} (da origem)"
 done
 
-# A porta é publicada em 127.0.0.1 e não em 0.0.0.0: um cluster restaurado tem a
-# MESMA senha do de produção, e publicá-lo na interface externa por dez minutos
-# é o tipo de atalho que vira incidente.
+# Porta só em 127.0.0.1: o cluster restaurado tem a mesma senha de produção.
 # PGDATA=/restore, e NÃO o caminho default. O motivo não é cosmético: o
 # `pgbackrest restore` grava em postgresql.auto.conf um
 # `restore_command = pgbackrest ... --pg1-path=<caminho usado no restore> ...`.
@@ -308,6 +300,6 @@ printf ' contagem de %-12s %6s\n' "$TABELA" "$CONTAGEM"
 printf ' veredito ................. %6s\n' "$VEREDITO"
 echo "──────────────────────────────────────────────────────────────"
 echo
-echo "Registre o RTO acima em docs/roadmap/.../EXECUCAO.md."
+echo "Registre o RTO medido no runbook de operação do ambiente."
 
 [ "$VEREDITO" = "ok" ] || exit 1

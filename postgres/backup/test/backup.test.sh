@@ -1,21 +1,9 @@
 #!/usr/bin/env bash
-# Teste de integração do sidecar de backup — ciclo COMPLETO, de ponta a ponta:
-# archive_command → stanza → full → escrita nova → diff → restore → contagem.
+# Teste de integração do sidecar pgBackRest — archive → full → diff → restore.
 #
 #   bash postgres/backup/test/backup.test.sh
 #
-# Por que integração e não unitário: cada peça deste item é trivial isolada, e o
-# que quebra é a junção — o uid do volume, o socket compartilhado, o binário que
-# está no sidecar mas não no banco, o /etc/cron.d sem nova linha no fim. Um teste
-# que não sobe os dois containers de verdade não pega nenhum desses.
-#
-# O repositório do teste é `posix` num volume local, não S3: o que está sob teste
-# é a mecânica do sidecar, e um bucket real transformaria o teste numa
-# dependência de rede e de credencial. A diferença entre posix e s3 é uma seção
-# do pgbackrest.conf.
-#
-# Precisa de Docker. Não toca em nada de produção: nomes, volumes e portas são
-# próprios e removidos ao final.
+# Repositório posix local (não S3). Precisa de Docker; recursos isolados e removidos ao final.
 set -uo pipefail
 
 RAIZ="$(cd "$(dirname "$0")/../../.." && pwd)"
@@ -80,20 +68,7 @@ pg1-user=postgres
 EOF
 chmod 640 "$CONF_DIR/pgbackrest.conf"
 
-# O `chown` que o README manda fazer em produção, e que este teste não fazia.
-#
-# O pgbackrest roda como `postgres` (uid 999) e lê a config por bind-mount do
-# host. Com modo 640 e dono diferente, ele não consegue ler a PRÓPRIA
-# configuração: `unable to open file '/etc/pgbackrest/pgbackrest.conf' for
-# read: [13] Permission denied`.
-#
-# No Docker Desktop do macOS o compartilhamento de arquivos mascara a
-# propriedade e isso passa despercebido; num runner Linux, onde o mapeamento de
-# uid é real, o teste falha. Foi assim que o defeito ficou verde localmente e
-# vermelho no CI.
-#
-# Só o ARQUIVO, não o diretório: o TEXTFILE_DIR é criado dentro dele mais
-# adiante, e precisa continuar gravável por quem roda o teste.
+# pgbackrest.conf legível por uid 999 (postgres) — chown como em produção.
 if ! chown 999:999 "$CONF_DIR/pgbackrest.conf" 2>/dev/null; then
     sudo chown 999:999 "$CONF_DIR/pgbackrest.conf" 2>/dev/null || true
 fi
@@ -197,19 +172,7 @@ else
     nok "o cron não está rodando"
 fi
 
-# O healthcheck é extraído aqui e AFIRMADO depois do primeiro backup — ver
-# `checar_healthcheck`, chamada logo após o `--type=full`.
-#
-# A ordem é o ponto. Rodá-lo aqui, com a stanza recém-criada e nenhum backup
-# ainda, testava duas coisas ao mesmo tempo e reprovava pela errada: o
-# `pgbackrest info` de uma stanza sem backup devolve `status.code = 2`
-# ("no valid backups"), então o `jq -e '.code == 0'` falha mesmo com o `su` e o
-# usuário perfeitamente corretos. O que este bloco existe para pegar é OUTRA
-# coisa — o pgBackRest recusando comandos sob root —, e essa falha some no meio.
-#
-# Que um sidecar sem backup nenhum fique `unhealthy` é o comportamento
-# desejado, e não um defeito a contornar: `start_period` é de 2 min e o passo 4
-# do README manda rodar o primeiro full logo depois de subir.
+# Healthcheck validado após primeiro backup (stanza sem backup retorna status 2).
 HC="$(python3 - "$RAIZ/postgres/docker-compose.backup.yml" <<'PY'
 import json, re, sys
 texto = open(sys.argv[1], encoding='utf-8').read()

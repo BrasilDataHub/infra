@@ -1,274 +1,83 @@
 # monitoring
 
-Observabilidade da infraestrutura BrasilDataHub: Prometheus, Alertmanager,
-Grafana, sondas de caixa-preta e os coletores de escopo de máquina. Quatro
-imagens: `ghcr.io/brasildatahub/prometheus` (config e regras embutidas),
-`ghcr.io/brasildatahub/grafana` (provisioning e dashboards),
-`ghcr.io/brasildatahub/alertmanager` (roteamento, inibição e a janela de
-silenciamento do ETL) e `ghcr.io/brasildatahub/blackbox-exporter` (os módulos
-das classes de SLO).
+## Papel
 
-É o único módulo que observa os outros. Os **exporters de Postgres e Redis não
-estão aqui** — vivem no diretório do serviço que observam, porque a DSN, os
-coletores desligados e os timeouts são fatos sobre aquele serviço:
+Observabilidade da infraestrutura BrasilDataHub: Prometheus, Alertmanager, Grafana, blackbox e coletores de máquina. É o único módulo que observa os outros.
+
+Exporters de Postgres, Redis e Meilisearch vivem no diretório do serviço observado. Tudo é opcional: nada sobe sem `--metrics`.
 
 | Onde | O quê |
 |---|---|
-| [`../postgres/docker-compose.metrics.yml`](../postgres/docker-compose.metrics.yml) | `postgres_exporter` + a role `metrics_read` |
+| [`../postgres/docker-compose.metrics.yml`](../postgres/docker-compose.metrics.yml) | `postgres_exporter` + role `metrics_read` |
 | [`../redis/docker-compose.metrics.yml`](../redis/docker-compose.metrics.yml) | `redis_exporter` |
-| [`../meilisearch/docker-compose.metrics.yml`](../meilisearch/docker-compose.metrics.yml) | liga o `/metrics` nativo (não há exporter) |
+| [`../meilisearch/docker-compose.metrics.yml`](../meilisearch/docker-compose.metrics.yml) | liga `/metrics` nativo |
 | `monitoring/` | Prometheus, Alertmanager, Grafana, blackbox, node exporter, cAdvisor |
 
-Tudo isso é **opcional**: nada sobe sem `--metrics`, e os composes de produção
-dos três serviços continuam idênticos.
+## Componentes / imagem
 
-## Como os pedaços se enxergam
+| Imagem | Conteúdo |
+|---|---|
+| `ghcr.io/brasildatahub/prometheus` | config e regras embutidas |
+| `ghcr.io/brasildatahub/grafana` | provisioning e dashboards |
+| `ghcr.io/brasildatahub/alertmanager` | roteamento, inibição, janela de silêncio ETL |
+| `ghcr.io/brasildatahub/blackbox-exporter` | módulos das classes de SLO |
 
-Cada serviço sobe como um projeto Compose separado (`docker compose -p postgres`),
-e projetos não compartilham rede. A ligação é uma rede Docker chamada
-`bdh_metrics`: o exporter fica em **duas** redes — a do seu projeto, para falar
-com o serviço por DNS interno (`postgres:5432`), e a `bdh_metrics`, para ser
-coletado pelo Prometheus.
+Rede compartilhada `bdh_metrics` (declarada **sem** `external: true`): exporters ficam na rede do projeto + `bdh_metrics`; Prometheus coleta pelo nome do serviço Compose.
 
 ```
 projeto postgres          projeto redis            projeto monitoring
 ┌─────────────────┐       ┌─────────────────┐      ┌──────────────────────┐
 │ postgres        │       │ redis           │      │ prometheus ── grafana│
-│    ↑ DNS interno│       │    ↑            │      │     ↑                │
 │ postgres-exporter       │ redis-exporter  │      │ node-exporter        │
 └────────┼────────┘       └────────┼────────┘      └──────┼───────────────┘
          └──────────────── bdh_metrics ──────────────────┘
 ```
 
-### Alertmanager: por que ele existe
+Nenhum exporter publica porta no host (all-in-one). Alertmanager **recusa subir** sem destino de notificação.
 
-Antes dele havia **18 regras de alerta validadas e sem destino nenhum**. O
-Alertmanager é o que as faz chegar a alguém, e traz três coisas que um contact
-point do Grafana não daria:
-
-- **`silence`.** O runbook mensal começa com "silence do Alertmanager por 6 h" e
-  termina com "remover o silence". É um recurso do Alertmanager; o alerting do
-  Grafana só roteia regras gerenciadas pelo próprio Grafana, e estas são
-  avaliadas pelo Prometheus.
-- **Janela de ETL.** Cinco alertas — `IOSaturado`, `CacheHitBaixo`,
-  `MuitosArquivosTemporarios`, `CheckpointsForcadosDemais` e
-  `PostgresConexoesPertoDoLimite` — são falsos positivos **legítimos** durante a
-  carga mensal. Sem silenciá-los, a operação aprende a ignorá-los, o que é pior
-  que não ter alerta.
-- **Inibição.** Host fora do ar cala o que roda nele; sonda que falha cala o p95
-  do mesmo alvo.
-
-**O container RECUSA subir sem um destino configurado.** É deliberado: um
-Alertmanager que não notifica ninguém reproduziria o estado que ele veio
-corrigir, com a aparência de resolvido.
-
-### blackbox_exporter: o que substitui o Pulse
-
-Antes dele **não existia uma métrica de TTFB no sistema**. O Laravel Pulse media
-latência por dentro e custava uma transação no banco por requisição pública —
-100% das inserções do banco da aplicação. O blackbox mede por fora, com retenção
-e histórico, e mede o que o usuário experimenta: TLS, borda e origem.
-
-Há um módulo por classe da tabela de SLO, e três deles sondam a **mesma URL** de
-propósito, porque fazem perguntas diferentes:
+Módulos blackbox (mesma URL pode aparecer em módulos distintos):
 
 | Módulo | Pergunta | Falha significa |
 |---|---|---|
-| `borda_hit` | a borda está servindo? | a Cache Rule caiu ou a resposta virou incachável |
-| `condicional_304` | o `Last-Modified` está sendo emitido? | o crawl do Googlebot volta a 314 dias |
-| `anonima_sem_cookie` | a rota pública continua sem sessão? | **estado de login vazando para o cache público** |
+| `borda_hit` | a borda está servindo? | Cache Rule caiu ou resposta incachável |
+| `condicional_304` | `Last-Modified` emitido? | crawl sem 304 |
+| `anonima_sem_cookie` | rota pública sem sessão? | estado de login vazando para cache público |
 
-**Nenhum exporter publica porta no host.** O `/metrics` não tem autenticação e o
-do Postgres entrega o `pg_settings_*` inteiro; expô-lo daria de graça o que o
-resto da stack protege com senha. O Prometheus os alcança pelo nome do **serviço**
-Compose, que o Docker registra como alias na rede compartilhada — por isso o
-endereço não depende do nome do projeto.
+Dashboards (pasta BrasilDataHub, não editáveis pela UI):
 
-### Quando o Prometheus fica em outro host
+| Dashboard | Origem |
+|---|---|
+| Visão geral — BrasilDataHub | próprio |
+| OpenSearch — motor de busca | próprio |
+| Meilisearch — busca | próprio |
+| Node Exporter Full | grafana.com 1860 |
+| PostgreSQL Database | grafana.com 9628 |
+| Redis | grafana.com 763 |
 
-O nome de serviço Compose não atravessa hosts, então os exporters remotos
-precisam publicar porta — o que os overlays `*/docker-compose.metrics-remote.yml`
-e `docker-compose.remote.yml` fazem, com `METRICS_BIND_IP` **obrigatória e sem
-default**.
+Comunidade vendorizada por [`grafana/vendorizar.sh`](grafana/vendorizar.sh); detalhes em [`grafana/dashboards/UPSTREAM.md`](grafana/dashboards/UPSTREAM.md). Alertas: [`prometheus/rules/`](prometheus/rules/), docs em [`docs/alertas.md`](docs/alertas.md).
 
-Com rede privada entre as máquinas, aponte `METRICS_BIND_IP` e os alvos para o IP
-privado: é o arranjo preferível, e o único em que a coleta não trafega pela
-internet. **Sem rede privada**, a proteção é inteiramente o firewall restrito ao
-IP do par (`--allow-from`) — `/metrics` não tem autenticação, e o do Postgres
-entrega `pg_settings_*` inteiro. A sonda `PortaDeDadosAlcancavelDeFora` existe
-para pegar a regressão dessa regra.
-
-Isto vale para qualquer arranjo: um host por serviço, um híbrido com parte local
-e parte remota, ou um host de observabilidade dedicado (`--services monitoring`).
-Detalhes e os cenários em [`targets/`](targets/README.md).
-
-A rede é declarada **sem `external: true`**, e isso é deliberado. Com `external`,
-um `docker network prune` com os containers parados faria o `docker compose up`
-do **próprio banco** falhar com `network declared as external, but could not be
-found`. Do jeito atual, o primeiro projeto a subir cria a rede, os demais reusam,
-e se ela sumir o próximo `up` a recria. O Compose emite um aviso cosmético
-(`a network with name bdh_metrics exists but was not created for project ...`);
-silenciá-lo com `external: true` reintroduz a falha.
-
-## Perfis
-
-O eixo é o orçamento de memória do Prometheus, como nos demais módulos. Retenção
-e alvos suportados são derivados.
+## Perfis e configuração
 
 | Perfil | Séries ativas | Retenção | `PROM_MEMORY_LIMIT` | Quando usar |
 |---|---|---|---|---|
 | `metricas-512mb` | ~3 mil | 30d / 2GB | **512M** | default; um host com os três serviços |
-| `metricas-2gb` | ~15 mil | 90d / 20GB | **2G** | um host com cAdvisor, ou 2–4 hosts |
+| `metricas-2gb` | ~15 mil | 90d / 20GB | **2G** | cAdvisor, ou 2–4 hosts |
 | `metricas-8gb` | ~80 mil | 180d / 200GB | **8G** | 5–15 hosts |
 
-Medido num host com os três serviços e o node exporter: **3.470 séries ativas** e
-**~67 amostras/s** — bem dentro do `metricas-512mb`.
+`--metrics-profile auto` → `metricas-512mb`; sobe para `metricas-2gb` com `--metrics-containers`. `metricas-8gb` nunca é automático.
 
-**O `auto` deste módulo não escala com a RAM**, ao contrário do Redis e do
-Meilisearch. A cardinalidade segue o **número de alvos**, não o tamanho do host:
-os mesmos três serviços geram ~3 mil séries tanto numa máquina de 16 GB quanto
-numa de 128 GB. Então `--metrics-profile auto` resolve para `metricas-512mb` em
-qualquer tamanho, e sobe para `metricas-2gb` apenas com `--metrics-containers`
-(o cAdvisor sozinho dobra o volume de séries). **`metricas-8gb` nunca é
-automático**: ele existe para 5–15 hosts, um cenário multi-host que o
-`setup.sh` não conhece — escolha-o à mão se for federar máquinas.
+As duas retenções (tempo e tamanho) são sempre declaradas. Com coexistência Postgres, somar ~2 GB (~3 GB com cAdvisor) à [fórmula de coexistência](../postgres/docs/perfis.md#fórmula-de-reserva).
 
-Cada perfil é um `.env` versionado em [`profiles/`](profiles/), o mesmo arquivo
-que o [`setup.sh`](../README.md#setup-automatizado-de-vps) baixa.
+Rótulo `host` vai no **arquivo de alvos** (gravado no TSDB). `external_labels: host` no `prometheus.yml` não substitui — só entra em remote_write/federação/Alertmanager. Os dois convivem: external labels preenchem `absent()`.
 
-**As duas retenções são sempre declaradas.** A de tempo sozinha não protege o
-disco: um pico de cardinalidade enche o volume — que divide o NVMe com o
-Postgres — muito antes de os 30 dias passarem. Este é o pior modo de falha da
-stack, a ferramenta de observação derrubando o observado.
-
-Se a monitoração dividir o host com o Postgres, some ~2 GB (ou ~3 GB com
-cAdvisor) à [fórmula de coexistência](../postgres/docs/perfis.md#fórmula-de-reserva).
-O `setup.sh` avisa quando o orçamento não fecha.
-
-## Variáveis de ambiente
-
-Os perfis em [`profiles/`](profiles/) cobrem o dimensionamento (`PROM_*`,
-`GRAFANA_*`, limites de CPU/memória de cada exporter). O que **não** está neles,
-porque é segredo ou é específico do host, está abaixo.
-
-### Alertmanager — o destino (ao menos um é obrigatório)
-
-**O container recusa subir sem nenhum destes três.** É deliberado: um
-Alertmanager que não notifica ninguém reproduziria o estado que ele veio
-corrigir — 18 regras validadas e sem destino — com a aparência de resolvido.
-
-| Variável | Descrição |
-|---|---|
-| `ALERTMANAGER_SLACK_WEBHOOK` | webhook do Slack. O caminho mais curto |
-| `ALERTMANAGER_WEBHOOK_URL` | webhook genérico (n8n, Discord via proxy, etc.) |
-| `ALERTMANAGER_EMAIL_TO` | destinatário. **Exige** `ALERTMANAGER_SMTP_HOST` e `ALERTMANAGER_EMAIL_FROM` |
-
-### Alertmanager — Slack e e-mail
-
-| Variável | Default | Descrição |
-|---|---|---|
-| `ALERTMANAGER_SLACK_CHANNEL` | `#alertas` | canal de destino |
-| `ALERTMANAGER_SMTP_HOST` | — | `host:porta`. Obrigatória se `EMAIL_TO` |
-| `ALERTMANAGER_EMAIL_FROM` | — | remetente. Obrigatória se `EMAIL_TO` |
-| `ALERTMANAGER_SMTP_USER` | — | usuário SMTP, se houver |
-| `ALERTMANAGER_SMTP_PASSWORD` | — | senha SMTP, se houver |
-| `ALERTMANAGER_SMTP_TLS` | `true` | `smtp_require_tls` |
-
-### Alertmanager — a janela de ETL
-
-Cinco alertas são falsos positivos **legítimos** durante a carga mensal:
-`IOSaturado`, `CacheHitBaixo`, `MuitosArquivosTemporarios`,
-`CheckpointsForcadosDemais` e `PostgresConexoesPertoDoLimite`. Dentro da janela
-eles continuam **ativos e visíveis na interface** — só não acordam ninguém.
-
-Os defaults descrevem o D0 do runbook mensal: sábado da primeira semana, das
-00:00 às 07:00 no fuso de São Paulo.
-
-| Variável | Default | Descrição |
-|---|---|---|
-| `ALERTMANAGER_ETL_TIMEZONE` | `America/Sao_Paulo` | `location` do intervalo. Escrever a janela em UTC a faz escorregar com o horário de verão |
-| `ALERTMANAGER_ETL_DAYS_OF_MONTH` | `1:7` | primeira semana |
-| `ALERTMANAGER_ETL_WEEKDAY` | `saturday` | |
-| `ALERTMANAGER_ETL_START` | `00:00` | |
-| `ALERTMANAGER_ETL_END` | `07:00` | |
-
-Se a data da carga mudar, **estes cinco valores mudam junto** — senão a janela
-silencia o mês errado.
-
-### Alertmanager — agrupamento e repetição
-
-| Variável | Default | Descrição |
-|---|---|---|
-| `ALERTMANAGER_RESOLVE_TIMEOUT` | `10m` | |
-| `ALERTMANAGER_GROUP_WAIT` | `45s` | espera antes da primeira notificação de um grupo novo |
-| `ALERTMANAGER_GROUP_INTERVAL` | `5m` | |
-| `ALERTMANAGER_REPEAT_INTERVAL` | `4h` | 4 h e não 30 min: um alerta que se repete a cada meia hora é desligado pela operação em duas semanas |
-| `ALERTMANAGER_REPEAT_CRITICAL` | `1h` | `critical` tem repetição própria, mais curta |
-
-### Container
-
-| Variável | Default | Descrição |
-|---|---|---|
-| `ALERTMANAGER_PORT` | `9093` | |
-| `ALERTMANAGER_VOLUME` | `bdh_alertmanager_data` | volume do estado (silences ativos) |
-| `ALERTMANAGER_MEMORY_LIMIT` / `_CPU_LIMIT` | ver perfis | |
-| `BLACKBOX_PORT` | `9115` | |
-| `BLACKBOX_MEMORY_LIMIT` / `_CPU_LIMIT` | ver perfis | |
-| `MONITORING_BIND_IP` | `127.0.0.1` | Grafana e Prometheus. **Separada** de `BIND_IP` de propósito |
-| `METRICS_BIND_IP` | — **sem default** | só nos overlays remotos. Obrigatória por decisão |
-| `NODE_TEXTFILE_DIR` | `/var/lib/node_exporter/textfile` | onde o backup, o indexer e o pipeline escrevem `.prom` |
-| `MON_HOSTNAME` | `desconhecido` | rótulo `host` nas séries |
-| `GRAFANA_ADMIN_PASSWORD` | gerada | fica em `secrets/credentials.env` |
-| `GRAFANA_ROOT_URL` | `http://localhost:3000` | necessária se o Grafana ficar atrás de proxy |
-
-> As métricas escritas por **textfile collector** (`bdh_backup_*`,
-> `bdh_indexer_*`) dependem de `NODE_TEXTFILE_DIR` apontar para o **mesmo
-> diretório** que o node_exporter lê e que os produtores escrevem. Se os três
-> não concordarem, os alertas de freshness e de divergência de contagem nunca
-> disparam — e a ausência de alerta parece saúde.
-
-## Acesso
-
-Grafana e Prometheus publicam em **`127.0.0.1`**, o oposto dos serviços de dados
-— e por um motivo concreto: Postgres, Redis e Meilisearch abrem em `0.0.0.0`
-porque a aplicação vive em outra máquina e a senha é a barreira, enquanto o
-**Prometheus não tem autenticação nenhuma**. Quem alcança a porta lê tudo e chama
-`/api/v1/admin/tsdb/*`.
+## Deploy / operação
 
 ```bash
-ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 usuario@host
-# depois: http://127.0.0.1:3000  (usuário admin, senha em secrets/credentials.env)
+sudo bash setup.sh --auto --metrics          # instalação nova
+sudo bash setup.sh --metrics-only            # acrescentar sem recriar dados
 ```
 
-A variável é `MONITORING_BIND_IP`, **separada** de `BIND_IP` de propósito: o
-default do provisionamento é `--bind-ip 0.0.0.0`, e reusá-la publicaria o Grafana
-na internet.
-
-Efeito colateral bom: com bind em loopback o DNAT do Docker só existe para
-destino loopback, então **nenhuma regra de firewall é necessária**. É o único
-caso nesta infraestrutura em que a [armadilha do `DOCKER-USER`](../postgres/docs/host.md#rede)
-não morde. Se você mudar `MONITORING_BIND_IP` para uma interface real, aí sim as
-regras passam a valer — e `ufw allow 3000` sozinho não protegeria nada.
-
-## Implantação
-
-O caminho normal é o provisionamento automatizado:
-
-```bash
-# instalação nova, já com observabilidade
-sudo bash setup.sh --auto --metrics
-
-# acrescentar observabilidade a uma instalação que JÁ existe, sem recriar
-# os containers de dados
-sudo bash setup.sh --metrics-only
-```
-
-`--metrics-only` é o modo para ligar métricas num banco em produção: ele implica
-`--force` (para reconfigurar) mas **suprime o `--force-recreate`**, então o
-Compose cria apenas o container novo. Verificado: Postgres e Redis preservados.
-O Meilisearch é a exceção inerente — ligar o `/metrics` é uma variável de
-ambiente do próprio serviço, então o container é recriado; faça numa janela sem
-indexação.
+`--metrics-only` implica `--force` mas suprime `--force-recreate` (Postgres/Redis preservados; Meilisearch recria por mudança de env).
 
 À mão:
 
@@ -284,10 +93,8 @@ COMPOSE_PROFILES=node          # +containers para o cAdvisor
 EOF
 chmod 600 .env
 
-# obrigatório ANTES do primeiro up (ver abaixo)
 mkdir -p targets secrets && touch secrets/meili-metrics.key
 
-# um arquivo por serviço que existe neste host
 printf '[{"targets":["postgres-exporter:9187"]}]\n' > targets/postgres.json
 printf '[{"targets":["redis-exporter:9121"]}]\n'    > targets/redis.json
 printf '[{"targets":["node-exporter:9100"]}]\n'     > targets/node.json
@@ -295,125 +102,110 @@ printf '[{"targets":["node-exporter:9100"]}]\n'     > targets/node.json
 docker compose up -d
 ```
 
-**Por que `touch secrets/meili-metrics.key` é obrigatório:** o job do Meilisearch
-usa `credentials_file`, e o Prometheus recusa a configuração **inteira** se o
-arquivo não existir — um host sem Meilisearch ficaria sem monitoração nenhuma por
-causa disso. O arquivo é montado com `create_host_path: false`, então a falta
-dele falha no `up` com o caminho exato, em vez de o Docker criar um diretório
-fantasma e o erro aparecer obscuro lá dentro.
+`touch secrets/meili-metrics.key` é obrigatório: o job Meilisearch usa `credentials_file` e o Prometheus recusa a config inteira se o arquivo não existir.
 
-**Por que os alvos ficam em arquivos, e não no `prometheus.yml`:** o que varia
-entre hosts são os alvos, e `file_sd_configs` é o mecanismo nativo para isso —
-com recarga a quente, sem restart. Serviço que não existe não deixa arquivo, o
-glob não casa nada e o job fica **sem alvo** em vez de ficar `up == 0` para
-sempre, envenenando justamente o alerta que mais importa.
-
-## Operação
+Alvos em `file_sd_configs` (recarga a quente). Serviço ausente = sem arquivo = job sem alvo (não `up == 0`).
 
 ```bash
-bdh metrics          # alvos, alertas disparando e séries por job
+bdh metrics
 bdh logs monitoring
-```
-
-Recarregar alvos sem reiniciar (o `--web.enable-lifecycle` já está ligado):
-
-```bash
 curl -X POST http://127.0.0.1:9090/-/reload
 ```
 
-## Dashboards
-
-Provisionados na pasta **BrasilDataHub**, marcados como não editáveis pela UI —
-o git é a fonte da verdade, como nos composes e nos perfis.
-
-| Dashboard | Origem |
-|---|---|
-| **Visão geral — BrasilDataHub** | escrito para esta operação; comece por ele |
-| OpenSearch — motor de busca | escrito para esta operação |
-| Meilisearch — busca | escrito para esta operação (serviço opcional, em substituição pelo OpenSearch) |
-| Node Exporter Full | grafana.com 1860 |
-| PostgreSQL Database | grafana.com 9628 |
-| Redis | grafana.com 763 |
-
-Os três de comunidade são vendorizados por [`grafana/vendorizar.sh`](grafana/vendorizar.sh)
-e alguns painéis ficam vazios por decisões conscientes de coleta — o que e por
-quê está em [`grafana/dashboards/UPSTREAM.md`](grafana/dashboards/UPSTREAM.md).
-Os três próprios são editados à mão.
-
-A visão geral traz, além do estado de cada serviço, a seção **Infraestrutura**:
-um inventário de quais máquinas a coleta conhece e o que cada uma roda, e uma
-seção que se repete por servidor com CPU, memória, disco, load, rede e pressão
-(PSI). Em all-in-one ela colapsa para um bloco só; em deploy distribuído vira um
-bloco por máquina. Tudo isso depende do rótulo `host`, abaixo.
-
-Alertas: as regras vivem no Prometheus ([`prometheus/rules/`](prometheus/rules/)),
-com testes unitários; a notificação usa o alerting unificado do Grafana, que
-dispensa um Alertmanager e casa com o `--webhook-url` que o script já tem. Ver
-[`docs/alertas.md`](docs/alertas.md).
-
-## Rótulo de máquina
-
-Toda série coletada carrega `host`, escrito **no arquivo de alvos** pelo
-`setup.sh`. É o que faz um painel ou um alerta saber de qual máquina veio o
-número.
-
-Cuidado com uma armadilha que custou caro aqui: o `prometheus.yml` também define
-`external_labels: host`, e isso **não** substitui o rótulo do alvo. External
-labels não são gravados no TSDB — entram só em `remote_write`, federação e nos
-alertas enviados ao Alertmanager. O Grafana não os enxerga. Até 29/07/2026 a
-stack tinha o external label e nenhum rótulo nos alvos: a configuração parecia
-correta e nenhuma consulta conseguia agrupar por máquina.
-
-Os dois convivem de propósito: o Prometheus só aplica external labels a rótulos
-ausentes, então o nome real da máquina vence nos alertas com série, e o nome do
-monitor sobra para os alertas de `absent()`, que não têm série de onde herdar.
-
-Para aplicar numa instalação existente:
+Acesso (bind em loopback):
 
 ```bash
-bash setup.sh --update     # em cada host; reescreve os alvos
+ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 usuario@host
+# http://127.0.0.1:3000 — admin / secrets/credentials.env
 ```
 
-No host do Prometheus, repasse os apelidos das máquinas remotas — a flag
-explícita sobrescreve o estado salvo, e omiti-la herda o valor antigo (sem
-apelido):
+Atualizar alvos / rótulos:
 
 ```bash
+bash setup.sh --update
 bash setup.sh --update --metrics-scrape postgres=10.0.0.5:9187@bdh-data,...
 ```
 
-Acrescentar um rótulo **encerra as séries antigas e cria novas**. Não há perda de
-coleta e nenhum alerta dispara à toa, mas `rate()` e `increase()` que cruzarem
-esse instante ficam errados por uma janela de poucos minutos.
+Acrescentar rótulo encerra séries antigas e cria novas (`rate()`/`increase()` errados por poucos minutos nesse instante).
 
-## Ressalvas no macOS
+Prometheus em outro host: overlays `*/docker-compose.metrics-remote.yml` e `docker-compose.remote.yml`; `METRICS_BIND_IP` obrigatória sem default. Ver [`targets/`](targets/README.md).
 
-O `setup.sh` **não liga** o node exporter nem o cAdvisor no macOS, por duas
-razões medidas:
-
-1. eles leem o `/proc` da **VM do Docker**, não do Mac — "disco cheio" no painel
-   significaria o disco virtual;
-2. o kernel da VM não traz `CONFIG_PSI`, então `/proc/pressure` não existe e o
-   coletor `pressure` falha (`node_scrape_collector_success{collector="pressure"} = 0`).
-   Em Ubuntu 22.04+ e Debian 12 o PSI vem habilitado e o painel de pressão de IO
-   funciona.
-
-Na visão geral isso aparece como **node_exporter: ausente** na seção daquele
-servidor, com os painéis de máquina dizendo "sem node_exporter nesta máquina".
-É o comportamento esperado, não falha de coleta — o painel está em azul, e não em
-vermelho, exatamente para deixar isso claro. O mesmo vale para um host remoto
-provisionado sem `node=` no `--metrics-scrape`.
-
-Prometheus, Grafana e os exporters de Postgres/Redis/Meilisearch funcionam
-normalmente no macOS.
-
-## Validação local
+macOS: `setup.sh` não liga node exporter nem cAdvisor (leem `/proc` da VM; sem `CONFIG_PSI`). Prometheus, Grafana e exporters de serviço funcionam.
 
 ```bash
-bash test/prometheus-config.test.sh   # promtool + alertas + dashboards + perfis
+bash test/prometheus-config.test.sh
 docker build -t bdh-prometheus:local prometheus/
 docker build -t bdh-grafana:local grafana/
 ```
 
-O build das duas imagens roda `promtool check config`, `check rules` e a
-validação dos dashboards — config inválida não chega a virar imagem publicada.
+## Variáveis e segredos
+
+Perfis em [`profiles/`](profiles/) cobrem `PROM_*`, `GRAFANA_*` e limites. Segredos/host abaixo.
+
+### Alertmanager — destino (ao menos um obrigatório)
+
+| Variável | Descrição |
+|---|---|
+| `ALERTMANAGER_SLACK_WEBHOOK` | webhook Slack |
+| `ALERTMANAGER_WEBHOOK_URL` | webhook genérico |
+| `ALERTMANAGER_EMAIL_TO` | exige `ALERTMANAGER_SMTP_HOST` e `ALERTMANAGER_EMAIL_FROM` |
+
+### Slack e e-mail
+
+| Variável | Default | Descrição |
+|---|---|---|
+| `ALERTMANAGER_SLACK_CHANNEL` | `#alertas` | |
+| `ALERTMANAGER_SMTP_HOST` | — | `host:porta` |
+| `ALERTMANAGER_EMAIL_FROM` | — | |
+| `ALERTMANAGER_SMTP_USER` / `_PASSWORD` | — | |
+| `ALERTMANAGER_SMTP_TLS` | `true` | |
+
+### Janela de ETL
+
+Silencia notificação (não remove da UI) de: `IOSaturado`, `CacheHitBaixo`, `MuitosArquivosTemporarios`, `CheckpointsForcadosDemais`, `PostgresConexoesPertoDoLimite`.
+
+| Variável | Default | Descrição |
+|---|---|---|
+| `ALERTMANAGER_ETL_TIMEZONE` | `America/Sao_Paulo` | |
+| `ALERTMANAGER_ETL_DAYS_OF_MONTH` | `1:7` | primeira semana |
+| `ALERTMANAGER_ETL_WEEKDAY` | `saturday` | |
+| `ALERTMANAGER_ETL_START` / `_END` | `00:00` / `07:00` | |
+
+### Agrupamento
+
+| Variável | Default |
+|---|---|
+| `ALERTMANAGER_RESOLVE_TIMEOUT` | `10m` |
+| `ALERTMANAGER_GROUP_WAIT` | `45s` |
+| `ALERTMANAGER_GROUP_INTERVAL` | `5m` |
+| `ALERTMANAGER_REPEAT_INTERVAL` | `4h` |
+| `ALERTMANAGER_REPEAT_CRITICAL` | `1h` |
+
+### Container
+
+| Variável | Default | Descrição |
+|---|---|---|
+| `ALERTMANAGER_PORT` | `9093` | |
+| `ALERTMANAGER_VOLUME` | `bdh_alertmanager_data` | |
+| `BLACKBOX_PORT` | `9115` | |
+| `MONITORING_BIND_IP` | `127.0.0.1` | Grafana/Prometheus; **separada** de `BIND_IP` |
+| `METRICS_BIND_IP` | — (sem default) | overlays remotos |
+| `NODE_TEXTFILE_DIR` | `/var/lib/node_exporter/textfile` | produtores e node_exporter devem concordar |
+| `MON_HOSTNAME` | `desconhecido` | rótulo `host` |
+| `GRAFANA_ADMIN_PASSWORD` | gerada | `secrets/credentials.env` |
+| `GRAFANA_ROOT_URL` | `http://localhost:3000` | atrás de proxy |
+
+## Restrições
+
+- Prometheus sem autenticação — bind em `127.0.0.1`; mudar `MONITORING_BIND_IP` exige firewall.
+- `/metrics` dos exporters sem auth; remoto sem rede privada depende de `--allow-from`.
+- Sem `meili-metrics.key`, Prometheus recusa a config inteira.
+- Com `external: true` na rede, `docker network prune` quebra o `up` do banco.
+
+## Links
+
+- [`targets/README.md`](targets/README.md)
+- [`docs/alertas.md`](docs/alertas.md)
+- [`grafana/dashboards/UPSTREAM.md`](grafana/dashboards/UPSTREAM.md)
+- [Fórmula de coexistência](../postgres/docs/perfis.md#fórmula-de-reserva)
+- [Rede / DOCKER-USER](../postgres/docs/host.md#rede)

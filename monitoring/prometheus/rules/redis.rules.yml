@@ -1,17 +1,12 @@
 # Alertas do Redis — BrasilDataHub.
-#
-# O Redis aqui acumula dois papéis na mesma instância: cache do Laravel e fila do
-# Horizon. É isso que torna `evicted_keys` um alerta sério e não uma curiosidade
-# — ver a justificativa de volatile-lru em redis/README.md.
+# Mesma instância: cache Laravel + fila Horizon (volatile-lru — ver redis/README.md).
 
 groups:
   - name: redis
     rules:
       - alert: RedisDespejandoChaves
-        # Com volatile-lru, só chaves COM TTL são despejadas. Como as chaves de
-        # fila do Horizon não têm TTL, um despejo significa que o cache está
-        # sendo perdido — e, se alguma chave de fila ganhou TTL por engano,
-        # significa TRABALHO PERDIDO. Nos dois casos, é hora de subir de perfil.
+        # volatile-lru: só chaves com TTL. Fila Horizon sem TTL — despejo = cache
+        # perdido ou trabalho perdido se fila ganhou TTL por engano.
         expr: rate(redis_evicted_keys_total[10m]) > 0
         for: 10m
         labels:
@@ -43,9 +38,7 @@ groups:
             estão configurados contra o maxclients do Redis.
 
       - alert: FilaDoHorizonCrescendo
-        # Só existe se REDIS_METRICS_KEYS estiver definido no .env do Redis
-        # (-check-single-keys). Sem isso, não há série e a regra fica inerte.
-        # Fila que só cresce = worker morto ou job travando.
+        # Requer REDIS_METRICS_KEYS (-check-single-keys); sem série a regra fica inerte.
         expr: |
           redis_key_size > 10000
             and deriv(redis_key_size[30m]) > 0

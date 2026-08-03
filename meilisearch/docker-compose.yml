@@ -1,20 +1,12 @@
-# Compose de PRODUÇÃO do Meilisearch — mesma forma de deploy do Postgres
-# (por quê: ../postgres/docs/estrategia-deploy.md).
+# Compose de PRODUÇÃO do Meilisearch.
 #
-# .env ao lado deste arquivo:
-#   MEILI_MASTER_KEY=...              # ≥ 16 bytes com MEILI_ENV=production
-#   MEILI_MAX_INDEXING_MEMORY=1GiB    # bloco do perfil (README)
+#   MEILI_MASTER_KEY=...              # ≥ 16 bytes em production
+#   MEILI_MAX_INDEXING_MEMORY=1GiB
 #   MEILI_MAX_INDEXING_THREADS=1
-#   MEILI_MEMORY_LIMIT=1G             # limite de container do perfil
-#   # opcionais:
-#   # BIND_IP=10.0.0.5                # restringe a publicação a uma interface
-#   # MEILI_PORT=7700
-#   # MEILI_VOLUME=bdh_meili_data
+#   MEILI_MEMORY_LIMIT=1G
+#   # BIND_IP=10.0.0.5
 #
 #   docker compose up -d
-#
-# Em painel (Dokploy/Coolify), use recurso do tipo Compose stack com este mesmo
-# YAML e as variáveis no Environment.
 
 services:
   meilisearch:
@@ -42,7 +34,7 @@ services:
       # defina BIND_IP e/ou limite a origem no firewall.
       - "${BIND_IP:-0.0.0.0}:${MEILI_PORT:-7700}:7700"
     logging:
-      # Teto de log — a justificativa está em ../postgres/docker-compose.yml.
+      # Teto de log (mesmo NVMe do host). Ver ../postgres/docker-compose.yml.
       driver: json-file
       options:
         max-size: ${LOG_MAX_SIZE:-50m}
@@ -62,8 +54,7 @@ services:
       retries: 5
 
 volumes:
-  # Volume nomeado com driver local — padrão do repositório (justificativa no
-  # README da raiz); `name` fixo para não depender do nome do projeto Compose.
+  # Volume nomeado com driver local; `name` fixo (independente do projeto Compose).
   meili_data:
     driver: local
     name: ${MEILI_VOLUME:-bdh_meili_data}

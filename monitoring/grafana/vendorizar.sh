@@ -4,22 +4,12 @@
 # provisioning por arquivo do Grafana.
 #
 # Rodado À MÃO, ao atualizar um dashboard — não faz parte do build nem do deploy.
-# O resultado é versionado em dashboards/*.json, e é ele que entra na imagem.
+# Resultado versionado em dashboards/*.json (entra na imagem).
 #
-# POR QUE NORMALIZAR (o passo que, se pulado, entrega painéis vazios e ninguém
-# entende): o JSON publicado no grafana.com é feito para o IMPORT INTERATIVO. Ele
-# traz um bloco `__inputs` declarando um datasource variável `${DS_PROMETHEUS}`,
-# que a UI resolve perguntando ao usuário. O provisioning por arquivo NÃO resolve
-# nada disso — ele carrega o JSON como está, cada painel aponta para um
-# datasource chamado literalmente "${DS_PROMETHEUS}", que não existe, e o
-# dashboard abre em branco.
-#
-# Por isso trocamos toda referência pelo uid FIXO do nosso datasource
-# (provisioning/datasources/prometheus.yml), removemos __inputs/__requires e
-# zeramos o id.
-#
-# Baixar no deploy em vez de versionar foi descartado: quebraria a
-# reprodutibilidade e exigiria rede no host no momento do provisionamento.
+# Normalização: o JSON do grafana.com traz `__inputs` e `${DS_PROMETHEUS}`
+# para import interativo; provisioning por arquivo não resolve isso.
+# Substitui pelo uid fixo (provisioning/datasources/prometheus.yml),
+# remove __inputs/__requires e zera o id.
 # ==============================================================================
 set -euo pipefail
 

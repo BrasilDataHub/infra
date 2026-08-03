@@ -1,114 +1,55 @@
-# Overlay OPCIONAL de métricas do PostgreSQL — acrescenta o postgres_exporter ao
-# projeto Compose do banco. Não substitui nada: é usado JUNTO do compose de
-# produção, nesta ordem.
+# Overlay OPCIONAL de métricas — acrescenta o postgres_exporter.
+# Usar JUNTO do compose base (não sozinho; `--remove-orphans` removeria o exporter):
 #
 #   docker compose -f docker-compose.yml -f docker-compose.metrics.yml up -d
 #
-# O `setup.sh --metrics` e o `bdh` passam os dois -f sozinhos. Num
-# `docker compose` à mão, PASSE OS DOIS: com apenas o compose base, o exporter
-# fica fora do conjunto gerenciado e um `--remove-orphans` o removeria.
+# O serviço `postgres` NÃO é tocado: a senha do exporter fica em `.env.metrics`
+# (não no `.env`), porque qualquer variável nova no `.env` recria o container
+# do banco. Role `metrics_read` precisa existir antes (initdb/03-role-metrics.sh).
 #
-# (Gravar COMPOSE_FILE no .env resolveria isso automaticamente, e foi descartado
-# de propósito: qualquer variável a mais no .env recria o container do banco —
-# ver a nota sobre .env.metrics abaixo.)
-#
-# O serviço `postgres` NÃO é tocado: aplicar métricas não pode recriar um
-# container de banco de centenas de GB. Há um teste na CI que compara o
-# `config` do serviço com e sem este overlay e falha se algo mudar.
-#
-# A senha do exporter vive num arquivo SEPARADO, `.env.metrics`, ao lado deste:
-#
-#   DATA_SOURCE_PASS=...          # senha da role metrics_read
-#
-# E NÃO no `.env` do serviço — a razão é concreta e foi medida: `env_file` faz
-# parte da definição do serviço, então acrescentar QUALQUER variável ao `.env`
-# muda o hash de configuração do container `postgres` e o Compose o RECRIA.
-# Ligar métricas não pode custar um restart de um banco de centenas de GB
-# (downtime e page cache frio). Com o segredo à parte, o serviço `postgres` fica
-# byte a byte idêntico e só o container do exporter é criado.
-#
-#   # opcionais, no .env normal:
+#   DATA_SOURCE_PASS=...          # em .env.metrics
 #   # PG_METRICS_USER=metrics_read
 #   # PG_EXPORTER_MEMORY_LIMIT=128M
-#
-# A role precisa existir ANTES de o exporter subir; num cluster já inicializado
-# o initdb não roda de novo. Ver initdb/03-role-metrics.sh e docs/metricas.md.
 
 services:
   postgres-exporter:
     image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
     restart: unless-stopped
     env_file:
-      # O .env do serviço: POSTGRES_DB e afins. Lido, nunca alterado por causa
-      # de métricas.
       - path: .env
         required: false
-      # Só o exporter lê este. required: false para que o compose continue
-      # válido antes de o arquivo existir — o sintoma, nesse caso, é um erro de
-      # autenticação claro no log do exporter.
+      # required: false: compose válido antes do arquivo existir (falha = auth no log).
       - path: .env.metrics
         required: false
     environment:
-      # Forma decomposta em vez de DATA_SOURCE_NAME: evita montar uma URL com a
-      # senha embutida, que apareceria inteira em `docker inspect` e nos logs de
-      # erro de conexão. DATA_SOURCE_PASS NÃO é declarada aqui de propósito —
-      # vem do .env.metrics, e `environment:` teria precedência sobre ele.
+      # Forma decomposta: evita URL com senha em `docker inspect` / logs.
+      # DATA_SOURCE_PASS vem só do .env.metrics (`environment:` teria precedência).
       DATA_SOURCE_URI: postgres:5432/${POSTGRES_DB:?defina POSTGRES_DB}?sslmode=disable
       DATA_SOURCE_USER: ${PG_METRICS_USER:-metrics_read}
-    # Valor PRÓPRIO, nunca `postgres`: o setup.sh e o `bdh verify` fazem
-    # `docker ps -q --filter label=org.brasildatahub.service=postgres | head -1`.
-    # Com a label colidindo, o `bdh verify postgres` rodaria `df -h /dev/shm` no
-    # exporter e o wait de healthcheck observaria o container errado.
+    # Label própria — `bdh` filtra por org.brasildatahub.service=postgres.
     labels:
       org.brasildatahub.service: postgres-exporter
     command:
-      # --- desligados: caros ou inúteis nesta operação ---------------------
-      # Sem réplica na org. Os três vêm habilitados por default no v0.20.1 e só
-      # geram queries de catálogo que sempre voltam vazias.
+      # Desligados: sem réplica; coletores de tabela geram cardinalidade alta em schemas particionados.
       - --no-collector.replication
       - --no-collector.replication_slots
       - --no-collector.stat_replication
-      # ~10 séries por tabela E POR PARTIÇÃO, varrendo pg_stat_all_tables a cada
-      # scrape. Num schema particionado isso é o maior gerador de cardinalidade
-      # da stack inteira. O custo de desligar é perder n_dead_tup e
-      # last_autovacuum por tabela — ver docs/metricas.md para o override de
-      # quem tiver poucas tabelas e quiser esse par de volta.
       - --no-collector.stat_user_tables
       - --no-collector.statio_user_tables
-      #
-      # --- ligados: desabilitados por default, e são o que importa aqui -----
-      # O PG17 moveu os campos de checkpoint de pg_stat_bgwriter para
-      # pg_stat_checkpointer. Sem este coletor, o efeito do checkpoint_timeout
-      # de 15min dos perfis fica INVISÍVEL.
+      # Ligados: checkpoint (PG17), xmin longo, wraparound, autovacuum, uptime.
       - --collector.stat_checkpointer
-      # ETL longo segurando xmin é a causa nº1 de bloat que o autovacuum não
-      # resolve — e o sintoma só aparece horas depois, como disco cheio.
       - --collector.long_running_transactions
-      # Carga em massa de dezenas de milhões de linhas por rodada torna
-      # wraparound um risco real, não teórico.
       - --collector.database_wraparound
-      # Mostra o autovacuum competindo com o ETL pela mesma janela de IO.
       - --collector.stat_activity_autovacuum
-      # Uptime do servidor. Barato (uma linha de pg_postmaster_start_time()) e é
-      # o que distingue "o banco está lento" de "o banco reiniciou há 3 minutos".
       - --collector.postmaster
-      #
-      # 8s para desistir ANTES do scrape_timeout de 10s do Prometheus: assim um
-      # catálogo lento devolve coleta parcial em vez de derrubar o scrape todo.
+      # 8s < scrape_timeout 10s: coleta parcial em vez de scrape perdido.
       - --collection-timeout=8s
-    # stat_statements fica DESLIGADO (é o default do v0.20.1) e não deve ser
-    # ligado aqui: o queryid vira label e cada query nova do ETL cria séries que
-    # nunca mais recebem amostra. pg_stat_statements segue pré-carregado no
-    # postgresql.conf para uso interativo via psql — que é para o que serve.
-    #
-    # Sem `ports:`: o exporter é alcançado por DNS dentro da rede bdh_metrics.
-    # /metrics não tem autenticação nenhuma e entrega pg_settings_* inteiro;
-    # publicá-lo no host daria de graça o que o resto da stack protege com senha.
+    # stat_statements desligado: queryid vira label e explode cardinalidade.
+    # Sem `ports:`: /metrics sem auth; scrape só via rede bdh_metrics.
     networks:
-      - default        # fala com o `postgres` pelo DNS do projeto
-      - bdh_metrics    # é scrapeado pelo Prometheus, que vive em outro projeto
+      - default
+      - bdh_metrics
     logging:
-      # Teto de log — a justificativa está em docker-compose.yml.
       driver: json-file
       options:
         max-size: ${LOG_MAX_SIZE:-50m}
@@ -123,17 +64,7 @@ services:
         condition: service_healthy
 
 networks:
-  # Sem `external: true`, e isso é deliberado. Com external, um
-  # `docker network prune` com os containers parados faria o `docker compose up`
-  # do BANCO falhar inteiro ("network declared as external, but could not be
-  # found") — derrubar o Postgres para ligar um gráfico é inaceitável.
-  # Declarada assim, o primeiro projeto a subir cria a rede e os demais a
-  # reusam; se ela sumir, o próximo `up` a recria.
-  #
-  # Verificado no Docker 29.4 / Compose v5.1.2: o reuso funciona e o `down` de
-  # um projeto não remove a rede em uso por outro. O Compose emite um aviso
-  # ("a network with name bdh_metrics exists but was not created for project
-  # ...") — é cosmético, e trocar por `external: true` para silenciá-lo
-  # reintroduz a falha descrita acima.
+  # Sem `external: true`: com external, `network prune` quebraria o `up` do banco.
+  # Reuso por nome entre projetos; aviso cosmético do Compose é esperado.
   bdh_metrics:
     name: ${METRICS_NETWORK:-bdh_metrics}

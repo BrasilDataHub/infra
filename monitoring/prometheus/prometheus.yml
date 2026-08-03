@@ -1,37 +1,25 @@
 # Configuração do Prometheus da BrasilDataHub — embutida na imagem
 # ghcr.io/brasildatahub/prometheus.
 #
-# Por que ESTÁTICA, e não gerada no start como o postgresql.conf: o que varia
-# entre hosts aqui não é valor, são os ALVOS — e `file_sd_configs` é o mecanismo
-# nativo do Prometheus para isso, com recarga a quente e sem restart. Os alvos
-# vivem em /etc/prometheus/targets/*.json, escritos pelo setup.sh no host.
+# Estática: o que varia entre hosts são os ALVOS, via `file_sd_configs`
+# (recarga a quente). Alvos em /etc/prometheus/targets/*.json (setup.sh).
 #
-# O glob de cada job é intencional: se o serviço não foi instalado, o arquivo não
-# existe, o glob não casa nada e o job fica SEM ALVO — em vez de ficar `up == 0`
-# para sempre, envenenando justamente o alerta que mais importa.
+# Glob por job: serviço ausente → arquivo inexistente → job sem alvo
+# (em vez de `up == 0` permanente).
 #
-# Os alvos são nomes de SERVIÇO Compose (postgres-exporter, redis-exporter, ...),
-# não nomes de container: na rede bdh_metrics o Docker registra o nome do serviço
-# como alias, então o endereço não depende do nome do projeto Compose.
-# Verificado no Docker 29.4 / Compose v5.1.2.
+# Alvos são nomes de SERVIÇO Compose na rede bdh_metrics, não nomes de container.
 #
-# Retenção e limites de recurso NÃO estão aqui: são flags de CLI e limites de
-# container, definidos pelos perfis em monitoring/profiles/*.env.
+# Retenção e limites: monitoring/profiles/*.env.
 
 global:
   scrape_interval: 15s
   scrape_timeout: 10s
   evaluation_interval: 30s
   external_labels:
-    # Expandido do ambiente no start (MON_HOSTNAME vem do .env do deploy).
-    # Sem isto, métricas de hosts diferentes ficam indistinguíveis se um dia
-    # forem federadas.
+    # MON_HOSTNAME do .env do deploy — distingue hosts se federados.
     host: ${MON_HOSTNAME}
 
-# Destino dos alertas. Estático e não file_sd, ao contrário dos alvos de
-# scrape: o Alertmanager vive no MESMO projeto Compose que o Prometheus, então
-# ou os dois existem, ou nenhum existe. Antes disto, as 18 regras eram
-# avaliadas e não iam a lugar nenhum.
+# Alertmanager no mesmo Compose — static_configs, não file_sd.
 alerting:
   alertmanagers:
     - static_configs:
@@ -127,9 +115,7 @@ scrape_configs:
     file_sd_configs:
       - files: ["/etc/prometheus/targets/cadvisor*.json"]
     metric_relabel_configs:
-      # O cAdvisor é notoriamente cardinálico. Mesmo com os filtros do lado dele,
-      # descartar séries por imagem/id aqui evita que uma troca de tag de imagem
-      # multiplique o conjunto de séries a cada deploy.
+      # Drop de séries por imagem/id evita multiplicar cardinalidade a cada deploy.
       - source_labels: [__name__]
         regex: 'container_(tasks_state|memory_failures_total|blkio_device_usage_total)'
         action: drop

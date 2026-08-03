@@ -1,79 +1,33 @@
-# PgBouncer para deploy por PAINEL (Dokploy, Coolify) — arquivo único, sem
-# overlays e sem `.env` ao lado. Cole no campo de Compose do painel.
+# PgBouncer para painel (Dokploy/Coolify) — arquivo único, sem overlays/.env.
+# Cole no Compose do painel. Rede `external` (criada pelo painel); valores embutidos.
 #
-# É o mesmo serviço de `docker-compose.yml`, com duas diferenças que existem
-# porque quem cria a rede aqui é o painel, não este arquivo:
+# Antes: (1) imagem com PGB_EXTRA_DATABASES/USERS
+#   docker run --rm --entrypoint sh ghcr.io/brasildatahub/pgbouncer:1 \
+#     -c 'grep -c PGB_EXTRA_DATABASES /usr/local/bin/generate-config.sh'
+# (2) sem outro container com alias `pgbouncer` na mesma rede.
 #
-#   1. a rede da aplicação é `external: true` — o painel já a criou;
-#   2. os valores estão embutidos, em vez de virem de um `.env` do host.
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# ANTES DE APLICAR
-#
-#   1. A imagem precisa estar publicada com suporte a PGB_EXTRA_DATABASES /
-#      PGB_EXTRA_USERS. Confira:
-#
-#        docker run --rm --entrypoint sh ghcr.io/brasildatahub/pgbouncer:1 \
-#          -c 'grep -c PGB_EXTRA_DATABASES /usr/local/bin/generate-config.sh'
-#
-#      Zero significa imagem antiga: o segundo banco será recusado com
-#      "no such database" e as duas conexões da aplicação caem juntas.
-#
-#   2. Não pode haver OUTRO PgBouncer no host com o mesmo alias de rede. Dois
-#      containers com o alias `pgbouncer` na mesma rede fazem o DNS sortear
-#      entre eles — e metade das conexões vai para o errado. Confira:
-#
-#        docker network inspect dokploy-network \
-#          --format '{{range .Containers}}{{.Name}}{{println}}{{end}}'
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# O QUE ESTE ARQUIVO **NÃO** RESOLVE
-#
-# A aplicação precisa de `DB_HOST` e `CDC_DB_HOST` apontando para o ALIAS
-# (`pgbouncer`), e não para o nome do serviço no painel. O nome que o painel
-# mostra — algo como `baseempresarial-pgbouncer-kycdun` — **não resolve em
-# DNS**; quem resolve é o alias abaixo e o nome do container.
-# ─────────────────────────────────────────────────────────────────────────────
+# App: DB_HOST/CDC_DB_HOST = alias `pgbouncer` (não o nome do serviço no painel).
 
 services:
-  # O nome do serviço importa: no formato curto de `networks:` o Compose usa o
-  # nome do serviço como alias de rede. O alias explícito mais abaixo torna
-  # isso independente de renomear o serviço.
   pgbouncer:
     image: ghcr.io/brasildatahub/pgbouncer:1
     restart: unless-stopped
 
     environment:
-      # --- destino: o Postgres, pela rede privada -----------------------------
-      # IP privado do host do banco. NÃO use o público: o tráfego sairia para a
-      # internet e a senha atravessa em claro (sslmode=prefer).
+      # IP privado do host do banco — não o público (senha em claro).
       PGB_DB_HOST: 10.0.1.10
       PGB_DB_PORT: "5432"
 
-      # --- banco e usuário PRINCIPAIS ----------------------------------------
-      # Este par também define `admin_users`/`stats_users`, que é quem pode
-      # rodar SHOW POOLS / SHOW STATS no console de administração.
+      # Par principal = admin_users/stats_users (SHOW POOLS / SHOW STATS).
       PGB_DB_NAME: baseempresarial
       PGB_USER: postgres
       PGB_PASSWORD: "<SENHA_DO_POSTGRES>"
 
-      # --- o SEGUNDO banco, e o usuário dele ---------------------------------
-      # O PgBouncer roteia pelo `dbname` do handshake: um banco fora daqui é
-      # recusado com "no such database". O usuário fora do userlist é recusado
-      # no handshake.
-      #
-      # `dados_read` precisa estar aqui para que a conexão de leitura CONTINUE
-      # sendo somente-leitura. Sem ele, a única saída seria mandar o CNPJ pelo
-      # superusuário — trocar um pooler por uma escalação de privilégio.
+      # Banco/usuário fora daqui → "no such database" / falha no handshake.
       PGB_EXTRA_DATABASES: "dados_cnpj"
       PGB_EXTRA_USERS: "dados_read=<SENHA_DO_DADOS_READ>"
 
-      # --- dimensionamento ---------------------------------------------------
-      # `default_pool_size` é por par (database, usuário): dois bancos com um
-      # usuário cada são 2 × 20 = 40 conexões reais no pior caso. Confira
-      # contra o `max_connections` do servidor (150) antes de crescer.
-      #
-      # É também o multiplicador de `work_mem` no pior caso de sort.
+      # default_pool_size por par (db, user); confira vs max_connections do PG.
       PGB_POOL_MODE: transaction
       PGB_DEFAULT_POOL_SIZE: "20"
       PGB_MAX_CLIENT_CONN: "400"
@@ -81,39 +35,18 @@ services:
     networks:
       dokploy-network:
         aliases:
-          # É este nome que vai em DB_HOST/CDC_DB_HOST da aplicação.
-          #
-          # No formato curto (`networks: [dokploy-network]`) o alias sai de
-          # graça, porque é igual ao nome do serviço — e some no dia em que
-          # alguém renomear o serviço. Declarado aqui, ele não depende disso.
+          # Nome em DB_HOST/CDC_DB_HOST — explícito para sobreviver a rename do serviço.
           - pgbouncer
 
     healthcheck:
-      # `SHOW LISTS` no console de administração: prova que o processo está no
-      # ar E que o `PGB_USER` autentica. Sem healthcheck o container aparece
-      # "Up" mesmo com o pooler recusando todas as conexões — que é
-      # exatamente o estado que ninguém percebe.
-      #
-      # `$$` porque o Compose interpola `$`: o container precisa receber
-      # `${PGB_PASSWORD}` literal para o shell dele expandir.
+      # Prova processo + auth do PGB_USER. `$$` = Compose não interpola.
       test: ["CMD-SHELL", "PGPASSWORD=$${PGB_PASSWORD} psql -h 127.0.0.1 -p 6432 -U $${PGB_USER} -d pgbouncer -tAc 'SHOW LISTS' > /dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 15s
 
-    # Sem `ports:`. A aplicação alcança o container pela REDE, por DNS — a porta
-    # no host nunca esteve no caminho dela.
-    #
-    # O preço é que o diagnóstico passa a ser por `docker exec`, e que um túnel
-    # SSH para a 6432 deixa de ter o que alcançar:
-    #
-    #   docker exec -e PGPASSWORD=<senha> <container> \
-    #     psql -h 127.0.0.1 -p 6432 -U postgres -d pgbouncer -c 'SHOW POOLS;'
-    #
-    # Para reativar a porta (e o túnel), acrescente:
-    #   ports:
-    #     - "127.0.0.1:6432:6432"
+    # Sem `ports:`: app alcança por DNS na rede. Diagnóstico via docker exec.
 
     logging:
       driver: json-file
@@ -128,7 +61,5 @@ services:
           cpus: "1"
 
 networks:
-  # Criada pelo painel. `external: true` diz ao Compose para usá-la, não criá-la
-  # — sem isso ele recusa uma rede que não tem os labels dele.
   dokploy-network:
     external: true

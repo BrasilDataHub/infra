@@ -1,35 +1,16 @@
 # O par de instâncias de Redis
 
-> Complementa o [`README.md`](README.md), que descreve a instância única.
+## Papel
 
-## O defeito que ele corrige
+Complementa o [`README.md`](README.md) (instância única). Duas instâncias Redis no mesmo host: uma para **cache** e outra para **fila e sessões**, porque `maxmemory` e `maxmemory-policy` são por instância, não por database.
 
-Medido em 28/07/2026, numa única instância de 512 MB servindo cache **e**
-fila/sessões:
+Com cache e fila juntos, nenhuma política serve aos dois: `allkeys-lru` pode descartar job; `noeviction` derruba writes de cache; `volatile-lru` despeja sessões (TTL).
 
-| | |
-|---|---|
-| evicções | **34.007** |
-| hit rate | **59,7%** |
-| política | `volatile-lru` |
+## Componentes / imagem
 
-`volatile-lru` despeja **somente chaves com TTL**. As chaves de fila do Horizon
-não têm TTL — mas **as de sessão têm**. Então, quando o cache encheu, o Redis
-descartou sessões: parte daqueles 34 mil despejos eram **usuários sendo
-deslogados**, e ninguém tinha ligado o "logout aleatório" ao hit rate.
-
-## Por que duas instâncias, e não dois databases
-
-Porque `maxmemory` e `maxmemory-policy` são da **instância**, não do database.
-Com cache e fila juntos, a política tem de servir aos dois — e nenhuma serve:
-
-| Política | Com cache + fila juntos |
-|---|---|
-| `allkeys-lru` | pode descartar **job pendente** |
-| `noeviction` | um `SET` de cache no limite **derruba a escrita** |
-| `volatile-lru` | descarta **sessão**, que é o que aconteceu |
-
-Separadas, cada lado ganha a política que faz sentido:
+- Compose: [`docker-compose.par.yml`](docker-compose.par.yml)
+- Perfis: [`profiles/cache-768mb.env`](profiles/cache-768mb.env), [`profiles/fila-256mb.env`](profiles/fila-256mb.env)
+- Mesma imagem `ghcr.io/brasildatahub/redis` do módulo
 
 | | cache | fila e sessões |
 |---|---|---|
@@ -38,9 +19,13 @@ Separadas, cada lado ganha a política que faz sentido:
 | persistência | **não** | AOF `everysec` |
 | limite de container | 1G | 512M |
 | porta default | 6379 | 6380 |
-| perder dado é | o comportamento correto | **um incidente** |
+| perder dado é | comportamento esperado | incidente |
 
-## Deploy
+## Perfis e configuração
+
+Os dois arquivos `.env.cache` e `.env.fila` são `required: true` no compose — sem eles o deploy sobe com defaults de instância única (`volatile-lru` / `512mb`).
+
+## Deploy / operação
 
 ```bash
 cd /opt/brasildatahub/services/redis
@@ -52,11 +37,7 @@ echo "REDIS_PASSWORD=$(openssl rand -base64 36 | tr -d '\n/+=' | cut -c1-32)" >>
 docker compose -f docker-compose.par.yml up -d
 ```
 
-Os dois arquivos são `required: true` no compose de propósito: sem eles, o
-deploy subiria com os defaults de instância única — `volatile-lru` e `512mb` —,
-que é exatamente o estado que este par corrige, e sem nenhum sintoma novo.
-
-## Do lado da aplicação
+Aplicação:
 
 ```env
 # fila e sessões
@@ -68,8 +49,7 @@ REDIS_CACHE_HOST=<host>
 REDIS_CACHE_PORT=6379
 ```
 
-**Apontar as duas para a mesma porta recria o defeito** sem nenhum sinal: o site
-continua funcionando, e os despejos voltam. Confira depois de subir:
+Validação:
 
 ```bash
 redis-cli -p 6379 -a "$REDIS_PASSWORD" CONFIG GET maxmemory-policy   # allkeys-lru
@@ -77,7 +57,21 @@ redis-cli -p 6380 -a "$REDIS_PASSWORD" CONFIG GET maxmemory-policy   # noevictio
 redis-cli -p 6380 -a "$REDIS_PASSWORD" CONFIG GET appendonly         # yes
 ```
 
-O alerta `RedisDespejandoChaves` continua valendo para as duas — mas com
-significados opostos. Na de cache, despejo é operação normal e o alerta só
-importa se for constante; na de fila, **qualquer** despejo é um defeito, porque
-com `noeviction` ele nem deveria acontecer.
+Alerta `RedisDespejandoChaves`: na de cache, despejo constante importa; na de fila, **qualquer** despejo é falha (`noeviction`).
+
+## Variáveis e segredos
+
+| Variável | Onde | Descrição |
+|---|---|---|
+| `REDIS_PASSWORD` | `.env` compartilhado | mesma senha nas duas instâncias |
+| envs do perfil | `.env.cache` / `.env.fila` | maxmemory, policy, limites |
+
+## Restrições
+
+- Apontar cache e fila para a mesma porta mistura as políticas sem sintoma óbvio.
+- Kernel (`overcommit`, THP): mesmas exigências do [`README.md`](README.md).
+
+## Links
+
+- [`README.md`](README.md)
+- [`docker-compose.par.yml`](docker-compose.par.yml)

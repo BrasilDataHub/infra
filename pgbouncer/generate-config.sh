@@ -1,10 +1,6 @@
 #!/bin/sh
-# Gera /etc/pgbouncer/pgbouncer.ini e o userlist a partir de variáveis PG_*.
-#
-# POSIX sh: a imagem do PgBouncer é Alpine e não tem bash.
-#
-# Mesma divisão dos demais módulos: a política de pooling é decisão de projeto e
-# vive aqui; o dimensionamento e o segredo vêm do deploy.
+# Gera pgbouncer.ini e userlist a partir de envs PGB_*.
+# POSIX sh — imagem Alpine sem bash.
 set -eu
 
 CONF=/etc/pgbouncer/pgbouncer.ini

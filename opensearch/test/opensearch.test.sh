@@ -1,17 +1,9 @@
 #!/usr/bin/env bash
-# Teste de integração do módulo OpenSearch — sobe o nó de verdade e afirma as
-# decisões que são IMUTÁVEIS SEM REINDEXAR.
+# Teste de integração do OpenSearch — mapping imutável e analisadores BR.
 #
 #   bash opensearch/test/opensearch.test.sh
 #
-# Três escolhas do mapping não podem ser alteradas depois sem refazer os 72,32
-# milhões de documentos: `number_of_shards`, `_source: false` e
-# `auto_expand_replicas`. Um teste que rode antes do primeiro `_bulk` custa
-# segundos; descobrir o mesmo erro depois custa a reindexação inteira.
-#
-# O teste também exercita os analisadores com texto real de razão social, que é
-# onde as decisões de produto vivem: `LTDA` aparece em ~70% dos documentos, e é
-# a stopword que mata os 687 ms medidos no Meilisearch.
+# Valida number_of_shards, _source, auto_expand_replicas e analisadores antes do bulk.
 set -uo pipefail
 
 RAIZ="$(cd "$(dirname "$0")/../.." && pwd)"

@@ -1,27 +1,14 @@
 # Overlay para quando a rede da aplicação JÁ EXISTE e não é criada por este
-# compose — o caso de quem implanta a aplicação com Dokploy, Coolify, Swarm ou
-# qualquer painel que cria a própria rede.
+# compose (Dokploy, Coolify, Swarm ou painel que cria a própria rede).
 #
 #   docker compose -f docker-compose.yml -f docker-compose.rede-externa.yml up -d
 #
-# Ou, no host provisionado pelo `setup.sh`, instale-o como
-# `docker-compose.override.yml`: o helper `bdh` inclui esse nome
-# automaticamente, e assim `bdh up pgbouncer` não perde a rede.
+# No host do `setup.sh`, use como `docker-compose.override.yml` — o `bdh`
+# inclui esse nome automaticamente.
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# POR QUE ELE EXISTE
-#
-# O compose base declara a rede da aplicação SEM `external: true`, para que uma
-# instalação do zero funcione sem pré-requisito. Apontar `APP_NETWORK` para uma
-# rede que já existe, nesse caso, falha:
-#
-#   network dokploy-network was found but has incorrect label
-#   com.docker.compose.network set to "" (expected: "baseempresarial")
-#
-# A alternativa — `docker network connect` na mão — funciona e não sobrevive:
-# o próximo `up -d` recria o container sem a rede, e a aplicação perde o pooler
-# no meio de um deploy que parecia rotineiro.
-# ─────────────────────────────────────────────────────────────────────────────
+# O compose base declara a rede sem `external: true` (instalação do zero).
+# Rede pré-existente exige este overlay; `docker network connect` manual
+# não sobrevive ao próximo `up -d`.
 #
 # .env ao lado:
 #   APP_NETWORK=dokploy-network     # o nome exato da rede da aplicação
@@ -30,9 +17,7 @@ services:
   pgbouncer:
     networks:
       default:
-        # O alias é o host que a aplicação usa em DB_HOST. Sem ele, só o nome
-        # do container resolve — e esse nome carrega o prefixo do projeto
-        # Compose, que muda de host para host.
+        # Alias = DB_HOST da aplicação. Sem ele, só o nome do container resolve.
         aliases:
           - pgbouncer
       baseempresarial:

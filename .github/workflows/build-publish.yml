@@ -24,17 +24,12 @@ on:
   push:
     branches: [main]
     paths:
-      # Filtros estreitos, por ARQUIVO QUE ENTRA NA IMAGEM. Antes eram
-      # `postgres/**` e afins, o que republicava as três imagens a cada commit
-      # de documentação — e agora também a cada mudança nos overlays de
-      # métricas, que não entram em imagem nenhuma.
+      # Filtros por arquivo que entra na imagem (não `postgres/**` inteiro).
       - "postgres/Dockerfile"
       - "postgres/*.sh"
       - "postgres/backup/Dockerfile"
       - "postgres/backup/*.sh"
-      # O job `pgbackrest` roda este teste ANTES do push, mas o teste não estava
-      # no filtro: mudá-lo não disparava o build, e a correção ficava sem
-      # verificação. Foi assim que a imagem passou de julho/2026 sem publicar.
+      # Teste-gate do sidecar incluído no filtro de paths.
       - "postgres/backup/test/**"
       - "postgres/initdb/**"
       - "postgres/.dockerignore"
@@ -53,10 +48,7 @@ on:
       - "monitoring/alertmanager/**"
       - "monitoring/blackbox/**"
       - "monitoring/test/**"
-      # Imagens base de aplicação. Note o que NÃO está aqui: `laravel/README.md`
-      # e `laravel/docs/**`. Publicar estas três imagens compila as 14 extensões
-      # de fonte, uma vez por arquitetura — republicar isso a cada commit de
-      # documentação seria caro sem mudar um byte da imagem.
+      # laravel: docs e README não disparam rebuild (extensões PHP são caras).
       - "laravel/Dockerfile.*"
       - "laravel/php-extensions.txt"
       - "laravel/php/**"
@@ -85,45 +77,14 @@ on:
 env:
   REGISTRY: ghcr.io
   NAMESPACE: brasildatahub
-  # As duas metades da tag das imagens de aplicação Laravel. `PHP_MINOR`
-  # identifica a stack; `REVISION` é o contador da imagem, incrementado quando
-  # muda extensão, ini, Caddyfile, entrypoint ou versão da base — ver
-  # laravel/docs/versionamento.md.
-  #
-  # Vivem no escopo GLOBAL, e não no `env:` de um job, porque a publicação das
-  # imagens de aplicação passou a ser feita por três jobs que precisam concordar
-  # na tag: `laravel-app-manifest` cria o manifest com ela, e `laravel-derivados`
-  # deriva dela. Duas cópias em dois `env:` divergiriam sem ninguém perceber — o
-  # sintoma seria um builder derivando de uma app que não é a desta execução.
-  #
-  # r3: `laravel-worker` deixou de ser Alpine e passou a derivar de
-  # `laravel-app`. Muda a libc, o PHP passa a ser ZTS e o conteúdo da imagem é
-  # outro — ver o cabeçalho de laravel/Dockerfile.worker.
+  # PHP_MINOR + REVISION: tag imutável compartilhada pelos jobs laravel-*.
+  # r3: laravel-worker passou a derivar de laravel-app.
   PHP_MINOR: "8.4"
   REVISION: "r3"
 
 jobs:
-  # Quais imagens este push realmente afeta.
-  #
-  # POR QUE ESTE JOB EXISTE: os `paths:` lá em cima são do WORKFLOW, não dos
-  # jobs. Eles decidem se o workflow roda — e, uma vez que roda, TODOS os jobs
-  # rodam junto. Na prática isso significava que mudar duas linhas do
-  # `redis/Dockerfile` reconstruía também as imagens de aplicação, cujo build
-  # multi-arch compila 14 extensões PHP sob emulação e leva dezenas de minutos.
-  #
-  # Aqui o diff do push é lido uma vez e vira um output por imagem; cada job de
-  # build ganha um `if:` sobre ele. Os `paths:` do topo continuam valendo como
-  # primeira peneira — um commit só de documentação não chega nem a este job.
-  #
-  # Um escopo serve a UM ou a VÁRIOS jobs: os quatro jobs `laravel-*` respondem
-  # todos ao output `laravel`, e só o primeiro deles carrega o `if:` — os outros
-  # herdam a decisão pelo `needs:`, porque um job cujo `needs:` foi pulado é
-  # pulado junto.
-  #
-  # Mudar ESTE ARQUIVO não republica nada por si só, e é deliberado: era esse o
-  # caminho pelo qual um ajuste de comentário no workflow reconstruía a stack
-  # inteira. Para republicar à mão, use `workflow_dispatch` — ele aceita
-  # escolher uma imagem ou `todos`.
+  # Filtro por escopo: cada job só roda se o push tocou arquivos da imagem.
+  # Mudar este arquivo não republica nada — use workflow_dispatch.
   changes:
     runs-on: ubuntu-latest
     permissions:
@@ -308,11 +269,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/redis:7
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/redis:7.4
 
-  # O PgBouncer é o par indivisível do work_mem de 96 MB (item 18): 100 × 96 MB
-  # não cabe num limite de 14 GiB, 20 × 96 MB cabe. O teste roda antes do push
-  # porque transaction pooling funciona perfeitamente até a aplicação usar um
-  # SET de sessão ou um prepared statement — e aí quebra de formas que não
-  # mencionam o PgBouncer no erro.
+  # PgBouncer: teste-gate antes do push (transaction pooling + SET/prepared statements).
   pgbouncer:
     needs: changes
     if: needs.changes.outputs.pgbouncer == 'true'
@@ -363,10 +320,7 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/meilisearch:1.34
 
-  # Três decisões do mapping são IMUTÁVEIS SEM REINDEXAR os 72,32 milhões de
-  # documentos: number_of_shards, _source: false e auto_expand_replicas. O teste
-  # sobe um nó de verdade e as afirma antes de a imagem ser publicada — custa
-  # segundos; descobrir o mesmo erro depois custa a reindexação inteira.
+  # OpenSearch: mapping imutável validado antes do push.
   opensearch:
     needs: changes
     if: needs.changes.outputs.opensearch == 'true'
@@ -396,48 +350,8 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/opensearch:3
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/opensearch:3.3.0
 
-  # ---------------------------------------------------------------------------
-  # Imagens base das aplicações Laravel da org — quatro jobs encadeados
-  #
-  #   laravel-teste ─→ laravel-app (amd64 e arm64, runners NATIVOS)
-  #                         └→ laravel-app-manifest ─→ laravel-derivados
-  #
-  # Até agosto/2026 isto era UM job com três builds em sequência, cada um
-  # multi-arch sob QEMU. Levava 64 minutos, e a medição dizia exatamente onde:
-  #
-  #   #17 [linux/amd64 ...] RUN install-php-extensions ...  DONE   102.1s
-  #   #18 [linux/arm64 ...] RUN install-php-extensions ...  DONE  1764.8s
-  #
-  # As 14 extensões compilam de fonte, e o arm64 emulado é 17x mais lento que o
-  # amd64 nativo. Pior: compilavam DUAS vezes, porque o worker era Alpine.
-  #
-  # Duas mudanças eliminam as duas metades do problema:
-  #
-  # 1. O worker passou a derivar do app (ver laravel/Dockerfile.worker). Agora só
-  #    o `laravel-app` compila extensão; worker e builder são COPY em cima dela,
-  #    e custam segundos mesmo sob emulação.
-  # 2. O `laravel-app` deixou de ser emulado. Cada arquitetura builda no seu
-  #    runner NATIVO — `ubuntu-24.04-arm` é gratuito porque este repositório é
-  #    público — e um job de manifest junta as duas por digest.
-  #
-  # A ordem continua sendo uma restrição real, e é por isso que são jobs
-  # separados com `needs:` em vez de uma matriz solta: worker e builder fazem
-  # `FROM laravel-app` e precisam da tag imutável DESTA execução já publicada.
-  # Em paralelo, pegariam a imagem da publicação anterior — verde, entregando a
-  # base errada.
-  #
-  # Multi-arch aqui, e não nos módulos de infraestrutura, porque estas imagens
-  # são consumidas em tempo de BUILD, inclusive nas estações Apple Silicon da
-  # equipe. Sem `arm64` no manifest, todo build local cairia em emulação.
-  # ---------------------------------------------------------------------------
-
-  # O gate. Job próprio, e não um step do build, porque a partir daqui o build
-  # se abre em dois runners: um teste que rodasse dentro de um deles não
-  # protegeria o outro. Nada é publicado se ele falhar — os três jobs abaixo
-  # dependem dele, direta ou transitivamente.
-  #
-  # Builda as três imagens na arquitetura nativa do runner, que é o que se quer:
-  # verificar rápido e barato antes de gastar os minutos dos builds de verdade.
+  # Laravel: teste → app (multi-arch nativo) → manifest → derivados.
+  # Worker e builder dependem da tag imutável desta execução.
   laravel-teste:
     needs: changes
     if: needs.changes.outputs.laravel == 'true'
@@ -610,22 +524,15 @@ jobs:
     strategy:
       matrix:
         include:
-          # 3.13 é a LTS atual do Prometheus (suporte até 2027-07-31); a 3.5,
-          # LTS anterior, sai de suporte em 2026-07-31.
+          # Prometheus 3.13 LTS; Alertmanager + blackbox na mesma matriz (teste compartilhado).
           - { dir: prometheus, image: prometheus, major: "3", full: "3.13.1" }
           - { dir: grafana, image: grafana, major: "13", full: "13.1.1" }
-          # O Alertmanager é o que faz as 18 regras chegarem a alguém; o
-          # blackbox é o que substitui os cards de latência do Laravel Pulse.
-          # Os dois entram na mesma matriz porque compartilham o teste acima.
           - { dir: alertmanager, image: alertmanager, major: "0", full: "0.30.0" }
           - { dir: blackbox, image: blackbox-exporter, major: "0", full: "0.28.0" }
     steps:
       - uses: actions/checkout@v4
 
-      # Roda ANTES do push, no mesmo espírito dos testes do shm-guard: uma
-      # config ou regra inválida só se manifestaria como container em restart
-      # loop no servidor, e um dashboard com o datasource errado abre VAZIO,
-      # sem erro nenhum — ninguém percebe até precisar dele.
+      # promtool + dashboards antes do push.
       - name: Config, alertas e dashboards
         run: bash monitoring/test/prometheus-config.test.sh
 

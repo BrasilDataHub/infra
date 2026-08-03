@@ -1,27 +1,9 @@
 #!/usr/bin/env bash
-# Teste-gate das imagens base de aplicação Laravel da BrasilDataHub.
+# Teste-gate das imagens Laravel — paridade de extensões, ini e dimensionamento FrankenPHP.
 #
 #   bash laravel/test/laravel-images.test.sh
 #
-# Roda no CI ANTES do push, como o shm-guard do Postgres e o teste de pooling do
-# PgBouncer. O motivo é o mesmo dos outros: o que ele afirma não falha no build
-# — falha depois, em produção, de formas que não mencionam a causa.
-#
-# A afirmação central é a PARIDADE DE EXTENSÕES entre laravel-app e
-# laravel-worker. Até agosto/2026 os dois rodavam distribuições diferentes
-# (Debian/glibc e Alpine/musl) a partir de uma lista compartilhada, e era este
-# teste que impedia a divergência: uma extensão pode existir para uma libc e não
-# para a outra, ou compilar num ambiente e falhar no outro sem derrubar o build.
-# O sintoma seria um job de fila estourando "Class not found" com o container web
-# funcionando perfeitamente ao lado.
-#
-# Desde que o worker passou a derivar do app, a paridade é ESTRUTURAL — há uma
-# instalação só. O teste continua porque o que ele afirma mudou de natureza, não
-# deixou de importar: que a lista de php-extensions.txt foi de fato instalada
-# (uma extensão que falhe em silêncio não derruba o build), que as diretivas
-# medidas do 99-custom.ini chegaram às três imagens, e que a toolchain do
-# builder continua de pé. Se um dia o worker voltar a ter base própria, a
-# afirmação de paridade volta a ser a que a torna segura.
+# Roda no CI antes do push. Worker e builder derivam do app (paridade estrutural).
 set -uo pipefail
 
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
@@ -189,15 +171,7 @@ done
 echo
 echo "Dimensionamento de workers do FrankenPHP"
 
-# Por que isto é um teste-gate, e não um detalhe de configuração: sem
-# `num_threads` no Caddyfile o FrankenPHP mantém UMA thread de worker ativa e
-# serializa todas as requisições. Nada falha, nada é logado — o servidor
-# simplesmente atende um pedido por vez, com o resto da CPU parada. Foi assim
-# que o Base Empresarial rodou até 01/08/2026: sob 10 conexões por 30 s, uma
-# thread acumulou 22,4 s de CPU e as outras quatro não se moveram um tick.
-#
-# As duas diretivas no Caddyfile. Só `num` no bloco worker NÃO basta — foi
-# testado, e sem a linha global o comportamento não muda.
+# Sem num_threads/max_threads no Caddyfile o FrankenPHP serializa requisições.
 for diretiva in num_threads max_threads; do
     if docker run --rm --entrypoint grep "$IMG_APP" -qE "^[[:space:]]*${diretiva}[[:space:]]" /etc/caddy/Caddyfile 2>/dev/null; then
         ok "app: Caddyfile declara ${diretiva}"

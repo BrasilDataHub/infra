@@ -2,21 +2,13 @@
 #
 #   docker compose up -d
 #
-# ANTES do primeiro `up`, o host precisa de um sysctl:
-#
+# Antes do primeiro up (sem isso o bootstrap check mata o container):
 #   sysctl -w vm.max_map_count=262144
 #   echo 'vm.max_map_count=262144' > /etc/sysctl.d/99-opensearch.conf
 #
-# O `setup.sh` não tinha etapa de sysctl até este roadmap (05 §5.2, item
-# 5). Sem ele o container sobe e MORRE no bootstrap check, com uma mensagem que
-# fala de `vm.max_map_count` e não de OpenSearch.
-#
-# .env ao lado deste arquivo (bloco do perfil compartilhada-8gb):
 #   OS_MEMORY_LIMIT=8G
 #   OS_JAVA_OPTS=-Xms4g -Xmx4g -XX:MaxDirectMemorySize=1g
-#   ...
-#   # opcionais:
-#   # BIND_IP=10.0.0.5           # restringe a publicação a uma interface
+#   # BIND_IP=10.0.0.5
 #   # OPENSEARCH_PORT=9200
 
 services:
@@ -27,59 +19,39 @@ services:
       - path: .env
         required: false
     environment:
-      # Nó único. `single-node` desliga o bootstrap de quorum — sem isso, um nó
-      # sozinho fica esperando eleição para sempre e nunca fica GREEN.
+      # single-node: sem isso um nó sozinho nunca fica GREEN.
       discovery.type: single-node
       cluster.name: ${OS_CLUSTER_NAME:-bdh}
-      # Default NEUTRO de propósito. Já foi `bdh-data`, e como o nome do nó não
-      # tem efeito nenhum em runtime, o erro sobreviveu à implantação: o cluster
-      # rodava em `bdh-search` e se apresentava como `bdh-data` no `_cat/nodes`,
-      # nas métricas e nos alertas — apontando o plantão para o servidor do
-      # PostgreSQL durante um incidente de busca.
-      #
-      # Defina OS_NODE_NAME com o hostname real em cada deploy.
+      # Default neutro — defina OS_NODE_NAME = hostname real do host de busca.
       node.name: ${OS_NODE_NAME:-opensearch}
       OPENSEARCH_JAVA_OPTS: ${OS_JAVA_OPTS:--Xms4g -Xmx4g -XX:MaxDirectMemorySize=1g}
       DISABLE_SECURITY_PLUGIN: "true"
       DISABLE_INSTALL_DEMO_CONFIG: "true"
-      # Breakers. `fielddata` em 0% porque o mapping usa doc_values em tudo que
-      # é agregado: qualquer uso de fielddata é erro de consulta, e é melhor
-      # falhar rápido que consumir heap até o OOM.
+      # fielddata 0%: mapping usa doc_values; fielddata = erro de consulta.
       indices.breaker.fielddata.limit: ${OS_BREAKER_FIELDDATA_LIMIT:-0%}
       indices.breaker.total.limit: ${OS_BREAKER_TOTAL_LIMIT:-70%}
       indices.breaker.request.limit: ${OS_BREAKER_REQUEST_LIMIT:-40%}
-      # Watermarks. O flood_stage põe TODOS os índices em read-only — é a
-      # interrupção autoinfligida nº 1 desta classe de serviço, e o NVMe aqui é
-      # dividido com um PGDATA de 134 GB que cresce a cada carga.
+      # flood_stage 90% → índices read-only (NVMe compartilhado com PGDATA).
       cluster.routing.allocation.disk.watermark.low: ${OS_WATERMARK_LOW:-75%}
       cluster.routing.allocation.disk.watermark.high: ${OS_WATERMARK_HIGH:-85%}
       cluster.routing.allocation.disk.watermark.flood_stage: ${OS_WATERMARK_FLOOD:-90%}
-      # Repositório de snapshot. Sem ele registrado, um `_snapshot` falha com
-      # "path is not accessible on master node" muito depois de alguém contar
-      # com o backup do índice.
       path.repo: /snapshots
     labels:
       org.brasildatahub.service: opensearch
     ulimits:
-      # `memlock` ilimitado é pré-requisito do `bootstrap.memory_lock`; sem ele
-      # o kernel pode paginar o heap para o swap, e um heap de 4 GiB paginado
-      # transforma uma busca de 200 ms em segundos.
+      # memlock: pré-requisito de bootstrap.memory_lock (evita swap do heap).
       memlock: { soft: -1, hard: -1 }
       nofile: { soft: 65536, hard: 65536 }
     volumes:
       - os_data:/usr/share/opensearch/data
       - os_snapshots:/snapshots
     ports:
-      # Mesma política dos serviços de dados: 0.0.0.0 por default, com o
-      # firewall (item 8) como barreira real. Diferente deles em um ponto que
-      # importa: o plugin de segurança está DESLIGADO, então aqui não há nem
-      # senha. Publicar isto sem firewall entrega o índice inteiro.
+      # Security plugin off: sem firewall entrega o índice inteiro.
       - "${BIND_IP:-0.0.0.0}:${OPENSEARCH_PORT:-9200}:9200"
     networks:
       - default
       - bdh_metrics
     logging:
-      # Teto de log — a justificativa está em ../postgres/docker-compose.yml.
       driver: json-file
       options:
         max-size: ${LOG_MAX_SIZE:-50m}
@@ -90,10 +62,7 @@ services:
           memory: ${OS_MEMORY_LIMIT:-8G}
           cpus: "${OS_CPU_LIMIT:-6}"
     healthcheck:
-      # `wait_for_status=yellow` e não green: com um nó e `auto_expand_replicas`
-      # o cluster É green, mas durante a recuperação de shards passa por yellow,
-      # e um healthcheck exigindo green manteria o container unhealthy por
-      # minutos a cada restart.
+      # yellow (não green): recuperação de shards passa por yellow.
       test: ["CMD-SHELL", "curl -fs 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=5s' > /dev/null"]
       interval: 15s
       timeout: 10s
@@ -109,6 +78,6 @@ volumes:
     name: ${OS_SNAPSHOT_VOLUME:-bdh_os_snapshots}
 
 networks:
-  # Sem `external: true` — mesma justificativa de ../postgres/docker-compose.metrics.yml.
+  # Sem `external: true` — ver ../postgres/docker-compose.metrics.yml.
   bdh_metrics:
     name: ${METRICS_NETWORK:-bdh_metrics}

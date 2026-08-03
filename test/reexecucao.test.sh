@@ -1,29 +1,9 @@
 #!/usr/bin/env bash
-# O teste que faltava: rodar o script DUAS VEZES e comparar o que ele produziu.
+# Teste de re-execução: load_state() e validate_and_prompt() devem herdar .setup-state.
 #
 #   bash test/reexecucao.test.sh
 #
-# Nenhum teste executava `main()` nem re-execução (05 §5.2, item 11), e é
-# exatamente aí que morava o defeito mais caro do script: ele GRAVA o
-# `.setup-state` e não o RELÊ.
-#
-# A consequência não é teórica. `--metrics-only` — o comando que o README
-# indica para ligar observabilidade — roda o `main()` inteiro com os DEFAULTS DE
-# FÁBRICA. Num servidor de dados isso significa:
-#
-#   POSTGRES_DB volta para "dados"  → o .env muda → o Postgres é RECRIADO, e a
-#                                     DSN do exporter aponta para um database
-#                                     que não existe (o real é dados_cnpj)
-#   BIND_IP volta para 0.0.0.0      → recriado E reexposto
-#   ALLOW_FROM volta para vazio     → a chain DOCKER-USER é esvaziada
-#   SERVICES volta ao trio default  → instala Redis e Meilisearch do zero num
-#                                     host que talvez só tenha Postgres
-#
-# Cada valor, sozinho, parece plausível. É por isso que só um teste de
-# RE-EXECUÇÃO pega.
-#
-# O teste roda em modo dry-run e com um WORKDIR temporário: não sobe container,
-# não toca em nada do host.
+# Roda em dry-run com WORKDIR temporário — não sobe containers.
 set -uo pipefail
 
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
@@ -80,7 +60,7 @@ carregar() {
     printf '%s' "$erros"
 ) > "$TMP/r1"
 if [[ ! -s "$TMP/r1" ]]; then
-    ok "sem flags, TUDO é herdado do .setup-state (era o defeito: voltava ao default)"
+    ok "sem flags, TUDO é herdado do .setup-state"
 else
     nok "valores não herdados:$(cat "$TMP/r1")"
 fi
@@ -105,13 +85,7 @@ else
     nok "precedência errada:$(cat "$TMP/r2")"
 fi
 
-# --- 2b. a interface do painel sobrevive ao --update -----------------------
-# `MONITORING_BIND_IP` era gravado no `.env` do monitoring e NÃO no
-# `.setup-state`, e `load_state` não tinha caso para ele. O efeito: quem
-# publicou o Grafana numa interface alcançável — a VPN, a rede privada — via o
-# PRÓXIMO `--update` devolvê-lo a 127.0.0.1. Nada falhava; o painel só parava
-# de responder, e o default de fábrica é loopback justamente porque o
-# Prometheus não tem autenticação, o que faz a reversão parecer inofensiva.
+# --- 2b. MONITORING_BIND_IP herdado do .setup-state ---
 mkdir -p "$TMP/wd-mon"
 cat > "$TMP/wd-mon/.setup-state" <<STATE
 SERVICES=postgres
@@ -129,14 +103,12 @@ STATE
         || printf 'MONITORING_BIND_IP=%s' "$MONITORING_BIND_IP"
 ) > "$TMP/r2b"
 if [[ ! -s "$TMP/r2b" ]]; then
-    ok "a interface do painel é herdada (era o defeito: voltava a 127.0.0.1)"
+    ok "a interface do painel é herdada do .setup-state"
 else
     nok "interface do painel não herdada: $(cat "$TMP/r2b")"
 fi
 
-# E o inverso: a flag tem de vencer o estado. Sem `_explicita` na análise de
-# `--metrics-bind-ip`, o valor herdado venceria a flag recém-passada e mudar a
-# interface do painel viraria uma operação sem efeito nenhum.
+# Flag explícita deve vencer o estado herdado.
 (
     carregar
     WORKDIR="$TMP/wd-mon"
@@ -159,17 +131,7 @@ else
     nok "MONITORING_BIND_IP não é gravado no estado — a herança acima é letra morta"
 fi
 
-# --- 2g. o --update não pode desligar o arquivamento de WAL -----------------
-# O `subir_servicos` montava base → metrics → remote → override e OMITIA os dois
-# overlays de backup, que o `bdh` incluía. Efeito: qualquer `setup.sh --update`
-# num host com backup implantado subia o Postgres com um `-f` a menos e devolvia
-# `archive_mode` para `off`.
-#
-# Nada acusa. O container sobe saudável, o sidecar continua de pé, o
-# `pgbackrest info` segue reportando o último full como válido. O que some é o
-# arquivamento contínuo — o PITR —, e a perda só aparece quando alguém precisa
-# restaurar para um ponto no tempo. Observado num host real em 31/07/2026: um
-# `--update` para publicar o pooler numa interface desligou o arquivamento.
+# --- 2g. overlays de backup incluídos no subir_servicos ---
 for _ov in backup backup-local; do
     if grep -q "docker-compose.${_ov}.yml\" \]\] && compose_args+=(-f \"\$dir/docker-compose.${_ov}.yml\")" "$RAIZ/setup.sh"; then
         ok "subir_servicos inclui o overlay ${_ov}"
@@ -178,12 +140,7 @@ for _ov in backup backup-local; do
     fi
 done
 
-# A ordem dos overlays tem de ser a mesma nos dois lugares, senão o `bdh` e o
-# `setup.sh` produzem containers diferentes a partir dos mesmos arquivos.
-# Só as linhas que de fato APPENDAM em compose_args — comentários e o heredoc do
-# `bdh` citam os mesmos nomes e falseariam a leitura.
-# `sed 's/.*compose_args+=//'` descarta o teste `[[ -f ... ]]`, que cita o mesmo
-# nome de arquivo e apareceria duplicado na lista.
+# Ordem dos overlays: setup.sh e bdh devem coincidir.
 _ordem_setup=$(grep -E 'compose_args\+=\(-f .*docker-compose\.[a-z-]+\.yml' "$RAIZ/setup.sh" \
                | sed 's/.*compose_args+=//' \
                | grep -oE 'docker-compose\.[a-z-]+\.yml' | paste -sd, -)
@@ -203,48 +160,27 @@ _ordem_bdh=$(grep -E '(^|[^_])args\+=\(-f .*docker-compose\.[a-z-]+\.yml' "$RAIZ
     && ok "o bdh monta os overlays na mesma ordem do setup.sh" \
     || nok "o bdh diverge do setup.sh: $_ordem_bdh"
 
-# --- 2h. o .env regerado preserva o que o operador escreveu -----------------
-# `PGBACKREST_STANZA` e `BDH_BACKUP_REPO_DIR` são escritas à mão (backup/
-# README.md) e o `.env` é REGERADO do perfil a cada execução. Sem preservação, um
-# `--update` as apagava — e os overlays usam `${VAR:?}`, então o `up` seguinte
-# falhava com "defina PGBACKREST_STANZA" e o banco ficava FORA DO AR.
+# --- 2h. .env regerado preserva PGBACKREST_* e BDH_BACKUP_* ---
 if grep -q "PGBACKREST_\[A-Z_\]+|BDH_BACKUP_\[A-Z_\]+" "$RAIZ/setup.sh"; then
     ok "o .env regerado preserva PGBACKREST_* e BDH_BACKUP_*"
 else
     nok "o .env regerado apaga as variáveis de backup escritas pelo operador"
 fi
 
-# --- 2f. o alvo do serviço que saiu é removido ------------------------------
-# O bloco de alvos só ESCREVIA, e o comentário dele promete o contrário:
-# "serviço ausente não deixa arquivo... o job fica sem alvo em vez de ficar
-# `up == 0` para sempre". A promessa valia para instalação nova, não para
-# reexecução: quem tirou um serviço de `--services` ficava com o arquivo antigo
-# e um job vermelho permanente no Prometheus.
-#
-# Observado ao substituir Meilisearch por OpenSearch: `meilisearch` seguia como
-# alvo `down`, e alvo cronicamente vermelho ensina que vermelho é normal.
+# --- 2f. alvo obsoleto removido quando serviço sai do conjunto ---
 if grep -q 'alvo obsoleto removido' "$RAIZ/setup.sh"; then
     ok "o alvo de um serviço removido é apagado do diretório de targets"
 else
     nok "alvos locais só são escritos, nunca removidos — job fica up==0 para sempre"
 fi
-# A remoção tem de cobrir os mesmos jobs que a escrita cobre; um job escrito e
-# nunca removido é o defeito de volta, só que para outro serviço.
+# A remoção tem de cobrir os mesmos jobs que a escrita cobre.
 for _job in postgres redis meilisearch opensearch; do
     grep -q "for job_local in .*$_job" "$RAIZ/setup.sh" \
         || nok "o job '$_job' é escrito mas não entra na limpeza"
 done
 ok "a limpeza cobre os mesmos jobs locais que a escrita"
 
-# --- 2e. sem --allow-from, o after.rules não é tocado ----------------------
-# A remoção do bloco de `after.rules` ficava ACIMA da guarda de `ALLOW_FROM`
-# vazio. Numa execução sem a flag — que é exatamente o `--update` de rotina — o
-# arquivo perdia o bloco, a chain viva era preservada, e o script anunciava
-# "PRESERVADA": verdade só até o próximo boot, quando a chain nasce vazia e as
-# portas dos containers passam a aceitar a internet inteira, com o `ufw status`
-# ainda exibindo `active`.
-#
-# O teste é sobre ORDEM no arquivo, porque é a ordem que era o defeito.
+# --- 2e. after.rules só removido após guarda de ALLOW_FROM vazio ---
 linha_guarda=$(grep -n 'if \[\[ -z "\$ALLOW_FROM" \]\]; then' "$RAIZ/setup.sh" | head -1 | cut -d: -f1)
 linha_remocao=$(grep -n 'sed -i "/\${begin_re}/,/\${end_re}/d"' "$RAIZ/setup.sh" | head -1 | cut -d: -f1)
 if [[ -n "$linha_guarda" && -n "$linha_remocao" ]] && (( linha_remocao > linha_guarda )); then
@@ -260,14 +196,7 @@ else
     nok "sem aviso para chain viva sem bloco em after.rules"
 fi
 
-# --- 2d. recriar container é decisão separada de reaplicar configuração ----
-# `--update` e `--add-service` marcavam FORCE=true, e FORCE=true virava
-# `--force-recreate` em TODO serviço. O modo que o README manda usar derrubava
-# um Postgres de 156 GB cuja definição não mudara, e o `--add-service` — cujo
-# comentário promete "sem tocar nos outros" — recriava todos eles.
-#
-# O custo real não é o restart: é o ETL com cursor server-side que morre com
-# `AdminShutdown` a horas do início.
+# --- 2d. RECREATE separado de FORCE (--update não recria por padrão) ---
 verifica_recreate() {
     local flag="$1" esperado="$2" desc="$3"
     (
@@ -392,12 +321,7 @@ else
 fi
 
 printf '\nHost só de observabilidade e merge de credenciais\n'
-# Lacuna 7: `monitoring` em --services não era aceito, porque o gerador de
-# override de bind assume um volume de dados por serviço. Um host só de
-# observabilidade — que é o desenho deste roadmap, com o Prometheus no bdh-apps
-# — não era provisionável.
-# `validate_and_prompt` faz muito mais que validar (detecta RAM, baixa perfis);
-# o que interessa aqui é o trecho da allowlist, exercitado diretamente.
+# --services monitoring: host sem serviços de dados.
 (
     carregar
     SERVICES_INPUT="monitoring"
@@ -425,23 +349,21 @@ else
     nok "host só de observabilidade não aceito: '$(cat "$TMP/r7")'"
 fi
 
-# Lacuna 3: credentials.env era reescrito com as credenciais apenas dos serviços
-# DESTA execução. Um --add-service truncava as senhas dos outros, e o operador
-# só descobria ao precisar delas.
+# credentials.env: merge em vez de truncar a cada execução.
 if grep -q 'preservadas de execuções anteriores' "$RAIZ/setup.sh"; then
     ok "credentials.env recebe merge em vez de ser truncado"
 else
     nok "credentials.env é reescrito: --add-service perderia as senhas dos outros serviços"
 fi
 
-# Lacuna 4: com ALLOW_FROM herdado e a chain vazia, a reconstrução acontece.
+# Firewall: reconstruir DOCKER-USER a partir de ALLOW_FROM herdado.
 if grep -q 'reconstruindo a partir de ALLOW_FROM' "$RAIZ/setup.sh"; then
     ok "a chain DOCKER-USER é reconstruída a partir do estado herdado"
 else
     nok "sem reconstrução: o firewall só voltaria repetindo a flag de cor"
 fi
 
-# Lacuna 6: não havia caminho para atualizar imagem.
+# bdh pull: atualizar imagem sem recriar o que não mudou.
 if grep -q 'cmd_pull()' "$RAIZ/setup.sh"; then
     ok 'há bdh pull para atualizar imagem sem recriar o que não mudou'
 else
@@ -449,9 +371,7 @@ else
 fi
 
 printf '\nO comando bdh\n'
-# O `bdh` são ~180 linhas dentro de um heredoc, e nenhum teste o olhava — nem
-# sintaticamente. Um erro ali só apareceria no servidor, no primeiro uso, e o
-# heredoc esconde o erro do `bash -n` do script hospedeiro.
+# Corpo do bdh extraído do heredoc — validação de sintaxe e verbos.
 awk "/<<'BDH'/{flag=1;next}/^BDH\$/{flag=0}flag" "$RAIZ/setup.sh" > "$TMP/bdh-cli.sh"
 if [[ -s "$TMP/bdh-cli.sh" ]] && bash -n "$TMP/bdh-cli.sh" 2>/dev/null; then
     ok "o corpo do comando bdh tem sintaxe válida ($(wc -l < "$TMP/bdh-cli.sh" | tr -d ' ') linhas)"
@@ -467,17 +387,7 @@ for verbo in status logs up down restart verify pull metrics creds path; do
 done
 ok "todos os verbos do bdh estão no dispatch"
 
-# --- 6. A ORDEM: load_state precisa rodar ANTES de o array SERVICES existir --
-#
-# Este e o teste que faltava. Os de cima chamam load_state() diretamente e
-# passam mesmo com a ordem errada — foi exatamente o que aconteceu: load_state
-# vivia em preflight(), que roda DEPOIS de validate_and_prompt() ter derivado o
-# array SERVICES da string SERVICES_INPUT. Resultado: `--add-service opensearch`
-# acrescentava a string e ninguem mais olhava para ela. O servico simplesmente
-# nao era provisionado, sem erro nenhum.
-#
-# Aqui o que se exercita e o FLUXO: chama validate_and_prompt() de verdade e
-# confere o ARRAY, que e o que todo o resto do script consome.
+# --- 6. load_state antes de derivar o array SERVICES ---
 printf '\nordem de carregamento\n'
 (
     carregar
@@ -505,13 +415,7 @@ else
     nok "perfil virou '${saida##*|}' em vez do herdado busca-4gb"
 fi
 
-# --- 7. o OpenSearch entra no ORCAMENTO de memoria ---------------------------
-#
-# Ele entrou no catalogo de servicos sem entrar na conta de vizinhos: o
-# `neighbor_budget_gb` tinha a entrada, e nada a somava. Numa maquina com
-# Postgres e Meilisearch, `--add-service opensearch` reportava "vizinhos 7 GB"
-# ignorando os 8 GiB do motor, e o `auto` do Postgres escolhia um perfil que nao
-# cabe. O sintoma seria OOM-kill semanas depois.
+# --- 7. OpenSearch entra no orçamento de vizinhos ---
 printf '\norcamento de memoria\n'
 (
     carregar
@@ -633,9 +537,7 @@ else
     nok "sem etapa de sysctl — o OpenSearch morre no bootstrap check"
 fi
 
-# Encontrada uma maquina real com vm.max_map_count=1048576 — quatro vezes o
-# minimo do OpenSearch. Persistir 262144 por cima rebaixaria no proximo boot
-# um valor que outro servico pode depender, e o sintoma apareceria longe daqui.
+# Encontrada máquina com vm.max_map_count maior que o mínimo — não rebaixar.
 (
     carregar
     VM_MAX_MAP_COUNT=262144
@@ -649,7 +551,7 @@ if [[ "$(cat "$TMP/sysctl1")" == "1048576" ]]; then
 else
     nok "rebaixaria para $(cat "$TMP/sysctl1")"
 fi
-if grep -q 'NUNCA rebaixar' "$RAIZ/setup.sh" && grep -qF 'alvo="$atual"' "$RAIZ/setup.sh"; then
+if grep -qi 'nunca rebaixar' "$RAIZ/setup.sh" && grep -qF 'alvo="$atual"' "$RAIZ/setup.sh"; then
     ok "a guarda de nao-rebaixamento esta no script, nao so no teste"
 else
     nok "o script nao preserva valor maior"

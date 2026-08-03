@@ -1,47 +1,20 @@
 #!/usr/bin/env bash
-# Build local das imagens da plataforma — o mesmo que a CI publica, na sua máquina.
+# Build local das imagens da plataforma (mesmo catálogo que a CI publica).
 #
 #   bash build.sh laravel                 # as 3 imagens do módulo, sem publicar
 #   bash build.sh laravel-app             # uma imagem só
 #   bash build.sh monitoring/grafana      # por subdiretório
 #   bash build.sh --tudo --push           # o repositório inteiro, publicando
 #
-# PARA QUE ELE EXISTE: publicar era exclusividade do GitHub Actions, e quando o
-# workflow está lento — ou quando se quer só ver se uma mudança de Dockerfile
-# compila — não havia alternativa a esperar a fila do runner. Este script usa a
-# CPU da sua máquina e, se você pedir, empurra para o mesmo registro com os
-# mesmos nomes e as mesmas tags.
+# Catálogo lido de .github/workflows/build-publish.yml (não duplicar config).
+# Sem --push: build nativo + --load. Com --push: confirmação obrigatória.
 #
-# O QUE ELE NÃO FAZ: inventar configuração. Contexto, Dockerfile, plataformas,
-# tags e build-args de cada imagem são LIDOS de .github/workflows/build-publish.yml
-# — nada aqui é uma segunda cópia daquilo. Uma cópia divergiria na primeira
-# imagem nova, e o sintoma seria publicar a tag errada em silêncio. O teste em
-# test/catalogo-build.test.sh afirma que a leitura continua batendo.
-#
-# Por padrão NÃO publica: builda na arquitetura nativa e carrega no daemon local.
-# Publicar exige `--push` e uma confirmação — é a única ação deste script que sai
-# da sua máquina.
-#
-# CREDENCIAL, para quem for publicar: o GHCR exige um token com escopo
-# `write:packages`, que NÃO é um dos que o `gh auth login` pede por padrão. Sem
-# ele o login funciona e o push falha com 403, num texto que não menciona
-# autenticação. Uma vez só, na máquina:
+# GHCR exige token com `write:packages` (não vem no `gh auth login` padrão):
 #
 #   gh auth refresh -h github.com -s write:packages
 #   bash build.sh ... --push --login
 #
-# O script confere a credencial ANTES de buildar qualquer coisa.
-#
-# SOBRE O TEMPO, numa estação Apple Silicon: o `linux/arm64` é nativo, e o
-# `linux/amd64` passa por emulação — mas pela Rosetta do OrbStack/Docker Desktop,
-# não pelo QEMU do runner. Medido em 01/08/2026, do zero, `laravel-app` nas duas
-# arquiteturas (M-series, 11 núcleos):
-#
-#   linux/arm64 (nativo)     55 s
-#   linux/amd64 (Rosetta)   352 s
-#   as duas, em paralelo    376 s
-#
-# Um `--push` multi-arch daqui não é instantâneo, mas é minutos.
+# Credencial conferida antes de qualquer build. Em Apple Silicon, amd64 via Rosetta.
 set -euo pipefail
 
 RAIZ="$(cd "$(dirname "$0")" && pwd)"
@@ -61,8 +34,7 @@ TUDO=false
 ALVOS=""
 
 usage() {
-    # Da linha 2 até o `set -euo pipefail`, exclusive: o cabeçalho inteiro, sem
-    # um número de linha fixo que desalinha ao primeiro parágrafo acrescentado.
+    # Cabeçalho até `set -euo pipefail` (sem número de linha fixo).
     sed -n '2,/^set /p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
     cat <<'EOF'
 
@@ -121,9 +93,7 @@ TMP="$(mktemp -d)"
 limpar() { rm -rf "$TMP"; }
 trap limpar EXIT
 
-# --- pré-requisitos ----------------------------------------------------------
-# Verificados aqui, com o que fazer a respeito, em vez de deixar o erro aparecer
-# no meio do primeiro build como um traceback de Python ou um "unknown flag".
+# Pré-requisitos conferidos aqui (mensagem acionável, não traceback no meio do build).
 [ -f "$WORKFLOW" ] || die "não encontrei $WORKFLOW — rode este script de dentro do repositório"
 
 command -v python3 >/dev/null 2>&1 \
@@ -141,20 +111,8 @@ docker info >/dev/null 2>&1 \
     || die "o daemon do Docker não está respondendo. Suba o Docker Desktop ou o OrbStack e tente de novo."
 
 # --- catálogo ----------------------------------------------------------------
-# Uma linha por imagem, oito campos:
-#   nome  contexto  dockerfile  plataformas  tags  build-args  teste  depende-de
-#
-# O separador é US (\037), e não tab, por um motivo que custa uma tarde: tab é
-# "IFS whitespace" para o bash, e uma sequência dele conta como UM delimitador.
-# Campos vazios — e vários módulos não declaram `platforms:` — colapsariam, e a
-# linha inteira andaria uma coluna para a esquerda em silêncio.
-#
-# O que este bloco resolve, e que um `grep` no YAML não resolveria: a expansão de
-# ${{ env.X }} e ${{ matrix.Y }}, o produto da matriz (é ela que produz as quatro
-# imagens de `monitoring` e as duas de `laravel-derivados`), a fusão das
-# arquiteturas de um mesmo alvo em um manifest só, e as tags de uma imagem
-# publicada por digest — que não estão no step do build, e sim no `imagetools
-# create` do job de manifest.
+# Uma linha por imagem (US \037, não tab — campos vazios colapsariam com IFS).
+# Resolve ${{ env/matrix }}, produto da matriz, merge multi-arch e tags de digest.
 SEP=$'\037'
 CATALOGO="$TMP/catalogo"
 python3 - "$WORKFLOW" > "$CATALOGO" <<'PY'
@@ -237,9 +195,7 @@ def linhas(valor, variaveis):
     ]
 
 
-# Primeira passada: as tags criadas por `imagetools create`. Uma imagem publicada
-# por digest não tem `tags:` no step do build — quem lhe dá nome é o job de
-# manifest, e é de lá que estas tags saem.
+# Tags de `imagetools create` (imagem por digest sem tags: no job de manifest).
 manifestos = {}
 testes = {}
 for nome_job, job in JOBS.items():
@@ -254,11 +210,7 @@ for nome_job, job in JOBS.items():
                 for tag in re.findall(r'-t\s+"?([^\s"\\]+)"?', texto):
                     manifestos.setdefault(tag.rsplit(":", 1)[0], []).append(tag)
             elif ".test.sh" in texto:
-                # Só as invocações de teste, e não o `run:` inteiro. O que fica
-                # de fora é a preparação do runner — o `sudo sysctl
-                # vm.max_map_count` do OpenSearch, por exemplo, que não existe no
-                # macOS e cujo valor o Docker Desktop e o OrbStack já entregam
-                # alto o bastante.
+                # Só invocações de teste (não sysctl/preparação do runner).
                 comandos = [
                     linha.strip()
                     for linha in texto.splitlines()
@@ -312,8 +264,7 @@ for nome_job, job in JOBS.items():
                 "teste": teste,
             }
 
-            # Um alvo dividido em vários jobs — uma arquitetura por runner — é
-            # UMA imagem no fim. As plataformas se somam; o resto tem de bater.
+            # Mesmo alvo em vários jobs: somar plataformas; resto deve bater.
             anterior = alvos.get(registro["nome"])
             if anterior is None:
                 alvos[registro["nome"]] = registro
@@ -360,18 +311,14 @@ PY
 
 [ -s "$CATALOGO" ] || die "não consegui ler nenhuma imagem de $WORKFLOW"
 
-# A forma que test/catalogo-build.test.sh consome. `|` em vez do US interno
-# porque um teste precisa poder cortar a linha com `cut -d'|'` sem malabarismo —
-# e nenhum campo do workflow contém pipe, o que o próprio teste afirma contando
-# os campos.
+# Saída `|` para test/catalogo-build.test.sh (`cut -d'|'`).
 if [ "$CATALOGO_CRU" = true ]; then
     tr "$SEP" '|' < "$CATALOGO"
     exit 0
 fi
 
 if [ "$LISTAR" = true ]; then
-    # `(implícita)` é um módulo que não declara `platforms:` no workflow: a CI
-    # publica a arquitetura do runner, que é amd64.
+    # (implícita) = sem platforms: no workflow → amd64 do runner.
     printf '\n%-19s %-24s %-24s %s\n' IMAGEM CONTEXTO PLATAFORMAS TAGS
     while IFS="$SEP" read -r nome contexto _ plataformas tags _ _ depende; do
         [ -n "$depende" ] && nome="$nome←$depende"
@@ -383,9 +330,7 @@ if [ "$LISTAR" = true ]; then
 fi
 
 # --- seleção -----------------------------------------------------------------
-# Um argumento casa por NOME DE IMAGEM (`laravel-app`) ou por DIRETÓRIO — e um
-# diretório casa também os contextos abaixo dele, que é o que faz `monitoring`
-# pegar as quatro imagens de `monitoring/*`.
+# Casa por nome de imagem ou diretório (ex.: monitoring → monitoring/*).
 selecionados() {
     local nome contexto alvo
     while IFS="$SEP" read -r nome contexto _; do
@@ -412,8 +357,7 @@ fi
 ESCOLHIDOS="$(selecionados)"
 [ -n "$ESCOLHIDOS" ] || die "nenhuma imagem casa com:${ALVOS}. Veja as disponíveis com --listar"
 
-# Dependência entra junto e ANTES: publicar um `laravel-worker` sem republicar o
-# `laravel-app` de que ele deriva entrega um derivado da base anterior.
+# Dependência entra junto e antes (derivado precisa da base nova).
 TEM_DERIVADO=false
 avisar_dependencias() {
     local nome linha depende
@@ -429,12 +373,7 @@ avisar_dependencias() {
 }
 avisar_dependencias "$ESCOLHIDOS"
 
-# Sem `--push`, a base de um derivado é a imagem que acabou de ser carregada no
-# daemon. Isso só funciona com o driver `docker`: um buildkit em container tem
-# store próprio, não enxerga o daemon, e iria buscar a base no registro — onde
-# ela ainda é a da publicação anterior. O build passaria, entregando um derivado
-# da base errada, que é justamente o erro que este script existe para não
-# cometer.
+# Sem --push: driver `docker` (buildkit em container não vê a base no daemon).
 if [ "$TEM_DERIVADO" = true ] && [ "$PUSH" != true ]; then
     DRIVER="$(docker buildx inspect 2>/dev/null | awk -F': *' '/^Driver:/{print $2; exit}')"
     if [ "$DRIVER" != "docker" ]; then
@@ -444,8 +383,7 @@ if [ "$TEM_DERIVADO" = true ] && [ "$PUSH" != true ]; then
     fi
 fi
 
-# Ordena pondo cada base antes de quem deriva dela. A cadeia é rasa de propósito
-# (uma imagem base, dois derivados), então uma passada basta.
+# Base antes do derivado (cadeia rasa: uma passada basta).
 ORDENADOS="$(
     { while read -r nome; do
           linha="$(grep -m1 "^${nome}${SEP}" "$CATALOGO" || true)"
@@ -465,13 +403,7 @@ plataforma_nativa() {
 # --- registro e credencial ---------------------------------------------------
 REGISTRO="$(head -1 "$CATALOGO" | cut -d"$SEP" -f5 | cut -d, -f1 | cut -d/ -f1)"
 
-# O `docker login` grava a credencial num helper (`credsStore`, ou um
-# `credHelpers` por registro) ou, sem helper nenhum, no `auths` do
-# config.json. Consultar os três é o que permite descobrir a falta ANTES do
-# build — a alternativa é o que aconteceu na primeira tentativa deste script:
-# rodar o teste-gate inteiro, buildar as duas arquiteturas, e só descobrir no
-# `pushing layers` que não havia credencial, com um "403 Forbidden" cujo texto
-# não menciona login.
+# Conferir credencial (credsStore / credHelpers / auths) antes do build.
 credencial_do_registro() {
     local helper
     helper="$(python3 - "$REGISTRO" <<'PY'
@@ -500,9 +432,7 @@ PY
     esac
 }
 
-# Um token do `gh auth login` NÃO serve para publicar por padrão: os escopos
-# pedidos são `repo`, `read:org`, `gist` e `workflow`. Falta `write:packages`, e
-# sem ele o GHCR responde 403 no push — não no login.
+# `gh auth login` padrão sem write:packages → 403 no push do GHCR.
 gh_pode_publicar() {
     command -v gh >/dev/null 2>&1 || return 1
     gh auth status 2>&1 | grep -q "write:packages"
@@ -536,9 +466,7 @@ if [ "$PUSH" = true ] && [ "$DRY_RUN" != true ] && ! credencial_do_registro; the
 fi
 
 # --- execução ----------------------------------------------------------------
-# O builder dedicado só é criado quando faz falta. Com uma plataforma só e
-# `--load`, o driver padrão do daemon serve e é mais rápido — ele carrega a
-# imagem sem passar por exportação.
+# Builder dedicado só se multi-arch/push; uma plataforma + --load usa o daemon.
 garantir_builder() {
     docker buildx inspect "$BUILDER" >/dev/null 2>&1 && return 0
     log "criando o builder '$BUILDER' (driver docker-container, exigido por multi-arch)"
@@ -560,8 +488,7 @@ rodar_teste() {
     local comando="$1"
     [ -n "$comando" ] || return 0
     [ "$RODAR_TESTE" = true ] || return 0
-    # O mesmo teste-gate cobre várias imagens do módulo; rodá-lo uma vez por
-    # imagem seria repetir minutos de build sem afirmar nada de novo.
+    # Teste-gate uma vez por módulo (não por imagem).
     printf '%s\n' "$TESTES_RODADOS" | grep -qxF "$comando" && return 0
     TESTES_RODADOS="$TESTES_RODADOS
 $comando"
@@ -590,11 +517,10 @@ construir() {
     if [ -n "$PLATAFORMA" ]; then
         plataformas="$PLATAFORMA"
     elif [ "$PUSH" != true ]; then
-        # `--load` aceita uma plataforma só. Sem push, a útil é a da máquina.
+        # --load: uma plataforma (nativa sem push).
         plataformas="$(plataforma_nativa)"
     elif [ -z "$plataformas" ]; then
-        # Os módulos de infraestrutura não declaram `platforms:` — a CI publica
-        # a arquitetura do runner, que é amd64.
+        # Sem platforms: no workflow a CI publica amd64 do runner.
         plataformas="linux/amd64"
     fi
 
@@ -617,11 +543,7 @@ construir() {
         comando="$comando --push"
     else
         case "$plataformas" in
-            # `--load` grava no daemon, que guarda uma arquitetura por tag: com
-            # duas plataformas o buildx recusa. É o caso de quem passou
-            # `--plataforma` com as duas só para conferir se as duas compilam —
-            # então o build roda inteiro e o resultado fica no cache, sem imagem
-            # local. Recusar aqui seria pior: é uma verificação legítima.
+            # --load multi-arch: buildx recusa gravar; resultado fica no cache.
             *,*)
                 aviso "duas plataformas sem --push: o build roda e valida, mas não gera imagem local"
                 comando="$comando --output type=cacheonly"
@@ -633,17 +555,13 @@ construir() {
     comando="$comando $contexto"
 
     secao "$nome  ${C_FRACO}[$plataformas]${C_OFF}"
-    # shellcheck disable=SC2086
-    # A expansão é intencional: `$comando` é uma linha de comando montada acima,
-    # com argumentos que não contêm espaço (tags, plataformas e caminhos deste
-    # repositório). Aspas aqui fariam o docker receber tudo como um argumento só.
+    # Expansão intencional de $comando (args sem espaço).
     ( cd "$RAIZ" && rodar $comando ) || die "build de $nome falhou"
     ok "$nome"
 }
 
 # --- confirmação do push -----------------------------------------------------
-# A única coisa aqui que sai da máquina. As tags exatas aparecem antes, porque
-# uma tag móvel sobrescreve o que está publicado e não há desfazer.
+# Única ação que sai da máquina; tags móveis sobrescrevem sem desfazer.
 if [ "$PUSH" = true ] && [ "$CONFIRMADO" != true ] && [ "$DRY_RUN" != true ]; then
     secao "Vai publicar em $REGISTRO"
     while read -r nome; do

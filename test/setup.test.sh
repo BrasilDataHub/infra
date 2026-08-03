@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
-# Testes de setup.sh — carregam o script como biblioteca
-# (BDH_SETUP_LIB_ONLY=1) e exercitam a lógica que decide o que vai para o
-# servidor. A parte mais importante valida os ARQUIVOS DE PERFIL
-# (postgres/profiles/, redis/profiles/, meilisearch/profiles/): eles são a única
-# fonte dos valores de tuning, usada tanto pelo script quanto por quem segue a
-# documentação, então precisam estar íntegros e coerentes com o guia.
+# Testes de setup.sh — carrega o script como biblioteca (BDH_SETUP_LIB_ONLY=1).
+# Valida perfis, detecção de RAM, orçamento coordenado e observabilidade.
 #
 #   bash test/setup.test.sh
 #
-# WORKDIR, DATA_DIR e *_DATA_DIR parecem não usadas para o shellcheck, mas são
-# lidas pelas funções carregadas do script — daí o disable abaixo.
+# WORKDIR, DATA_DIR e *_DATA_DIR são lidas pelas funções carregadas do script.
 # shellcheck disable=SC2034
 set -uo pipefail
 
@@ -31,8 +26,7 @@ fail() { printf '  ✗ %s\n' "$1"; FAIL=$((FAIL + 1)); }
 # shellcheck source-path=SCRIPTDIR/..
 # shellcheck source=setup.sh
 BDH_SETUP_LIB_ONLY=1 . "$REPO_ROOT/setup.sh"
-# O script carregado ativa `set -e` e um trap ERR; nos testes queremos avaliar
-# falhas em vez de abortar no primeiro comando que retorna != 0.
+# Desativa set -e/trap ERR do script carregado para avaliar falhas nos testes.
 set +e
 trap - ERR
 
@@ -48,12 +42,9 @@ check "125 GB → dedicada-128gb" "dedicada-128gb"  "$(detect_pg_profile 125)"
 check "2 GB → menor perfil"     "dedicada-8gb"    "$(detect_pg_profile 2)"
 check "13 GB não sobe de perfil" "dedicada-8gb"   "$(detect_pg_profile 13)"
 
-printf '\nMemória disponível — o overflow que impedia todo provisionamento novo\n'
-# available_mem_gb() roda em validate_and_prompt(), ANTES de install_docker():
-# numa máquina nova o `docker info` não existe e o /proc/meminfo é o caminho
-# normal. Com `$2 * 1024`, o `printf "%d"` do mawk (o awk de fábrica do Debian e
-# do Ubuntu) satura em INT_MAX = 2147483647 → 1 GiB. Todo host com 2 GiB ou mais
-# reportava 1 GiB, e o --auto se matava logo em seguida.
+printf '\nMemória disponível\n'
+# available_mem_gb() usa /proc/meminfo; não multiplicar por 1024 dentro do awk
+# (mawk satura em INT_MAX e reporta 1 GiB em hosts maiores).
 leitura_meminfo() { awk '/^MemTotal:/ {printf "%d", $2 / 1048576; exit}'; }
 check "32 GiB não viram 1 GiB (INT_MAX do mawk)" "30" \
     "$(printf 'MemTotal:       32089880 kB\nMemFree:  100 kB\n' | leitura_meminfo)"
@@ -70,11 +61,7 @@ check "available_mem_gb enxerga mais de 1 GB neste host" "ok" \
     "$( (( $(available_mem_gb) > 1 )) && echo ok || echo "viu $(available_mem_gb) GB" )"
 
 printf '\nDestino de alerta sobrevive ao --update\n'
-# O destino é segredo (webhook, senha de SMTP), então não vai para o
-# .setup-state: fica no .env do monitoring. Sem relê-lo, um --update qualquer
-# encontrava "nenhum destino" e DESLIGAVA o Alertmanager em silêncio — o
-# container existente continua de pé, porque um profile inativo só impede
-# recriar, e o operador só descobriria no próximo incidente sem notificação.
+# Destino de alerta fica no .env do monitoring (segredo), não no .setup-state.
 if declare -f herdar_destino_de_alerta >/dev/null; then
     pass "existe a herança do destino de alerta"
 else
@@ -96,17 +83,14 @@ check "flag explícita sobrescreve o herdado" "https://novo/hook" "$ALERT_SLACK_
 rm -rf "$WORKDIR"; FLAGS_EXPLICITAS=""
 
 printf '\nHost só de observabilidade sobrevive a uma reexecução\n'
-# `monitoring` sai do array SERVICES (não é serviço de dados), e o estado
-# gravava a lista vazia: `--update` morria com "nenhum serviço selecionado" no
-# host que mais recebe ajuste depois de instalado.
+# monitoring não é serviço de dados; o estado deve registrar 'monitoring' sozinho.
 trecho_estado="$(awk '/monitoring. sai do array SERVICES em validate_and_prompt/,/printf .SERVICES=/' "$REPO_ROOT/setup.sh")"
 if printf '%s\n' "$trecho_estado" | grep -q 'SOMENTE_MONITORING.*==.*true'; then
     pass "o estado registra 'monitoring' num host só de observabilidade"
 else
     fail "SERVICES= vai vazio ao estado: --update fica impossível nesse host"
 fi
-# A string do estado é relida por load_state e volta ao array em
-# validate_and_prompt, que é quem reativa SOMENTE_MONITORING.
+# load_state deve reconstruir SOMENTE_MONITORING a partir do estado gravado.
 if grep -q 'monitoring)$' "$REPO_ROOT/setup.sh" && grep -q 'SOMENTE_MONITORING="true"' "$REPO_ROOT/setup.sh"; then
     pass "a string herdada reativa o modo somente-monitoração"
 else
@@ -114,9 +98,7 @@ else
 fi
 
 printf '\nTeto de CPU do OpenSearch cabe na máquina\n'
-# O perfil traz OS_CPU_LIMIT=6 (host de 12 vCPU dividido com o Postgres). Num
-# host DEDICADO ao motor de busca, a máquina certa para 8 GiB tem 4 vCPU — e o
-# Docker RECUSA criar o container: "range of CPUs is from 0.01 to 4.00".
+# OS_CPU_LIMIT do perfil deve ser rebaixado ao número de vCPU da máquina.
 check "o perfil declara o teto que exige o ajuste" "6" \
     "$(awk -F= '/^OS_CPU_LIMIT=/{print $2}' "$REPO_ROOT/opensearch/profiles/compartilhada-8gb.env")"
 trecho_cpu="$(awk '/teto de CPU do OpenSearch/,/^    fi$/' "$REPO_ROOT/setup.sh")"
@@ -132,10 +114,7 @@ else
 fi
 
 printf '\nAviso de orçamento apertado — compara o LIMITE, não o nome do perfil\n'
-# `dedicada-32gb` limita o container a 27 GB. Numa máquina dedicada de 32 GB
-# nominais (30 GiB reportados) mais 1 GB de exporters, a soma cabe — e o aviso
-# "reduza os serviços ou aumente a máquina" apontaria um problema inexistente
-# justamente no perfil que o `auto` acabou de escolher como ideal.
+# O aviso deve usar limite_gb + vizinhos, não o número do nome do perfil.
 trecho_orc="$(awk '/A soma total ainda pode não caber/,/fórmula de coexistência/' "$REPO_ROOT/setup.sh")"
 if printf '%s\n' "$trecho_orc" | grep -q 'limite_gb + neighbors_gb > mem_gb'; then
     pass "o aviso de orçamento usa o limite do container"
@@ -146,10 +125,7 @@ check "dedicada-32gb cabe numa máquina de 30 GB com 1 GB de vizinhos" "cabe" \
     "$( (( $(profile_budget_gb dedicada-32gb) * 87 / 100 + 1 <= 30 )) && echo cabe || echo "nao cabe" )"
 
 printf '\nPerfil do OpenSearch — dedicado x compartilhado\n'
-# Até 29/07/2026 havia um perfil só, e ele pressupõe host DIVIDIDO com o
-# Postgres. Aplicado a um host dedicado não era conservador, era quebrado: 10
-# GiB ociosos e o breaker `parent` (70% de 4 GiB) recusando a carga inicial —
-# a indexação parou em 2,46 M de 72,3 M documentos, sem erro, só esperando.
+# Dois perfis: compartilhado (vizinho do Postgres) e dedicado (host só de busca).
 check "os dois perfis estão no catálogo" "ok" \
     "$(profile_valid dedicada-16gb "$OPENSEARCH_PROFILES" && profile_valid compartilhada-8gb "$OPENSEARCH_PROFILES" && echo ok)"
 check "o arquivo do perfil dedicado existe" "ok" \
@@ -159,10 +135,8 @@ check "o dedicado dá mais heap que o compartilhado" "ok" \
        awk -F'-Xmx' '/^OS_JAVA_OPTS/{print $2+0}' "$REPO_ROOT/opensearch/profiles/compartilhada-8gb.env" > /tmp/.c
        [ "$(cat /tmp/.d)" -gt "$(cat /tmp/.c)" ] && echo ok)"
 
-# `auto` olha COM QUEM divide o host, não a RAM: é a única pergunta que separa
-# os dois perfis.
-# A RAM vai por argumento: um teste que dependa da memória de quem o roda passa
-# no laptop do autor e falha na CI.
+# auto escolhe perfil pelo contexto de vizinhos, não só pela RAM.
+# RAM passada como argumento para não depender da máquina que roda o teste.
 SERVICES=(postgres redis opensearch)
 check "ao lado do Postgres → compartilhada"  "compartilhada-8gb" "$(detect_opensearch_profile 16)"
 SERVICES=(opensearch redis)
@@ -177,13 +151,7 @@ check "sozinho no host → dedicada"            "dedicada-16gb"    "$(detect_ope
 check "sozinho em máquina de 8 GiB → compartilhada" "compartilhada-8gb" "$(detect_opensearch_profile 8)"
 check "sozinho em máquina de 30 GiB → dedicada"     "dedicada-16gb"     "$(detect_opensearch_profile 30)"
 
-# `dev-4gb` é ACEITO por --opensearch-profile e NUNCA escolhido pelo `auto`.
-#
-# As duas metades são o teste. Se ele saísse do catálogo, a máquina de
-# desenvolvimento que roda a arquitetura inteira ficaria sem perfil que caiba.
-# Se o `auto` passasse a escolhê-lo, o servidor pequeno que roda tudo — que é
-# exatamente onde o `auto` cairia nele — receberia 2 GiB de heap, e a falha
-# apareceria só na carga mensal, como `circuit_breaking_exception`.
+# dev-4gb: aceito manualmente, nunca escolhido pelo auto.
 check "dev-4gb está no catálogo" "ok" \
     "$(profile_valid dev-4gb "$OPENSEARCH_PROFILES" && echo ok)"
 check "o arquivo do perfil dev existe" "ok" \
@@ -207,10 +175,7 @@ if [[ "${_auto_dev_ok:-sim}" == "sim" ]]; then
     pass "o auto nunca escolhe dev-4gb, em nenhuma combinação de vizinhos e RAM"
 fi
 
-# Os breakers e as watermarks são os MESMOS de produção em todos os perfis. Um
-# ambiente de desenvolvimento que os afrouxa deixa de reproduzir a falha que ele
-# existe para antecipar — e `fielddata=0%` é o que transforma erro de consulta
-# em erro visível em vez de OOM.
+# Breakers e watermarks iguais em dev e produção (fielddata=0% evita OOM silencioso).
 for _var in OS_BREAKER_FIELDDATA_LIMIT OS_BREAKER_TOTAL_LIMIT OS_BREAKER_REQUEST_LIMIT \
             OS_WATERMARK_LOW OS_WATERMARK_HIGH OS_WATERMARK_FLOOD; do
     check "$_var é igual em dev-4gb e em produção" \
@@ -219,15 +184,8 @@ for _var in OS_BREAKER_FIELDDATA_LIMIT OS_BREAKER_TOTAL_LIMIT OS_BREAKER_REQUEST
 done
 
 printf '\nTodo perfil do catálogo tem orçamento de vizinho\n'
-# `neighbor_budget_gb` tem um `*) printf 0`, e um perfil que cai nele não gera
-# erro nenhum: ele simplesmente não entra na soma, o `auto` do Postgres escolhe
-# um perfil maior do que cabe, e a conta só aparece como OOM-kill semanas
-# depois. Foi o que aconteceu DUAS vezes — com os perfis do par Redis
-# (`cache-768mb`, `fila-256mb`) e com o `dev-4gb` recém-criado.
-#
-# O teste não confere o NÚMERO, confere que o perfil é CONHECIDO. Quem
-# acrescentar um perfil ao catálogo sem acrescentá-lo à tabela falha aqui, na
-# CI, e não no host de alguém.
+# neighbor_budget_gb com default 0: perfil desconhecido não entra na soma.
+# O teste confere que o perfil é conhecido, não o número exato.
 _orcamento_zero=""
 for _p in $REDIS_PROFILES $MEILI_PROFILES $OPENSEARCH_PROFILES $METRICS_PROFILES; do
     [[ "$(neighbor_budget_gb "$_p")" == "0" ]] && _orcamento_zero+=" $_p"
@@ -238,9 +196,7 @@ else
     pass "todos os perfis de vizinho têm orçamento declarado"
 fi
 
-# O orçamento declarado não pode ser MENOR que o limite real do container: ele
-# é arredondado para cima de propósito ("melhor sobrar page cache do que
-# descobrir o erro como OOM-kill"), e um número para baixo desfaz a garantia.
+# Orçamento declarado não pode ser menor que o limite real do container.
 for _svc_prof in "redis:$REDIS_PROFILES" "meilisearch:$MEILI_PROFILES" "opensearch:$OPENSEARCH_PROFILES"; do
     _svc="${_svc_prof%%:*}"
     for _p in ${_svc_prof#*:}; do
@@ -261,8 +217,7 @@ done
 [[ "${_orcamento_baixo:-nao}" == "nao" ]] \
     && pass "nenhum orçamento declarado fica abaixo do limite real do container"
 
-# As configurações de ÍNDICE não podem vir do perfil do container: o OpenSearch
-# não as aceita em opensearch.yml. Havia um OS_MERGE_THREADS que ninguém lia.
+# Settings de índice não pertencem ao perfil do container (vivem no mapping).
 if grep -qE '^OS_MERGE_THREADS=' "$REPO_ROOT"/opensearch/profiles/*.env; then
     fail "OS_MERGE_THREADS voltou ao perfil — nenhum lugar o lê (é setting de índice)"
 else
@@ -289,8 +244,7 @@ check "14 GB → busca-1gb"     "busca-1gb"    "$(detect_meili_profile 14)"
 check "28 GB → busca-4gb"     "busca-4gb"    "$(detect_meili_profile 28)"
 check "56 GB → busca-16gb"    "busca-16gb"   "$(detect_meili_profile 56)"
 
-# Métricas NÃO escalam com a RAM: a cardinalidade segue o número de alvos, não o
-# tamanho do host. Este teste é o que impede alguém de "consertar" isso depois.
+# Métricas não escalam com RAM — cardinalidade segue o número de alvos.
 METRICS_CONTAINERS="false"
 check "métricas: 16 GB → metricas-512mb"  "metricas-512mb" "$(detect_metrics_profile)"
 check "métricas: 128 GB → metricas-512mb" "metricas-512mb" "$(detect_metrics_profile)"
@@ -312,8 +266,7 @@ check "metricas-2gb → 4"    "4"  "$(neighbor_budget_gb metricas-2gb)"
 check "metricas-8gb → 10"   "10" "$(neighbor_budget_gb metricas-8gb)"
 check "perfil desconhecido → 0" "0" "$(neighbor_budget_gb inexistente)"
 
-# metrics_budget_gb delega para neighbor_budget_gb — sem esta checagem, as duas
-# tabelas de números poderiam divergir em silêncio.
+# metrics_budget_gb deve delegar para neighbor_budget_gb.
 METRICS_PROFILE="metricas-512mb"; METRICS_CONTAINERS="false"
 check "metrics_budget_gb = neighbor_budget_gb" "2" "$(metrics_budget_gb)"
 METRICS_CONTAINERS="true"
@@ -321,10 +274,7 @@ check "metrics_budget_gb soma o cAdvisor" "3" "$(metrics_budget_gb)"
 METRICS_CONTAINERS="false"
 
 printf '\nDimensionamento coordenado cabe na máquina\n'
-# O teste que protege a decisão de projeto: para cada tamanho de host, a soma do
-# conjunto que o `auto` escolhe precisa caber. É o que impede uma faixa futura de
-# reintroduzir o superdimensionamento que existia quando o Postgres era
-# detectado pela RAM total, ignorando os vizinhos.
+# Para cada tamanho de host, a soma do conjunto escolhido pelo auto deve caber.
 for ram in 16 32 64 128; do
     r="$(detect_redis_profile "$ram")"
     m="$(detect_meili_profile "$ram")"
@@ -339,8 +289,7 @@ for ram in 16 32 64 128; do
     fi
 done
 
-# Postgres sozinho continua recebendo a máquina inteira — o comportamento de
-# antes do dimensionamento coordenado.
+# Postgres sozinho recebe a máquina inteira.
 check "sem vizinhos, 32 GB → dedicada-32gb"   "dedicada-32gb"  "$(detect_pg_profile 32)"
 check "sem vizinhos, 128 GB → dedicada-128gb" "dedicada-128gb" "$(detect_pg_profile 128)"
 
@@ -367,9 +316,7 @@ done
 
 printf '\nArquivos de perfil: nenhuma linha malformada\n'
 for f in "$REPO_ROOT"/{postgres,redis,meilisearch}/profiles/*.env; do
-    # `(...)?$` e não `(...|)$`: a alternativa vazia é rejeitada por alguns greps
-    # (o ugrep, comum no macOS via brew, sai com rc=2) — e aí `bad` ficava vazio
-    # e o teste passava sem verificar nada. Semântica idêntica, portável.
+    # Usar `(...)?$` em vez de `(...|)$`: ugrep rejeita alternativa vazia (rc=2).
     bad="$(grep -vE '^([A-Z][A-Z0-9_]*=[^[:space:]]+|#.*)?$' "$f" || true)"
     check "$(basename "$(dirname "$(dirname "$f")")")/$(basename "$f")" "" "$bad"
 done
@@ -390,9 +337,7 @@ for prof in $PG_PROFILES; do
 done
 
 printf '\nPerfis do Postgres: recursos do container conferem com o guia\n'
-# Tabela "Recursos do container" de docs/perfis.md — limite e /dev/shm em bytes.
-# A 8ª coluna entrou com `compartilhada-14gb`; a ordem das colunas da tabela
-# tem de seguir a de PG_PROFILES, e é isso que este bloco afirma.
+# Tabela "Recursos do container" de docs/perfis.md — ordem segue PG_PROFILES.
 doc_limits="$(awk -F'|' '/^\| Limite de memória/ {for (i=2;i<=NF;i++) gsub(/ /,"",$i); print $3, $4, $5, $6, $7, $8}' \
     "$REPO_ROOT/postgres/docs/perfis.md" | head -1)"
 doc_shm="$(awk -F'|' '/^\| em bytes/ {for (i=2;i<=NF;i++) gsub(/ /,"",$i); print $3, $4, $5, $6, $7, $8}' \
@@ -486,13 +431,10 @@ for prof in $METRICS_PROFILES; do
 done
 
 for f in "$REPO_ROOT"/monitoring/profiles/*.env; do
-    # `(...)?$` e não `(...|)$`: a alternativa vazia é rejeitada por alguns greps
-    # (o ugrep, comum no macOS via brew, sai com rc=2) — e aí `bad` ficava vazio
-    # e o teste passava sem verificar nada. Semântica idêntica, portável.
+    # Usar `(...)?$` em vez de `(...|)$`: ugrep rejeita alternativa vazia (rc=2).
     bad="$(grep -vE '^([A-Z][A-Z0-9_]*=[^[:space:]]+|#.*)?$' "$f" || true)"
     check "monitoring/$(basename "$f"): nenhuma linha malformada" "" "$bad"
-    # Retenção por tempo SEM retenção por tamanho é o furo clássico: um pico de
-    # cardinalidade enche o disco que o Prometheus divide com o Postgres.
+    # Retenção por tempo exige também retenção por tamanho (Prometheus + Postgres no mesmo disco).
     faltando=""
     for chave in PROM_RETENTION_TIME PROM_RETENTION_SIZE PROM_MEMORY_LIMIT GRAFANA_MEMORY_LIMIT; do
         grep -qE "^${chave}=" "$f" || faltando+="$chave "
@@ -505,27 +447,21 @@ for svc in postgres redis meilisearch; do
     f="$REPO_ROOT/$svc/docker-compose.metrics.yml"
     if [[ ! -f "$f" ]]; then fail "FALTA $svc/docker-compose.metrics.yml"; continue; fi
 
-    # O exporter NUNCA pode publicar porta: /metrics não tem autenticação e o do
-    # Postgres entrega pg_settings_* inteiro. Ele é alcançado só pela rede
-    # bdh_metrics. É o tipo de linha que alguém acrescenta "para debugar".
+    # Exporter não publica porta — /metrics sem autenticação.
     if grep -qE '^\s+ports:' "$f"; then
         fail "$svc/docker-compose.metrics.yml declara ports: (exporter não pode publicar porta)"
     else
         pass "$svc: overlay não publica porta"
     fi
 
-    # Label PRÓPRIA: setup.sh e `bdh verify` filtram containers por
-    # `label=org.brasildatahub.service=<svc> | head -1`. Com a label colidindo, o
-    # `bdh verify postgres` inspecionaria o exporter.
+    # Label própria no overlay — evita colisão com bdh verify.
     if grep -qE "org\.brasildatahub\.service: $svc\$" "$f"; then
         fail "$svc/docker-compose.metrics.yml usa a label do serviço base"
     else
         pass "$svc: overlay usa label própria"
     fi
 
-    # Sem `external: true`: com ele, um `docker network prune` faria o `up` do
-    # próprio serviço de DADOS falhar por rede inexistente. Os comentários do
-    # arquivo explicam justamente isso e citam o termo, daí ignorá-los.
+    # Rede bdh_metrics sem external: true (prune não quebra o up do serviço de dados).
     if grep -vE '^\s*#' "$f" | grep -q 'external: true'; then
         fail "$svc/docker-compose.metrics.yml declara a rede como external"
     elif grep -qE '^\s+bdh_metrics:' "$f"; then
@@ -535,8 +471,7 @@ for svc in postgres redis meilisearch; do
     fi
 done
 
-# A senha do exporter do Postgres vive em .env.metrics, e não no .env: qualquer
-# variável a mais no .env muda o hash do serviço e o Compose RECRIA o banco.
+# PG_METRICS_PASSWORD deve vir de .env.metrics, não do .env (evita recriar o banco).
 if grep -q 'PG_METRICS_PASSWORD' "$REPO_ROOT/postgres/docker-compose.metrics.yml"; then
     fail "overlay do Postgres interpola PG_METRICS_PASSWORD do .env (recriaria o banco)"
 else
@@ -544,12 +479,7 @@ else
 fi
 
 printf '\nFirewall: nunca esvaziar sem repovoar\n'
-# O defeito que este bloco trava: a versão anterior de `configure_firewall`
-# fazia `iptables -F DOCKER-USER` ANTES de checar ALLOW_FROM. Numa execução sem
-# a flag — o caso de `--metrics-only` sem repetir as flags da instalação — o
-# firewall dos containers era apagado e não reconstruído, e as três portas de
-# dados voltavam a aceitar conexão de qualquer origem. Em silêncio: `ufw status`
-# segue `active`, porque a DOCKER-USER não aparece ali.
+# iptables -F DOCKER-USER só após guarda de ALLOW_FROM; CIDRs separados por família.
 trecho_fw="$(awk '/^configure_firewall\(\)/,/^}/' "$REPO_ROOT/setup.sh")"
 linha_flush="$(printf '%s\n' "$trecho_fw" | grep -n 'iptables -F DOCKER-USER' | head -1 | cut -d: -f1)"
 # shellcheck disable=SC2016  # aspas simples de PROPÓSITO: isto é um padrão de
@@ -563,11 +493,7 @@ else
     fail "iptables -F DOCKER-USER roda antes da guarda — o firewall regride em silêncio"
 fi
 
-# --- IPv6 no after.rules: erro de PARSE, não regra que não casa --------------
-# Um CIDR IPv6 escrito no bloco *filter (que é iptables-restore v4) invalida o
-# ARQUIVO INTEIRO. Como o flush da chain acontece antes, o resultado era: ufw
-# reload falhando, script morto pelo set -e, e as portas dos containers abertas
-# para a internet com o `ufw status` exibindo regras restritivas.
+# IPv6 em after.rules invalida o arquivo inteiro do iptables-restore v4.
 if printf '%s\n' "$trecho_fw" | grep -q 'cidrs_v6'; then
     pass "os CIDRs são separados por família antes de gerar o after.rules"
 else
@@ -603,12 +529,7 @@ else
 fi
 
 printf '\nObservabilidade: coleta remota\n'
-# A regra "exporter não publica porta" (verificada acima) vale para o caso em
-# que Prometheus e serviço dividem host — o all-in-one, que é o default. Quando
-# eles ficam em máquinas diferentes, a exceção vive em arquivos SEPARADOS, e o
-# que se afirma aqui é que ela continua exigindo uma decisão explícita: qual
-# interface publicar. A topologia concreta varia com o orçamento e o momento, e
-# nenhum teste deve depender de uma.
+# Exceção: coleta remota exige METRICS_BIND_IP explícito (sem default 0.0.0.0).
 for svc in postgres redis; do
     f="$REPO_ROOT/$svc/docker-compose.metrics-remote.yml"
     if [[ ! -f "$f" ]]; then fail "FALTA $svc/docker-compose.metrics-remote.yml"; continue; fi
@@ -626,9 +547,7 @@ fi
 
 printf '\nObservabilidade: compose do monitoring\n'
 mon="$REPO_ROOT/monitoring/docker-compose.yml"
-# Nenhum dos três tem autenticação: publicar o Prometheus em 0.0.0.0 expõe
-# /api/v1/admin/tsdb/*, e publicar o Alertmanager entrega a API de silences —
-# com a qual se cala qualquer alerta desta stack.
+# Grafana/Prometheus/Alertmanager: loopback por default; Prometheus sem auth.
 check "Grafana/Prometheus/Alertmanager em loopback por default" "3" \
     "$(grep -cE '\$\{MONITORING_BIND_IP:-127\.0\.0\.1\}' "$mon")"
 if grep -q 'BIND_IP:-0.0.0.0' "$mon"; then
@@ -636,17 +555,10 @@ if grep -q 'BIND_IP:-0.0.0.0' "$mon"; then
 else
     pass "monitoring usa MONITORING_BIND_IP, separada de BIND_IP"
 fi
-# Só o Prometheus leva o nome curto: o wait de healthcheck faz `head -1` sobre
-# os containers com esta label.
+# Label 'monitoring' só no Prometheus (healthcheck wait usa head -1).
 check "label 'monitoring' aparece uma única vez" "1" \
     "$(grep -cE 'org\.brasildatahub\.service: monitoring$' "$mon")"
-# O `uname -n` de dentro do container é o ID do container, e é ele que vai parar
-# em node_uname_info{nodename=...}. Sem `hostname:`, a seção de infraestrutura
-# via host="bdh-data" e nodename="88cdb3eab7a0": o link para o Node Exporter
-# Full, que casa por nodename, abria a máquina errada. `pid: host` não resolve —
-# o UTS namespace é outro. Encontrado em 29/07/2026, no primeiro deploy real.
-# O awk usa flag em vez de range `/ini/,/fim/`: a própria linha `node-exporter:`
-# casa o padrão de fim, e o range se fecharia nela mesma, com uma linha só.
+# node-exporter precisa de hostname: do contrário nodename vira o ID do container.
 # shellcheck disable=SC2016  # aspas simples de PROPÓSITO: procura o texto
 # literal `${MON_HOSTNAME` no YAML, não o valor da variável no shell.
 check "node-exporter herda o hostname do host" "ok" \
@@ -654,9 +566,7 @@ check "node-exporter herda o hostname do host" "ok" \
         | grep -q 'hostname: ${MON_HOSTNAME' && echo ok || echo 'nodename seria o ID do container')"
 
 printf '\nRótulo de máquina nos alvos do Prometheus\n'
-# O `host` do alvo é o ÚNICO rótulo que diz de qual máquina a série veio: os
-# external_labels do prometheus.yml não são gravados no TSDB, então o Grafana
-# não os enxerga. Toda a seção de infraestrutura do dashboard depende disto.
+# host é o rótulo que identifica a máquina de origem (external_labels não vão ao TSDB).
 check "hostname vira rótulo" "ok" \
     "$( [[ -n "$(host_label)" && "$(host_label)" != "desconhecido" ]] && echo ok || echo "vazio" )"
 check "aspas não quebram o JSON do alvo" "nome-quebrado" "$(host_label 'nome"quebrado')"
@@ -671,17 +581,14 @@ check "endereço sem porta nenhuma" "bdh-data" "$(endereco_sem_porta 'bdh-data')
 check "apelido vira o rótulo host" \
     '[{"targets":["10.0.1.10:9100"],"labels":{"host":"bdh-data"}}]' \
     "$(alvos_remotos_json node 'node=10.0.1.10:9100@bdh-data')"
-# Retrocompatibilidade: quem já tinha --metrics-scrape sem apelido continua
-# funcionando, e o rótulo cai para o endereço em vez de ficar ausente.
+# Retrocompat: alvo remoto sem @apelido usa o endereço como host.
 check "sem apelido, o rótulo cai para o endereço" \
     '[{"targets":["10.0.1.10:9100"],"labels":{"host":"10.0.1.10"}}]' \
     "$(alvos_remotos_json node 'node=10.0.1.10:9100')"
 check "IPv6 entre colchetes preserva o endereço" \
     '[{"targets":["[fe80::1]:9100"],"labels":{"host":"bdh-x"}}]' \
     "$(alvos_remotos_json node 'node=[fe80::1]:9100@bdh-x')"
-# Um objeto POR ALVO, e não um objeto com N targets: cada alvo pode estar numa
-# máquina diferente, e o rótulo é por objeto. Era este o defeito do formato
-# antigo — dois hosts no mesmo job compartilhariam um rótulo só.
+# Um objeto JSON por alvo (rótulo host por máquina).
 check "dois alvos do mesmo job viram dois objetos" \
     '[{"targets":["10.0.1.10:9100"],"labels":{"host":"bdh-data"}},{"targets":["10.0.1.11:9100"],"labels":{"host":"bdh-search"}}]' \
     "$(alvos_remotos_json node 'node=10.0.1.10:9100@bdh-data,node=10.0.1.11:9100@bdh-search')"
@@ -694,9 +601,7 @@ check "job filtra só os seus alvos" \
 check "os alvos locais levam labels.host" "ok" \
     "$(grep -q '"labels":{"host":"%s"}' "$REPO_ROOT/setup.sh" && echo ok || echo 'alvo local sem rótulo')"
 
-# --host-label existe para o host que NÃO pode ser renomeado: num nó Docker
-# Swarm o hostname está registrado no cluster, e trocá-lo num manager arrisca
-# desassociar o nó. Ele vence o hostname só para os alvos locais.
+# --host-label: para hosts que não podem ser renomeados (ex.: Swarm manager).
 check "--host-label vence o hostname" "bdh-apps" \
     "$(HOST_LABEL=bdh-apps host_label)"
 check "sem --host-label, o hostname continua valendo" "$(hostname)" \
