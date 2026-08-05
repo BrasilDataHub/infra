@@ -269,6 +269,9 @@
         "type": "float",
         "index": false,
         "doc_values": true
+      },
+      "ocultado_lgpd": {
+        "type": "boolean"
       }
     }
   }
