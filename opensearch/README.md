@@ -45,6 +45,25 @@ Decisões do mapping (alterar exige reindexar ~72,32 M documentos):
 | `_source` | **desabilitado** (hidratação por PK no Postgres) |
 | `auto_expand_replicas` | **`0-1`** |
 
+### Campo `ocultado_lgpd`
+
+Boolean no mapping de [`index/busca_estabelecimento.json`](index/busca_estabelecimento.json).
+Usado pelo fluxo LGPD do Base Empresarial:
+
+| Aspecto | Contrato |
+|---|---|
+| Tipo | `boolean` |
+| Escrita | `search-indexer` (carga normal + comando `privacy-sync` — partial update) |
+| Delete físico do doc | **Não** — a ocultação é só a flag |
+| Busca pública / anônima | filtrar `ocultado_lgpd = false` (ou `must_not: true`) |
+| Admin / autenticado / assinante | **sem** esse filtro (bypass na aplicação) |
+| Fonte da verdade da decisão | `privacy_decisions` (Laravel) → `meta.supressao_privacidade` (`cnpj-pipeline`) |
+
+Índices criados **antes** da introdução do campo precisam de put mapping (ou
+republicação do índice físico) antes do `privacy-sync` pontual. Runbook do
+operador: [REMOCAO-OPERACIONAL.md](https://github.com/BrasilDataHub/baseempresarial-web/blob/develop/REMOCAO-OPERACIONAL.md);
+detalhe do indexer: [privacy-sync.md](https://github.com/BrasilDataHub/baseempresarial-services/blob/main/services/search-indexer/docs/privacy-sync.md).
+
 Analisadores:
 
 - Sem stemmer (`light_portuguese` destruiria precisão em nomes comerciais).
