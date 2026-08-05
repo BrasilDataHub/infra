@@ -14,6 +14,12 @@ services:
   postgres:
     image: ghcr.io/brasildatahub/postgres:17
     restart: unless-stopped
+    # O default do Compose é 10 s. Um shutdown "fast" (SIGINT) de um banco com
+    # shared_buffers na casa das dezenas de GB pode passar disso escrevendo o
+    # checkpoint final — e aí o Docker manda SIGKILL, o que custa crash
+    # recovery na subida seguinte. Medido em 141 GB: com `CHECKPOINT` manual
+    # antes, o shutdown sai em segundos; sem ele, o teto precisa ser generoso.
+    stop_grace_period: 300s
     env_file:
       - path: .env
         required: false

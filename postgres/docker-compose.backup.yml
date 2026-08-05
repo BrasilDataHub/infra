@@ -37,6 +37,14 @@ services:
   pgbackrest:
     image: ghcr.io/brasildatahub/pgbackrest:17
     restart: unless-stopped
+    # 10 s, e NÃO o grace period do banco. O PID 1 aqui é `cron -f`, que não
+    # trata o SIGINT herdado da imagem: o sinal é ignorado e o Docker só o
+    # derruba no timeout, com SIGKILL. Sem este teto curto, um `compose stop -t
+    # 300` pensado para proteger o Postgres passava 300 s esperando o AGENDADOR
+    # de backup — medido: 302 s de indisponibilidade, dos quais ~295 s eram só
+    # este container. Matar o cron é inofensivo: quem executa o archive_command
+    # é o postmaster, com o binário pgBackRest na própria imagem do banco.
+    stop_grace_period: 10s
     env_file:
       - path: .env
         required: false

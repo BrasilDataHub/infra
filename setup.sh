@@ -1298,10 +1298,23 @@ configure_overcommit() {
     ok "persistido em ${arquivo}"
 }
 
-# THP off (Redis): não é sysctl — unit oneshot Before=docker.service.
-# Com THP always, fork do snapshot copia páginas de 2 MB.
+# THP off: não é sysctl — unit oneshot Before=docker.service.
+#
+# Vale para os TRÊS serviços de dados, e não só para o Redis (que era o único
+# no gate até 2026-08):
+#   - Redis: com THP always, o fork do snapshot copia páginas de 2 MB.
+#   - PostgreSQL: recomendação da própria documentação. THP always faz a
+#     compactação síncrona entrar no caminho de uma alocação qualquer, e o
+#     sintoma é latência errática sem causa visível no banco. Não confundir com
+#     huge pages EXPLÍCITAS (`huge_pages=try`), que são desejáveis e continuam
+#     funcionando com THP desligado.
+#   - JVM (OpenSearch): mesma compactação síncrona, agora dentro de uma pausa
+#     de GC.
+# Medido em 2026-08-05: bdh-data, bdh-search e bdh-monitor estavam com
+# `[always]` porque o gate só olhava o Redis.
 configure_thp() {
-    service_selected redis || return 0
+    service_selected redis || service_selected postgres \
+        || service_selected opensearch || service_selected meilisearch || return 0
 
     local unit=/etc/systemd/system/disable-thp.service
     local atual

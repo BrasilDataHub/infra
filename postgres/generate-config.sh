@@ -78,6 +78,20 @@ checkpoint_completion_target = ${PG_CHECKPOINT_COMPLETION_TARGET:-0.9}
 # os últimos commits num crash). Nunca deixar 'off' em regime.
 synchronous_commit = ${PG_SYNCHRONOUS_COMMIT:-on}
 
+# --- Background writer -------------------------------------------------------
+# Os defaults do Postgres (200ms / 100 páginas) são de uma era de disco
+# giratório: dão ao bgwriter um teto de ~4 MB/s. Com shared_buffers na casa das
+# dezenas de GB e NVMe embaixo, o que não sai por aqui sai pelos BACKENDS (cada
+# um escrevendo a própria página suja antes de reusar o buffer) ou se acumula
+# para o checkpoint — os dois caminhos aparecem como latência na aplicação, não
+# como I/O saturado no host.
+#
+# 100ms / 1000 páginas dá ~80 MB/s de teto, que um NVMe absorve sem sentir. O
+# multiplier de 4.0 antecipa a limpeza em vez de reagir ao consumo.
+bgwriter_delay = ${PG_BGWRITER_DELAY:-100ms}
+bgwriter_lru_maxpages = ${PG_BGWRITER_LRU_MAXPAGES:-1000}
+bgwriter_lru_multiplier = ${PG_BGWRITER_LRU_MULTIPLIER:-4.0}
+
 # --- Backup físico / PITR (pgBackRest — ver backup/) ------------------------
 archive_mode = ${PG_ARCHIVE_MODE:-off}
 archive_command = '${PG_ARCHIVE_COMMAND:-/bin/true}'

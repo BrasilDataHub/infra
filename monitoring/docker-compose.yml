@@ -77,6 +77,12 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Flag SEPARADA da de cima: `analytics.check_for_updates` cobre o Grafana,
+      # `plugins.preinstall_auto_update` cobre os plugins — e ela roda mesmo com
+      # `GF_INSTALL_PLUGINS` vazio. Sem esta, o checker registra uma linha de
+      # avaliação de flag a cada poucos minutos: 518 em 24 h, num host de 2 GB
+      # onde o log do Grafana já é o maior arquivo do serviço.
+      GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
       # Vazio: plugin aqui = download no boot (quebra com egress bloqueado).
       GF_INSTALL_PLUGINS: ""
       GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000}
